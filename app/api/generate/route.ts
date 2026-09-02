@@ -75,8 +75,30 @@ export async function POST(request: Request) {
     if (saveVideoNode) saveVideoNode.inputs!.filename_prefix = `director/shot-${shotId}-${shotTitle}-${Date.now().toString(36)}`;
     const clientId = typeof body.client_id === 'string' && body.client_id ? body.client_id : 'comfyui-director';
     const response = await fetch('http://127.0.0.1:8188/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: normalized, client_id: clientId }) });
-    const result = await response.json();
-    if (!response.ok) return Response.json({ error: result.error ?? 'ComfyUI 提交失败' }, { status: response.status });
+    const result = await response.json().catch(() => ({})) as {
+      prompt_id?: unknown;
+      error?: unknown;
+      node_errors?: unknown;
+    };
+    if (!response.ok) {
+      const error = result.error;
+      const baseMessage = typeof error === 'string'
+        ? error
+        : error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string'
+          ? (error as { message: string }).message
+          : error && typeof error === 'object' && typeof (error as { details?: unknown }).details === 'string'
+            ? (error as { details: string }).details
+            : `ComfyUI 提交失败（HTTP ${response.status}）`;
+      const nodeDetails = Object.values((result.node_errors ?? {}) as Record<string, unknown>)
+        .flatMap((nodeError) => nodeError && typeof nodeError === 'object' && Array.isArray((nodeError as { errors?: unknown }).errors) ? (nodeError as { errors: unknown[] }).errors : [])
+        .map((nodeError) => nodeError && typeof nodeError === 'object' && typeof (nodeError as { details?: unknown }).details === 'string' ? (nodeError as { details: string }).details : '')
+        .filter(Boolean);
+      const message = nodeDetails.length ? `${baseMessage}: ${nodeDetails.join('; ')}` : baseMessage;
+      return Response.json({ error: message, node_errors: result.node_errors }, { status: response.status });
+    }
+    if (typeof result.prompt_id !== 'string' || !result.prompt_id) {
+      return Response.json({ error: 'ComfyUI 未返回任务 ID', node_errors: result.node_errors }, { status: 502 });
+    }
     return Response.json(result);
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : '生成请求失败' }, { status: 500 });

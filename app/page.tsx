@@ -445,9 +445,12 @@ export default function Home() {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
-    const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
-    const response = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: file.name, mime: file.type, data }) });
-    const uploaded = await response.json();
+    const form = new FormData();
+    form.append('image', file, file.name);
+    form.append('kind', 'image');
+    const response = await fetch('/api/upload', { method: 'POST', body: form });
+    const uploaded = await response.json().catch(() => ({})) as { name?: string; error?: string };
+    if (!response.ok || !uploaded.name) throw new Error(uploaded.error ?? `上传首帧失败（HTTP ${response.status}）`);
     const label = keyframeMode === 'last' ? '尾帧' : '首帧';
     const key = `${shots[activeShot].id}-${label}`;
     setKeyframes((current) => ({ ...current, [key]: { name: file.name, url: URL.createObjectURL(file), comfyName: uploaded.name } }));
@@ -466,14 +469,14 @@ export default function Home() {
     setReferenceAssets((current) => ({ ...current, [key]: { name: file.name, url, kind } }));
     try {
       const form = new FormData();
-      form.append('image', file);
+      form.append('image', file, file.name);
       form.append('kind', kind);
       const response = await fetch('/api/upload', { method: 'POST', body: form });
-      const uploaded = await response.json() as { name?: string; subfolder?: string; error?: string };
-      if (!response.ok || !uploaded.name) throw new Error(uploaded.error ?? '上传参考素材失败');
+      const uploaded = await response.json().catch(() => ({})) as { name?: string; subfolder?: string; error?: string };
+      if (!response.ok || !uploaded.name) throw new Error(uploaded.error ?? `上传参考素材失败（HTTP ${response.status}）`);
       setReferenceAssets((current) => ({ ...current, [key]: { name: file.name, url, comfyName: uploaded.name, comfySubfolder: uploaded.subfolder || undefined, kind } }));
-    } catch {
-      setGenerationStatus('参考素材上传失败');
+    } catch (error) {
+      setGenerationStatus(error instanceof Error ? `参考素材上传失败：${error.message}` : '参考素材上传失败');
     }
   }
 
@@ -502,8 +505,8 @@ export default function Home() {
   }
 
   function referenceComfyFile(asset: ReferenceAsset | undefined) {
-    if (!asset) return undefined;
-    const filename = asset.comfyName ?? asset.name;
+    if (!asset?.comfyName) return undefined;
+    const filename = asset.comfyName;
     return asset.comfySubfolder ? `${asset.comfySubfolder}/${filename}` : filename;
   }
 
@@ -797,12 +800,10 @@ export default function Home() {
       return;
     }
     if (activeSubmitting) return;
-    setVideoUrl(null);
     const firstFrame = keyframes[`${shotId}-首帧`];
-    const firstFrameName = firstFrame?.comfyName ?? firstFrame?.name;
+    const firstFrameName = firstFrame?.comfyName;
     const submittedSeed = seedMode === 'random' ? String(Math.floor(Math.random() * 9000000000000000) + 1000000000000000) : seed;
     const startedAt = Date.now();
-    setSubmittingShots((current) => ({ ...current, [shotId]: true }));
     const taskSettings = shotSettings[shotId] ?? { ...shotSettingDefaults, duration, resolution: availableResolution, aspect, fps, mode: activeMode, model, turbo: turboMode };
     const fileName = `${safeFileStem(taskShot.title)}.mp4`;
     const references = activeMode === 'R2VA' ? {
@@ -810,7 +811,57 @@ export default function Home() {
       videos: Array.from({ length: profile.videos }, (_, index) => referenceComfyFile(referenceAssets[referenceKey(shotId, 'video', index)])).filter((name): name is string => Boolean(name)),
       audios: Array.from({ length: profile.audios }, (_, index) => referenceComfyFile(referenceAssets[referenceKey(shotId, 'audio', index)])).filter((name): name is string => Boolean(name)),
     } : undefined;
-    void fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shot_id: shotId, shot_title: taskShot.title, prompt, seed: submittedSeed, duration, resolution: availableResolution, fps, model, turbo: turboMode, mode: activeMode, image: firstFrameName, client_id: clientId, ...(references ? { images: references.images, videos: references.videos, audios: references.audios } : {}) }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); setSubmittingShots((current) => { const next = { ...current }; delete next[shotId]; return next; }); setShotTasks((current) => ({ ...current, [shotId]: { promptId: result.prompt_id, seed: submittedSeed, seedMode, prompt, title: taskShot.title, fileName, duration: taskSettings.duration, resolution: taskSettings.resolution, aspect: taskSettings.aspect, fps: taskSettings.fps, mode: taskSettings.mode, model: taskSettings.model, turbo: taskSettings.turbo, steps: turboMode ? 4 : 20, startedAt, keyframeMode, inputImage: firstFrameName, referenceImages: references?.images, referenceVideos: references?.videos, referenceAudios: references?.audios } })); if (activeShotIdRef.current === shotId) setGenerationStatus('已提交，等待 ComfyUI 排队'); }).catch(() => { setSubmittingShots((current) => { const next = { ...current }; delete next[shotId]; return next; }); setShots((items) => items.map((item) => item.id === shotId ? { ...item, state: '失败' } : item)); if (activeShotIdRef.current === shotId) setGenerationStatus('提交失败'); });
+    const pendingReference = activeMode === 'R2VA'
+      ? Object.entries(referenceAssets).find(([key, asset]) => key.startsWith(`${shotId}-`) && !asset.comfyName)
+      : undefined;
+    if (pendingReference) {
+      setGenerationStatus(`参考素材“${pendingReference[1].name}”尚未上传完成，请重新上传后再生成`);
+      setShotStages((current) => ({ ...current, [shotId]: '等待素材上传' }));
+      return;
+    }
+    if (activeMode === 'I2VA' && firstFrame && !firstFrame.comfyName) {
+      setGenerationStatus(`首帧“${firstFrame.name}”尚未上传完成，请重新上传后再生成`);
+      setShotStages((current) => ({ ...current, [shotId]: '等待素材上传' }));
+      return;
+    }
+    setVideoUrl(null);
+    setSubmittingShots((current) => ({ ...current, [shotId]: true }));
+    void fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shot_id: shotId,
+        shot_title: taskShot.title,
+        prompt,
+        seed: submittedSeed,
+        duration,
+        resolution: availableResolution,
+        fps,
+        model,
+        turbo: turboMode,
+        mode: activeMode,
+        image: firstFrameName,
+        client_id: clientId,
+        ...(references ? { images: references.images, videos: references.videos, audios: references.audios } : {}),
+      }),
+    }).then(async (response) => {
+      const result = await response.json().catch(() => ({})) as { prompt_id?: unknown; error?: unknown; details?: unknown };
+      if (!response.ok) {
+        const detail = typeof result.error === 'string' ? result.error : typeof result.details === 'string' ? result.details : `HTTP ${response.status}`;
+        throw new Error(detail);
+      }
+      if (typeof result.prompt_id !== 'string' || !result.prompt_id) throw new Error('ComfyUI 未返回任务 ID');
+      setSubmittingShots((current) => { const next = { ...current }; delete next[shotId]; return next; });
+      setShotTasks((current) => ({ ...current, [shotId]: { promptId: result.prompt_id as string, seed: submittedSeed, seedMode, prompt, title: taskShot.title, fileName, duration: taskSettings.duration, resolution: taskSettings.resolution, aspect: taskSettings.aspect, fps: taskSettings.fps, mode: taskSettings.mode, model: taskSettings.model, turbo: taskSettings.turbo, steps: turboMode ? 4 : 20, startedAt, keyframeMode, inputImage: firstFrameName, referenceImages: references?.images, referenceVideos: references?.videos, referenceAudios: references?.audios } }));
+      if (activeShotIdRef.current === shotId) setGenerationStatus('已提交，等待 ComfyUI 排队');
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : '未知提交错误';
+      setSubmittingShots((current) => { const next = { ...current }; delete next[shotId]; return next; });
+      setShots((items) => items.map((item) => item.id === shotId ? { ...item, state: '失败' } : item));
+      setShotProgress((current) => ({ ...current, [shotId]: 0 }));
+      setShotStages((current) => ({ ...current, [shotId]: '提交失败' }));
+      if (activeShotIdRef.current === shotId) setGenerationStatus(`提交失败：${message}`);
+    });
     setGenerationStatus('正在提交');
     setShots((items) => items.map((item) => item.id === shotId ? { ...item, state: '生成中' } : item));
     setShotProgress((current) => ({ ...current, [shotId]: 0 }));
@@ -906,7 +957,7 @@ export default function Home() {
                 {([['first', '首帧'], ['last', '尾帧'], ['first_last', '首尾帧']] as const).map(([value, label]) => <button key={value} onClick={() => setKeyframeMode(value)} className={`rounded-md px-2 py-1.5 text-[10px] font-medium transition ${keyframeMode === value ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{label}</button>)}
               </div></div>
               <div onChange={uploadFrame} className={`grid gap-2 ${keyframeMode === 'first_last' ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                {(keyframeMode === 'last' ? ['尾帧'] : keyframeMode === 'first_last' ? ['首帧', '尾帧'] : ['首帧']).map((label) => { const frame = keyframes[`${shots[activeShot].id}-${label}`]; return <label key={label} className="upload-tile relative w-full overflow-hidden">{frame ? <img src={frame.url} alt={`${label}缩略图`} className="absolute inset-0 size-full object-cover opacity-70" /> : <ImagePlus />}<span className="relative rounded bg-black/60 px-1.5 py-0.5">{frame?.name ?? `添加${label}`}</span><small className="relative rounded bg-black/60 px-1">{label === '首帧' ? '对齐 0.00 秒' : '对齐视频结束时刻'}</small><input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const key = `${shots[activeShot].id}-${label}`; const url = URL.createObjectURL(file); setKeyframes((current) => ({ ...current, [key]: { name: file.name, url } })); const form = new FormData(); form.append('image', file); try { const response = await fetch('/api/upload', { method: 'POST', body: form }); const uploaded = await response.json(); if (uploaded.name) setKeyframes((current) => ({ ...current, [key]: { name: file.name, url, comfyName: uploaded.name } })); } catch { /* local preview remains available */ } }} /></label>; })}
+              {(keyframeMode === 'last' ? ['尾帧'] : keyframeMode === 'first_last' ? ['首帧', '尾帧'] : ['首帧']).map((label) => { const frame = keyframes[`${shots[activeShot].id}-${label}`]; return <label key={label} className="upload-tile relative w-full overflow-hidden">{frame ? <img src={frame.url} alt={`${label}缩略图`} className="absolute inset-0 size-full object-cover opacity-70" /> : <ImagePlus />}<span className="relative rounded bg-black/60 px-1.5 py-0.5">{frame?.name ?? `添加${label}`}</span><small className="relative rounded bg-black/60 px-1">{label === '首帧' ? '对齐 0.00 秒' : '对齐视频结束时刻'}</small><input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const key = `${shots[activeShot].id}-${label}`; const url = URL.createObjectURL(file); setKeyframes((current) => ({ ...current, [key]: { name: file.name, url } })); const form = new FormData(); form.append('image', file, file.name); form.append('kind', 'image'); try { const response = await fetch('/api/upload', { method: 'POST', body: form }); const uploaded = await response.json().catch(() => ({})) as { name?: string }; if (response.ok && uploaded.name) setKeyframes((current) => ({ ...current, [key]: { name: file.name, url, comfyName: uploaded.name } })); } catch { /* local preview remains available */ } }} /></label>; })}
               </div>
               <p className="text-[9px] leading-4 text-muted-foreground">底层模式：{keyframeMode === 'first' ? 'I2VA · 从首帧向后发展' : keyframeMode === 'last' ? 'L2VA · 最终落到尾帧' : 'FL2VA · 生成首尾帧之间的连续路径'}</p>
             </div>}
