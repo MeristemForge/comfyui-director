@@ -1,23 +1,26 @@
 'use client';
 
 import { useState } from 'react';
-import { Aperture, ChevronDown, CircleStop, Clapperboard, CloudCog, Film, ImagePlus, MoreHorizontal, Play, Plus, RotateCcw, Settings2, Sparkles, Volume2 } from 'lucide-react';
+import { ChevronDown, CircleStop, Clapperboard, CloudCog, Dice5, Film, FileAudio, ImagePlus, MoreHorizontal, Play, Plus, RotateCcw, Settings2, Sparkles, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
+import { Switch } from '@/components/ui/switch';
 
 const shots = [
   { id: '01', title: '雨夜抵达', detail: '8s · I2VA', state: '已选定' },
-  { id: '02', title: '回望城市', detail: '6s · FL2VA', state: '生成中' },
+  { id: '02', title: '回望城市', detail: '6s · R2VA', state: '生成中' },
   { id: '03', title: '走入车站', detail: '5s · T2VA', state: '草稿' },
 ];
-const modes = ['T2VA', 'I2VA', 'FL2VA', 'L2VA', 'Ref2VA'];
+const modes = ['T2VA', 'I2VA', 'R2VA'];
 
 export default function Home() {
   const [activeShot, setActiveShot] = useState(1);
-  const [mode, setMode] = useState('FL2VA');
+  const [mode, setMode] = useState('R2VA');
   const [progress, setProgress] = useState(68);
   const [generating, setGenerating] = useState(true);
+  const [generateAudio, setGenerateAudio] = useState(true);
+  const [seed, setSeed] = useState('284731906');
   const [prompt, setPrompt] = useState('雨夜，一名年轻女人站在空旷站台边缘，身后的城市灯光被雨水拉成长长的倒影。她缓慢回头看向远处，外套被风轻轻吹动。镜头以小幅度、慢速向前推进，最后停在她克制而坚定的表情上。');
 
   function toggleGeneration() {
@@ -77,23 +80,34 @@ export default function Home() {
         <aside className="control-panel border-l border-border bg-card">
           <div className="border-b border-border px-4 py-3"><p className="text-sm font-semibold">生成设置</p><p className="mt-0.5 text-[10px] text-muted-foreground">H3 视频模型</p></div>
           <div className="control-scroll space-y-5 overflow-y-auto p-4">
-            <div><label className="field-label">生成模式</label><div className="mt-2 grid grid-cols-5 gap-1 rounded-lg bg-muted/50 p-1">{modes.map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-md px-1 py-1.5 text-[10px] font-medium transition ${mode === item ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{item}</button>)}</div></div>
-            <div className="grid grid-cols-2 gap-3"><div><label className="field-label">时长</label><button className="select-like mt-2">6 秒 <ChevronDown /></button></div><div><label className="field-label">画幅</label><button className="select-like mt-2">16:9 <ChevronDown /></button></div></div>
-            <div>
-              <div className="flex items-center justify-between"><label className="field-label">关键帧</label><span className="text-[10px] text-muted-foreground">首帧 + 尾帧</span></div>
-              <div className="mt-2 grid grid-cols-2 gap-2">{['首帧', '尾帧'].map((label) => <button key={label} className="upload-tile"><ImagePlus /><span>{label}</span><small>添加图片</small></button>)}</div>
+            <div><label className="field-label">生成模式</label><div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-muted/50 p-1">{modes.map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-md px-1 py-1.5 text-[10px] font-medium transition ${mode === item ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{item}</button>)}</div></div>
+            <div className="grid grid-cols-3 gap-2">
+              <div><label className="field-label">时长</label><button className="select-like mt-2">6 秒 <ChevronDown /></button></div>
+              <div><label className="field-label">分辨率</label><button className="select-like mt-2">1080P <ChevronDown /></button></div>
+              <div><label className="field-label">画幅</label><button className="select-like mt-2">16:9 <ChevronDown /></button></div>
             </div>
+            <div className="grid grid-cols-[1fr_auto] items-end gap-3">
+              <div><label htmlFor="seed" className="field-label">Noise Seed</label><div className="mt-2 flex h-[34px] items-center rounded-lg border border-border bg-muted/30 pl-2"><input id="seed" value={seed} onChange={(event) => setSeed(event.target.value.replace(/\D/g, ''))} className="min-w-0 flex-1 bg-transparent font-mono text-[11px] outline-none" inputMode="numeric" /><button onClick={() => setSeed(String(Math.floor(Math.random() * 999999999)))} className="grid h-full w-8 place-items-center text-muted-foreground hover:text-primary" aria-label="随机种子"><Dice5 className="size-3.5" /></button></div></div>
+              <label className="flex h-[34px] items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 text-[10px]"><Switch size="sm" checked={generateAudio} onCheckedChange={setGenerateAudio} /><span>生成音频</span></label>
+            </div>
+
+            {mode === 'I2VA' && <div><div className="flex items-center justify-between"><label className="field-label">首帧图片</label><span className="text-[10px] text-muted-foreground">1 / 1</span></div><button className="upload-tile mt-2 w-full"><ImagePlus /><span>添加首帧</span><small>图片将对齐 0.00 秒</small></button></div>}
+
+            {mode === 'R2VA' && <div className="space-y-4 rounded-xl border border-border bg-muted/15 p-3">
+              <div><div className="flex items-center justify-between"><label className="field-label">参考图片</label><span className="text-[10px] text-muted-foreground">0 / 9</span></div><div className="mt-2 grid grid-cols-3 gap-1.5">{Array.from({ length: 9 }, (_, index) => <button key={`picture-${index}`} className="reference-slot" aria-label={`添加参考图片 ${index + 1}`}><ImagePlus /><span>图 {index + 1}</span></button>)}</div></div>
+              <div><div className="flex items-center justify-between"><label className="field-label">参考视频</label><span className="text-[10px] text-muted-foreground">0 / 3</span></div><div className="mt-2 grid grid-cols-3 gap-1.5">{Array.from({ length: 3 }, (_, index) => <button key={`video-${index}`} className="reference-slot wide" aria-label={`添加参考视频 ${index + 1}`}><Video /><span>视频 {index + 1}</span></button>)}</div></div>
+              <div><div className="flex items-center justify-between"><label className="field-label">独立音频</label><span className="text-[10px] text-muted-foreground">0 / 3</span></div><div className="mt-2 grid grid-cols-3 gap-1.5">{Array.from({ length: 3 }, (_, index) => <button key={`audio-${index}`} className="reference-slot wide" aria-label={`添加独立音频 ${index + 1}`}><FileAudio /><span>音频 {index + 1}</span></button>)}</div></div>
+            </div>}
             <div>
               <div className="flex items-center justify-between"><label htmlFor="shot-prompt" className="field-label">镜头描述</label><button className="flex items-center gap-1 text-[10px] text-primary"><Sparkles className="size-3" />整理为 H3 提示词</button></div>
               <Textarea id="shot-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} className="mt-2 min-h-32 resize-none bg-muted/25 text-xs leading-5" />
             </div>
-            <div className="grid grid-cols-2 gap-3"><button className="setting-card"><Aperture /><span><small>运镜</small>缓慢推进</span></button><button className="setting-card"><Volume2 /><span><small>声音</small>环境声 + 配乐</span></button></div>
           </div>
           <div className="border-t border-border p-4"><Button onClick={toggleGeneration} className="h-10 w-full bg-[#f4bd50] font-semibold text-[#17120a] hover:bg-[#ffd070]">{generating ? <CircleStop /> : <Film />}{generating ? '停止生成' : '生成视频'}</Button></div>
         </aside>
 
         <footer className="task-bar col-span-full flex items-center gap-4 border-t border-border bg-card px-4">
-          <div className="flex min-w-0 flex-1 items-center gap-3"><div className="grid size-8 shrink-0 place-items-center rounded-lg bg-amber-400/10 text-amber-400"><CloudCog className="size-4" /></div><div className="min-w-0 flex-1"><div className="mb-1.5 flex items-center justify-between text-[10px]"><span className="truncate">镜头 02 · H3 FL2VA · 正在采样</span><span className="ml-3 font-mono text-muted-foreground">{progress}%</span></div><Progress value={progress} className="[&_[data-slot=progress-indicator]]:bg-amber-400" /></div></div>
+          <div className="flex min-w-0 flex-1 items-center gap-3"><div className="grid size-8 shrink-0 place-items-center rounded-lg bg-amber-400/10 text-amber-400"><CloudCog className="size-4" /></div><div className="min-w-0 flex-1"><div className="mb-1.5 flex items-center justify-between text-[10px]"><span className="truncate">镜头 02 · H3 R2VA · 正在采样</span><span className="ml-3 font-mono text-muted-foreground">{progress}%</span></div><Progress value={progress} className="[&_[data-slot=progress-indicator]]:bg-amber-400" /></div></div>
           <Button variant="ghost" size="icon-sm" aria-label="重试"><RotateCcw /></Button>
         </footer>
       </div>

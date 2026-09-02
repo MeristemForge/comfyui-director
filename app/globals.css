@@ -37,7 +37,7 @@ html, body { min-height: 100%; background: var(--background); }
 body { margin: 0; font-family: var(--font-geist-sans), "Microsoft YaHei", sans-serif; }
 button { cursor: pointer; }
 
-.workspace-grid { display: grid; grid-template-columns: 188px minmax(420px, 1fr) 330px; grid-template-rows: calc(100vh - 114px) 60px; }
+.workspace-grid { display: grid; grid-template-columns: 188px minmax(420px, 1fr) 380px; grid-template-rows: calc(100vh - 114px) 60px; }
 .shot-rail, .preview-stage, .control-panel { min-height: 0; }
 .control-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .field-label { display: block; font-size: 10px; font-weight: 600; letter-spacing: .08em; color: var(--muted-foreground); }
@@ -47,6 +47,10 @@ button { cursor: pointer; }
 .upload-tile:hover { border-color: var(--primary); background: color-mix(in oklch, var(--primary), transparent 92%); }
 .upload-tile svg { width: 16px; color: var(--muted-foreground); }
 .upload-tile small { font-size: 9px; color: var(--muted-foreground); }
+.reference-slot { display: flex; min-height: 48px; align-items: center; justify-content: center; gap: 4px; border: 1px dashed color-mix(in oklch, var(--muted-foreground), transparent 68%); border-radius: 7px; background: color-mix(in oklch, var(--muted), transparent 52%); color: var(--muted-foreground); font-size: 9px; transition: .18s; }
+.reference-slot:hover { border-color: var(--primary); color: var(--primary); background: color-mix(in oklch, var(--primary), transparent 93%); }
+.reference-slot svg { width: 13px; height: 13px; }
+.reference-slot.wide { min-height: 42px; }
 .setting-card { display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 9px; padding: 9px; text-align: left; font-size: 10px; background: color-mix(in oklch, var(--muted), transparent 48%); }
 .setting-card svg { width: 15px; color: var(--primary); }
 .setting-card span { display: grid; gap: 2px; }
@@ -54,7 +58,7 @@ button { cursor: pointer; }
 .task-bar { min-width: 0; }
 
 @media (max-width: 960px) {
-  .workspace-grid { grid-template-columns: 76px minmax(360px, 1fr) 300px; }
+  .workspace-grid { grid-template-columns: 76px minmax(340px, 1fr) 350px; }
   .shot-rail button > div > div:last-child, .shot-rail button > div + div { display: none; }
   .shot-rail button { padding: 8px; }
 }
