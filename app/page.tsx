@@ -533,6 +533,15 @@ export default function Home() {
 
   function referenceMentionOptions() {
     if (!taskShot) return [] as ReferenceMentionOption[];
+    if (activeMode === 'I2VA') {
+      const frameLabels = keyframeMode === 'first_last' ? ['首帧', '尾帧'] : [keyframeMode === 'last' ? '尾帧' : '首帧'];
+      return frameLabels.map((label, index) => {
+        const frame = keyframes[`${taskShot.id}-${label}`];
+        if (!frame) return null;
+        return { kind: 'image' as const, index, token: `<Picture ${index + 1}>`, name: frame.name, url: frame.url, ready: true };
+      }).filter((option): option is ReferenceMentionOption => Boolean(option));
+    }
+    if (activeMode !== 'R2VA') return [] as ReferenceMentionOption[];
     const kindLabels: Record<ReferenceKind, string> = { image: 'Picture', video: 'Video', audio: 'Audio' };
     const kindOrder: Record<ReferenceKind, number> = { image: 0, video: 1, audio: 2 };
     return Object.entries(referenceAssets)
@@ -790,6 +799,7 @@ export default function Home() {
     if (activeSubmitting) return;
     setVideoUrl(null);
     const firstFrame = keyframes[`${shotId}-首帧`];
+    const firstFrameName = firstFrame?.comfyName ?? firstFrame?.name;
     const submittedSeed = seedMode === 'random' ? String(Math.floor(Math.random() * 9000000000000000) + 1000000000000000) : seed;
     const startedAt = Date.now();
     setSubmittingShots((current) => ({ ...current, [shotId]: true }));
@@ -800,7 +810,7 @@ export default function Home() {
       videos: Array.from({ length: profile.videos }, (_, index) => referenceComfyFile(referenceAssets[referenceKey(shotId, 'video', index)])).filter((name): name is string => Boolean(name)),
       audios: Array.from({ length: profile.audios }, (_, index) => referenceComfyFile(referenceAssets[referenceKey(shotId, 'audio', index)])).filter((name): name is string => Boolean(name)),
     } : undefined;
-    void fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shot_id: shotId, shot_title: taskShot.title, prompt, seed: submittedSeed, duration, resolution: availableResolution, fps, model, turbo: turboMode, mode: activeMode, image: firstFrame?.comfyName, client_id: clientId, ...(references ? { images: references.images, videos: references.videos, audios: references.audios } : {}) }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); setSubmittingShots((current) => { const next = { ...current }; delete next[shotId]; return next; }); setShotTasks((current) => ({ ...current, [shotId]: { promptId: result.prompt_id, seed: submittedSeed, seedMode, prompt, title: taskShot.title, fileName, duration: taskSettings.duration, resolution: taskSettings.resolution, aspect: taskSettings.aspect, fps: taskSettings.fps, mode: taskSettings.mode, model: taskSettings.model, turbo: taskSettings.turbo, steps: turboMode ? 4 : 20, startedAt, keyframeMode, inputImage: firstFrame?.comfyName, referenceImages: references?.images, referenceVideos: references?.videos, referenceAudios: references?.audios } })); if (activeShotIdRef.current === shotId) setGenerationStatus('已提交，等待 ComfyUI 排队'); }).catch(() => { setSubmittingShots((current) => { const next = { ...current }; delete next[shotId]; return next; }); setShots((items) => items.map((item) => item.id === shotId ? { ...item, state: '失败' } : item)); if (activeShotIdRef.current === shotId) setGenerationStatus('提交失败'); });
+    void fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shot_id: shotId, shot_title: taskShot.title, prompt, seed: submittedSeed, duration, resolution: availableResolution, fps, model, turbo: turboMode, mode: activeMode, image: firstFrameName, client_id: clientId, ...(references ? { images: references.images, videos: references.videos, audios: references.audios } : {}) }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); setSubmittingShots((current) => { const next = { ...current }; delete next[shotId]; return next; }); setShotTasks((current) => ({ ...current, [shotId]: { promptId: result.prompt_id, seed: submittedSeed, seedMode, prompt, title: taskShot.title, fileName, duration: taskSettings.duration, resolution: taskSettings.resolution, aspect: taskSettings.aspect, fps: taskSettings.fps, mode: taskSettings.mode, model: taskSettings.model, turbo: taskSettings.turbo, steps: turboMode ? 4 : 20, startedAt, keyframeMode, inputImage: firstFrameName, referenceImages: references?.images, referenceVideos: references?.videos, referenceAudios: references?.audios } })); if (activeShotIdRef.current === shotId) setGenerationStatus('已提交，等待 ComfyUI 排队'); }).catch(() => { setSubmittingShots((current) => { const next = { ...current }; delete next[shotId]; return next; }); setShots((items) => items.map((item) => item.id === shotId ? { ...item, state: '失败' } : item)); if (activeShotIdRef.current === shotId) setGenerationStatus('提交失败'); });
     setGenerationStatus('正在提交');
     setShots((items) => items.map((item) => item.id === shotId ? { ...item, state: '生成中' } : item));
     setShotProgress((current) => ({ ...current, [shotId]: 0 }));
