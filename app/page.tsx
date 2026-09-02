@@ -17,6 +17,7 @@ const modes = ['T2VA', 'I2VA', 'R2VA'];
 export default function Home() {
   const [activeShot, setActiveShot] = useState(1);
   const [mode, setMode] = useState('R2VA');
+  const [keyframeMode, setKeyframeMode] = useState<'first' | 'last' | 'first_last'>('first');
   const [progress, setProgress] = useState(68);
   const [generating, setGenerating] = useState(true);
   const [generateAudio, setGenerateAudio] = useState(true);
@@ -91,7 +92,15 @@ export default function Home() {
               <label className="flex h-[34px] items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 text-[10px]"><Switch size="sm" checked={generateAudio} onCheckedChange={setGenerateAudio} /><span>生成音频</span></label>
             </div>
 
-            {mode === 'I2VA' && <div><div className="flex items-center justify-between"><label className="field-label">首帧图片</label><span className="text-[10px] text-muted-foreground">1 / 1</span></div><button className="upload-tile mt-2 w-full"><ImagePlus /><span>添加首帧</span><small>图片将对齐 0.00 秒</small></button></div>}
+            {mode === 'I2VA' && <div className="space-y-3 rounded-xl border border-border bg-muted/15 p-3">
+              <div><label className="field-label">关键帧方式</label><div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-muted/50 p-1">
+                {([['first', '首帧'], ['last', '尾帧'], ['first_last', '首尾帧']] as const).map(([value, label]) => <button key={value} onClick={() => setKeyframeMode(value)} className={`rounded-md px-2 py-1.5 text-[10px] font-medium transition ${keyframeMode === value ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{label}</button>)}
+              </div></div>
+              <div className={`grid gap-2 ${keyframeMode === 'first_last' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                {(keyframeMode === 'last' ? ['尾帧'] : keyframeMode === 'first_last' ? ['首帧', '尾帧'] : ['首帧']).map((label) => <button key={label} className="upload-tile w-full"><ImagePlus /><span>添加{label}</span><small>{label === '首帧' ? '对齐 0.00 秒' : '对齐视频结束时刻'}</small></button>)}
+              </div>
+              <p className="text-[9px] leading-4 text-muted-foreground">底层模式：{keyframeMode === 'first' ? 'I2VA · 从首帧向后发展' : keyframeMode === 'last' ? 'L2VA · 最终落到尾帧' : 'FL2VA · 生成首尾帧之间的连续路径'}</p>
+            </div>}
 
             {mode === 'R2VA' && <div className="space-y-4 rounded-xl border border-border bg-muted/15 p-3">
               <div><div className="flex items-center justify-between"><label className="field-label">参考图片</label><span className="text-[10px] text-muted-foreground">0 / 9</span></div><div className="mt-2 grid grid-cols-3 gap-1.5">{Array.from({ length: 9 }, (_, index) => <button key={`picture-${index}`} className="reference-slot" aria-label={`添加参考图片 ${index + 1}`}><ImagePlus /><span>图 {index + 1}</span></button>)}</div></div>
