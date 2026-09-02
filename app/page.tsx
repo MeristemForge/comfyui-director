@@ -441,21 +441,6 @@ export default function Home() {
       if (activeShotIdRef.current === shotId) setGenerationStatus('已完成，保存到输出目录失败');
     }
   }
-  async function uploadFrame(event: React.ChangeEvent<HTMLDivElement>) {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    const form = new FormData();
-    form.append('image', file, file.name);
-    form.append('kind', 'image');
-    const response = await fetch('/api/upload', { method: 'POST', body: form });
-    const uploaded = await response.json().catch(() => ({})) as { name?: string; error?: string };
-    if (!response.ok || !uploaded.name) throw new Error(uploaded.error ?? `上传首帧失败（HTTP ${response.status}）`);
-    const label = keyframeMode === 'last' ? '尾帧' : '首帧';
-    const key = `${shots[activeShot].id}-${label}`;
-    setKeyframes((current) => ({ ...current, [key]: { name: file.name, url: URL.createObjectURL(file), comfyName: uploaded.name } }));
-  }
-
   function referenceKey(shotId: string, kind: ReferenceKind, index: number) {
     return `${shotId}-${kind}-${index}`;
   }
@@ -956,7 +941,7 @@ export default function Home() {
               <div><label className="field-label">关键帧方式</label><div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-muted/50 p-1">
                 {([['first', '首帧'], ['last', '尾帧'], ['first_last', '首尾帧']] as const).map(([value, label]) => <button key={value} onClick={() => setKeyframeMode(value)} className={`rounded-md px-2 py-1.5 text-[10px] font-medium transition ${keyframeMode === value ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{label}</button>)}
               </div></div>
-              <div onChange={uploadFrame} className={`grid gap-2 ${keyframeMode === 'first_last' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              <div className={`grid gap-2 ${keyframeMode === 'first_last' ? 'grid-cols-2' : 'grid-cols-1'}`}>
               {(keyframeMode === 'last' ? ['尾帧'] : keyframeMode === 'first_last' ? ['首帧', '尾帧'] : ['首帧']).map((label) => { const frame = keyframes[`${shots[activeShot].id}-${label}`]; return <label key={label} className="upload-tile relative w-full overflow-hidden">{frame ? <img src={frame.url} alt={`${label}缩略图`} className="absolute inset-0 size-full object-cover opacity-70" /> : <ImagePlus />}<span className="relative rounded bg-black/60 px-1.5 py-0.5">{frame?.name ?? `添加${label}`}</span><small className="relative rounded bg-black/60 px-1">{label === '首帧' ? '对齐 0.00 秒' : '对齐视频结束时刻'}</small><input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const key = `${shots[activeShot].id}-${label}`; const url = URL.createObjectURL(file); setKeyframes((current) => ({ ...current, [key]: { name: file.name, url } })); const form = new FormData(); form.append('image', file, file.name); form.append('kind', 'image'); try { const response = await fetch('/api/upload', { method: 'POST', body: form }); const uploaded = await response.json().catch(() => ({})) as { name?: string }; if (response.ok && uploaded.name) setKeyframes((current) => ({ ...current, [key]: { name: file.name, url, comfyName: uploaded.name } })); } catch { /* local preview remains available */ } }} /></label>; })}
               </div>
               <p className="text-[9px] leading-4 text-muted-foreground">底层模式：{keyframeMode === 'first' ? 'I2VA · 从首帧向后发展' : keyframeMode === 'last' ? 'L2VA · 最终落到尾帧' : 'FL2VA · 生成首尾帧之间的连续路径'}</p>
