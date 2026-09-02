@@ -81,7 +81,6 @@ export default function Home() {
         <aside className="control-panel border-l border-border bg-card">
           <div className="border-b border-border px-4 py-3"><p className="text-sm font-semibold">生成设置</p><p className="mt-0.5 text-[10px] text-muted-foreground">H3 视频模型</p></div>
           <div className="control-scroll space-y-5 overflow-y-auto p-4">
-            <div><label className="field-label">生成模式</label><div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-muted/50 p-1">{modes.map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-md px-1 py-1.5 text-[10px] font-medium transition ${mode === item ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{item}</button>)}</div></div>
             <div className="grid grid-cols-3 gap-2">
               <div><label className="field-label">时长</label><button className="select-like mt-2">6 秒 <ChevronDown /></button></div>
               <div><label className="field-label">分辨率</label><button className="select-like mt-2">1080P <ChevronDown /></button></div>
@@ -91,6 +90,7 @@ export default function Home() {
               <div><label htmlFor="seed" className="field-label">Noise Seed</label><div className="mt-2 flex h-[34px] items-center rounded-lg border border-border bg-muted/30 pl-2"><input id="seed" value={seed} onChange={(event) => setSeed(event.target.value.replace(/\D/g, ''))} className="min-w-0 flex-1 bg-transparent font-mono text-[11px] outline-none" inputMode="numeric" /><button onClick={() => setSeed(String(Math.floor(Math.random() * 999999999)))} className="grid h-full w-8 place-items-center text-muted-foreground hover:text-primary" aria-label="随机种子"><Dice5 className="size-3.5" /></button></div></div>
               <label className="flex h-[34px] items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 text-[10px]"><Switch size="sm" checked={generateAudio} onCheckedChange={setGenerateAudio} /><span>生成音频</span></label>
             </div>
+            <div><label className="field-label">生成模式</label><div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-muted/50 p-1">{modes.map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-md px-1 py-1.5 text-[10px] font-medium transition ${mode === item ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{item}</button>)}</div></div>
 
             {mode === 'I2VA' && <div className="space-y-3 rounded-xl border border-border bg-muted/15 p-3">
               <div><label className="field-label">关键帧方式</label><div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-muted/50 p-1">
