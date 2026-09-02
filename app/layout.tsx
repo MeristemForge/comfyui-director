@@ -13,8 +13,20 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://comfyui-director.wujin-developer.chatgpt.site'),
   title: '导演台 · ComfyUI 视频工作台',
   description: '面向 H3 与多视频模型的轻量 ComfyUI 导演工作台',
+  openGraph: {
+    title: '导演台 · ComfyUI 视频工作台',
+    description: '面向 H3 与多视频模型的轻量 ComfyUI 视频导演工作台',
+    images: ['/og.png'],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: '导演台 · ComfyUI 视频工作台',
+    description: '面向 H3 与多视频模型的轻量 ComfyUI 视频导演工作台',
+    images: ['/og.png'],
+  },
 };
 
 export default function RootLayout({
