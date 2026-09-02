@@ -1,0 +1,72 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background); --color-foreground: var(--foreground);
+  --color-card: var(--card); --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover); --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary); --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary); --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted); --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent); --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive); --color-border: var(--border);
+  --color-input: var(--input); --color-ring: var(--ring);
+  --font-sans: var(--font-geist-sans); --font-mono: var(--font-geist-mono);
+  --radius-sm: calc(var(--radius) * .6); --radius-md: calc(var(--radius) * .8);
+  --radius-lg: var(--radius); --radius-xl: calc(var(--radius) * 1.4);
+}
+
+:root {
+  color-scheme: dark;
+  --background: oklch(.135 .008 264); --foreground: oklch(.94 .006 90);
+  --card: oklch(.165 .009 264); --card-foreground: oklch(.94 .006 90);
+  --popover: oklch(.185 .01 264); --popover-foreground: oklch(.94 .006 90);
+  --primary: oklch(.79 .14 78); --primary-foreground: oklch(.17 .025 70);
+  --secondary: oklch(.235 .012 264); --secondary-foreground: oklch(.92 .006 90);
+  --muted: oklch(.21 .009 264); --muted-foreground: oklch(.64 .01 264);
+  --accent: oklch(.25 .016 264); --accent-foreground: oklch(.95 .006 90);
+  --destructive: oklch(.64 .19 25); --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 12%); --ring: oklch(.79 .14 78); --radius: .55rem;
+}
+
+* { border-color: var(--border); }
+html, body { min-height: 100%; background: var(--background); }
+body { margin: 0; font-family: var(--font-geist-sans), "Microsoft YaHei", sans-serif; }
+button { cursor: pointer; }
+
+.workspace-grid { display: grid; grid-template-columns: 188px minmax(420px, 1fr) 330px; grid-template-rows: calc(100vh - 114px) 60px; }
+.shot-rail, .preview-stage, .control-panel { min-height: 0; }
+.control-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.field-label { display: block; font-size: 10px; font-weight: 600; letter-spacing: .08em; color: var(--muted-foreground); }
+.select-like { display: flex; width: 100%; height: 34px; align-items: center; justify-content: space-between; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in oklch, var(--muted), transparent 35%); padding: 0 9px; font-size: 11px; }
+.select-like svg { width: 13px; color: var(--muted-foreground); }
+.upload-tile { display: grid; min-height: 84px; place-items: center; align-content: center; gap: 3px; border: 1px dashed color-mix(in oklch, var(--muted-foreground), transparent 65%); border-radius: 9px; background: color-mix(in oklch, var(--muted), transparent 55%); font-size: 11px; transition: .2s; }
+.upload-tile:hover { border-color: var(--primary); background: color-mix(in oklch, var(--primary), transparent 92%); }
+.upload-tile svg { width: 16px; color: var(--muted-foreground); }
+.upload-tile small { font-size: 9px; color: var(--muted-foreground); }
+.setting-card { display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 9px; padding: 9px; text-align: left; font-size: 10px; background: color-mix(in oklch, var(--muted), transparent 48%); }
+.setting-card svg { width: 15px; color: var(--primary); }
+.setting-card span { display: grid; gap: 2px; }
+.setting-card small { color: var(--muted-foreground); }
+.task-bar { min-width: 0; }
+
+@media (max-width: 960px) {
+  .workspace-grid { grid-template-columns: 76px minmax(360px, 1fr) 300px; }
+  .shot-rail button > div > div:last-child, .shot-rail button > div + div { display: none; }
+  .shot-rail button { padding: 8px; }
+}
+
+@media (max-width: 720px) {
+  .workspace-grid { display: flex; min-height: calc(100vh - 56px); flex-direction: column; }
+  .shot-rail { order: 1; display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+  .shot-rail > div:first-child { min-width: 70px; }
+  .shot-rail > div:last-child { display: flex; gap: 4px; padding: 6px; }
+  .shot-rail button { min-width: 58px; }
+  .preview-stage { order: 2; min-height: 380px; }
+  .control-panel { order: 3; border-left: 0; border-top: 1px solid var(--border); }
+  .control-scroll { overflow: visible; }
+  .task-bar { order: 4; min-height: 60px; }
+}
