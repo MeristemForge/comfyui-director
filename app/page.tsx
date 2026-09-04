@@ -2625,6 +2625,19 @@ export default function Home() {
     if (!shotId || !projectDirectory) return;
     const parentIndex = assetSubjectParentIndexRef.current;
     if (
+      parentIndex !== null &&
+      (promptSubjects[shotId]?.[parentIndex]?.children ?? []).some(
+        (child) => child.name.trim().toLowerCase() === asset.name.trim().toLowerCase(),
+      )
+    ) {
+      setAssetSubjectPickerOpen(false);
+      setAssetSubjectParentIndex(null);
+      assetSubjectParentIndexRef.current = null;
+      setGenerationStatus(`子主体“${asset.name}”已经添加`);
+      return;
+    }
+    if (
+      parentIndex === null &&
       (promptSubjects[shotId] ?? []).some(
         (subject) =>
           subject.name.trim().toLowerCase() === name.trim().toLowerCase(),
@@ -2770,6 +2783,7 @@ export default function Home() {
     if (!shotId || !projectDirectory) return;
     const parentIndex = assetSubjectParentIndexRef.current;
     if (
+      parentIndex === null &&
       (promptSubjects[shotId] ?? []).some(
         (subject) =>
           subject.name.trim().toLowerCase() === asset.name.trim().toLowerCase(),
@@ -2820,10 +2834,21 @@ export default function Home() {
           (asset.type === "clothing"
             ? "clothing"
             : asset.type === "prop"
-              ? "object"
-              : asset.type === "scene"
-                ? "environment"
-                : "composite");
+            ? "object"
+            : asset.type === "scene"
+              ? "environment"
+              : "composite");
+        const existingKey = Object.entries(referenceAssets).find(
+          ([key, existing]) =>
+            key.startsWith(`${shotId}-${kind}-`) &&
+            existing.kind === kind &&
+            existing.name.trim().toLowerCase() === file.name.trim().toLowerCase(),
+        )?.[0];
+        if (existingKey) {
+          uploadedKeys.push(existingKey);
+          uploadedRoles.push(role);
+          continue;
+        }
         const index = nextReferenceIndex(shotId, kind, uploadedKeys);
         const key = referenceKey(shotId, kind, index);
         const response = await fetch("/api/upload", {
