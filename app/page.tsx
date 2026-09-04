@@ -1956,37 +1956,6 @@ export default function Home() {
       meta: "864×480 · 16:9 · 24fps",
       state: "草稿",
     };
-    const sourceShotId = shots[activeShot]?.id;
-    const inheritedSubjects = sourceShotId
-      ? (promptSubjects[sourceShotId] ?? []).map((subject) => ({
-          ...subject,
-          assetKeys: subject.assetKeys.map((assetKey) =>
-            assetKey.startsWith(`${sourceShotId}-`)
-              ? `${id}-${assetKey.slice(sourceShotId.length + 1)}`
-              : assetKey,
-          ),
-          assetRoles: subject.assetRoles
-            ? Object.fromEntries(
-                Object.entries(subject.assetRoles).map(([assetKey, role]) => [
-                  assetKey.startsWith(`${sourceShotId}-`)
-                    ? `${id}-${assetKey.slice(sourceShotId.length + 1)}`
-                    : assetKey,
-                  role,
-                ]),
-              )
-            : undefined,
-        }))
-      : [];
-    const inheritedAssets = sourceShotId
-      ? Object.fromEntries(
-          Object.entries(referenceAssets)
-            .filter(([assetKey]) => assetKey.startsWith(`${sourceShotId}-`))
-            .map(([assetKey, asset]) => [
-              `${id}-${assetKey.slice(sourceShotId.length + 1)}`,
-              asset,
-            ]),
-        )
-      : {};
     setShots((current) => [...current, shot]);
     try {
       await writeClipManifest(shot, {
@@ -2008,9 +1977,10 @@ export default function Home() {
       ...current,
       [id]: { ...promptBuilderDefaults },
     }));
-    setPromptSubjects((current) => ({ ...current, [id]: inheritedSubjects }));
-    if (Object.keys(inheritedAssets).length)
-      setReferenceAssets((current) => ({ ...current, ...inheritedAssets }));
+    // Each shot owns its subjects and references. Reuse is explicit via the
+    // subject library, so a new shot cannot accidentally process prior-shot
+    // characters that were never added to it.
+    setPromptSubjects((current) => ({ ...current, [id]: [] }));
     setShotSettings((current) => ({
       ...current,
       [id]: { ...shotSettingDefaults },
@@ -2614,6 +2584,15 @@ export default function Home() {
   function useProjectSubject(subject: PromptSubject) {
     const shotId = shots[activeShot]?.id;
     if (!shotId) return;
+    const remappedAssets: Record<string, ReferenceAsset> = {};
+    const assetKeyMap = new Map<string, string>();
+    subject.assetKeys.forEach((assetKey, index) => {
+      const asset = referenceAssets[assetKey];
+      const kind = asset?.kind ?? (assetKey.includes("-video-") ? "video" : assetKey.includes("-audio-") ? "audio" : "image");
+      const nextKey = referenceKey(shotId, kind, nextReferenceIndex(shotId, kind, Object.keys(remappedAssets)));
+      assetKeyMap.set(assetKey, nextKey);
+      if (asset) remappedAssets[nextKey] = asset;
+    });
     setPromptSubjects((current) => {
       const existing = current[shotId] ?? [];
       if (
@@ -2630,12 +2609,16 @@ export default function Home() {
           ...existing,
           {
             ...subject,
-            assetKeys: [...subject.assetKeys],
-            assetRoles: { ...subject.assetRoles },
+            assetKeys: subject.assetKeys.map((key) => assetKeyMap.get(key) ?? key),
+            assetRoles: Object.fromEntries(
+              subject.assetKeys.map((key) => [assetKeyMap.get(key) ?? key, subject.assetRoles?.[key] ?? "composite"]),
+            ),
           },
         ],
       };
     });
+    if (Object.keys(remappedAssets).length)
+      setReferenceAssets((current) => ({ ...current, ...remappedAssets }));
   }
   async function bindCharacterAsset(name: string) {
     const shotId = taskShot?.id;
@@ -6958,9 +6941,17 @@ export default function Home() {
                       添加主体
                     </Button>
                   </div>
-                  {projectSubjectLibrary().length > 0 && (
+                  {projectSubjectLibrary().filter((subject) =>
+                    (promptSubjects[taskShot.id] ?? []).some(
+                      (item) => item.name.trim().toLowerCase() === subject.name.trim().toLowerCase(),
+                    ),
+                  ).length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1.5">
-                      {projectSubjectLibrary().map((subject) => {
+                      {projectSubjectLibrary().filter((subject) =>
+                        (promptSubjects[taskShot.id] ?? []).some(
+                          (item) => item.name.trim().toLowerCase() === subject.name.trim().toLowerCase(),
+                        ),
+                      ).map((subject) => {
                         const used = (promptSubjects[taskShot.id] ?? []).some(
                           (item) =>
                             item.name.trim().toLowerCase() ===
