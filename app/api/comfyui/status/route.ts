@@ -1,8 +1,11 @@
+import { normalizeComfyUrl } from '../../comfy-url';
+
 export const runtime = 'nodejs';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const response = await fetch('http://127.0.0.1:8188/system_stats', { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+    const url = new URL(request.url).searchParams.get('comfy_url');
+    const response = await fetch(`${normalizeComfyUrl(url)}/system_stats`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
     if (!response.ok) return Response.json({ connected: false });
     return Response.json({ connected: true });
   } catch {

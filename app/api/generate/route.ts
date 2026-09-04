@@ -1,10 +1,12 @@
 import t2vTemplate from '../../../comfyui-workflows/minimax-h3/video_minimax_h3_t2v.json';
 import i2vTemplate from '../../../comfyui-workflows/minimax-h3/video_minimax_h3_i2v.json';
 import r2vTemplate from '../../../comfyui-workflows/minimax-h3/video_minimax_h3_r2v.json';
+import { normalizeComfyUrl } from '../comfy-url';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    const comfyUrl = normalizeComfyUrl(body.comfy_url);
     const template = body.mode === 'I2VA' ? i2vTemplate : body.mode === 'R2VA' ? r2vTemplate : t2vTemplate;
     const workflow = structuredClone(template) as Record<string, { inputs?: Record<string, unknown>; class_type?: string }>;
     // API exports from subgraphs may prefix node IDs; flatten them for ComfyUI's prompt endpoint.
@@ -17,8 +19,20 @@ export async function POST(request: Request) {
         if (typeof value === 'string' && value.includes(':')) node.inputs[key] = value.split(':').pop()!;
       }
     }
-    const [width, height] = String(body.resolution ?? '1344 × 768').split('×').map((value) => Number(value.trim()));
+    let [width, height] = String(body.resolution ?? '1344 × 768').split('×').map((value) => Number(value.trim()));
     if (!Number.isFinite(width) || !Number.isFinite(height)) return Response.json({ error: '无效的分辨率' }, { status: 400 });
+    // Keep the selected pixel budget while honoring portrait/square/wide aspect
+    // choices. H3 requires dimensions aligned to a 32-pixel grid.
+    const aspect = String(body.aspect ?? '16:9').trim();
+    const aspectMatch = aspect.match(/^(\d+(?:\.\d+)?):([\d.]+)$/);
+    if (aspectMatch) {
+      const ratio = Number(aspectMatch[1]) / Number(aspectMatch[2]);
+      if (Number.isFinite(ratio) && ratio > 0 && aspect !== '16:9') {
+        const area = width * height;
+        width = Math.max(32, Math.round(Math.sqrt(area * ratio) / 32) * 32);
+        height = Math.max(32, Math.round(Math.sqrt(area / ratio) / 32) * 32);
+      }
+    }
 
     const node = (type: string) => Object.values(normalized).find((item) => item.class_type === type);
     const turbo = Boolean(body.turbo) || body.model === 'H3-加速';
@@ -30,6 +44,31 @@ export async function POST(request: Request) {
     node('RandomNoise')!.inputs!.noise_seed = Number(body.seed) || Math.floor(Math.random() * 9000000000000000) + 1000000000000000;
     const videoNode = Object.values(normalized).find((item) => item.class_type?.startsWith('MiniMaxH3'))!;
     const imageNode = node('LoadImage');
+    if (body.mode === 'I2VA') {
+      const keyframeMode = body.keyframe_mode === 'last' || body.keyframe_mode === 'first_last' ? body.keyframe_mode : 'first';
+      const firstImage = typeof body.image === 'string' && body.image.trim() ? body.image.trim() : '';
+      const lastImage = typeof body.last_image === 'string' && body.last_image.trim() ? body.last_image.trim() : '';
+      if ((keyframeMode === 'first' || keyframeMode === 'first_last') && !firstImage) return Response.json({ error: 'I2VA 首帧未上传' }, { status: 400 });
+      if ((keyframeMode === 'last' || keyframeMode === 'first_last') && !lastImage) return Response.json({ error: '关键帧模式需要尾帧' }, { status: 400 });
+      if (videoNode.inputs) {
+        delete videoNode.inputs.first_frame;
+        delete videoNode.inputs.last_frame;
+        const imageNodeId = Object.entries(normalized).find(([, item]) => item === imageNode)?.[0];
+        if (firstImage && imageNode) {
+          imageNode.inputs!.image = firstImage;
+          videoNode.inputs.first_frame = [imageNodeId ?? '114', 0];
+        } else if (imageNodeId) {
+          // Do not leave the template's example image as an unrelated node in
+          // last-frame-only mode; ComfyUI may still validate it.
+          delete normalized[imageNodeId];
+        }
+        if (lastImage) {
+          const lastNodeId = nextNumericNodeId(normalized);
+          normalized[lastNodeId] = { class_type: 'LoadImage', inputs: { image: lastImage } };
+          videoNode.inputs.last_frame = [lastNodeId, 0];
+        }
+      }
+    }
     if (body.mode === 'R2VA') {
       const nextNodeId = () => String(Math.max(0, ...Object.keys(normalized).map((id) => Number(id)).filter(Number.isFinite)) + 1);
       const addNode = (classType: string, inputs: Record<string, unknown>) => {
@@ -74,7 +113,7 @@ export async function POST(request: Request) {
     const saveVideoNode = node('SaveVideo');
     if (saveVideoNode) saveVideoNode.inputs!.filename_prefix = `director/shot-${shotId}-${shotTitle}-${Date.now().toString(36)}`;
     const clientId = typeof body.client_id === 'string' && body.client_id ? body.client_id : 'comfyui-director';
-    const response = await fetch('http://127.0.0.1:8188/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: normalized, client_id: clientId }) });
+    const response = await fetch(`${comfyUrl}/prompt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: normalized, client_id: clientId }) });
     const result = await response.json().catch(() => ({})) as {
       prompt_id?: unknown;
       error?: unknown;
@@ -103,4 +142,8 @@ export async function POST(request: Request) {
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : '生成请求失败' }, { status: 500 });
   }
+}
+
+function nextNumericNodeId(workflow: Record<string, unknown>) {
+  return String(Math.max(0, ...Object.keys(workflow).map((id) => Number(id)).filter(Number.isFinite)) + 1);
 }

@@ -1,4 +1,5 @@
 export const runtime = 'nodejs';
+import { normalizeComfyUrl } from '../../comfy-url';
 
 function findVideoOutput(item: { outputs?: Record<string, unknown> }) {
   const outputEntries = Object.values(item.outputs ?? {}) as Array<Record<string, unknown>>;
@@ -30,14 +31,15 @@ export async function GET(request: Request) {
   const shot = new URL(request.url).searchParams.get('shot') ?? 'unknown';
   const seed = new URL(request.url).searchParams.get('seed');
   const seedMode = new URL(request.url).searchParams.get('seed_mode') ?? 'fixed';
+  const comfyUrl = normalizeComfyUrl(new URL(request.url).searchParams.get('comfy_url'));
   if (!id) return Response.json({ error: '缺少任务 ID' }, { status: 400 });
   try {
-    const response = await fetch(`http://127.0.0.1:8188/history/${encodeURIComponent(id)}`);
+    const response = await fetch(`${comfyUrl}/history/${encodeURIComponent(id)}`);
     const data = await response.json();
     const item = data[id];
     if (!item) {
       try {
-        const queueResponse = await fetch('http://127.0.0.1:8188/queue');
+        const queueResponse = await fetch(`${comfyUrl}/queue`);
         const queue = await queueResponse.json() as { queue_pending?: unknown[]; queue_running?: unknown[] };
         const pending = Array.isArray(queue.queue_pending) ? queue.queue_pending : [];
         const running = Array.isArray(queue.queue_running) ? queue.queue_running : [];
@@ -59,7 +61,7 @@ export async function GET(request: Request) {
     if (!output) return Response.json({ status: 'running' });
     // The local Worker runtime cannot write arbitrary Windows paths. Return a
     // same-origin proxy URL; the browser saves it via the selected directory handle.
-    const url = `/api/video?filename=${encodeURIComponent(output.filename)}&subfolder=${encodeURIComponent(output.subfolder ?? '')}`;
+    const url = `/api/video?filename=${encodeURIComponent(output.filename)}&subfolder=${encodeURIComponent(output.subfolder ?? '')}&type=${encodeURIComponent(output.type ?? 'output')}&comfy_url=${encodeURIComponent(comfyUrl)}`;
     return Response.json({ status: 'completed', url, source: output.filename, source_subfolder: output.subfolder ?? '', shot, noise_seed: seed, seed_mode: seedMode });
   } catch (error) { return Response.json({ status: 'error', error: error instanceof Error ? error.message : '状态查询失败' }, { status: 500 }); }
 }
