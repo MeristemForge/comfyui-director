@@ -1371,6 +1371,48 @@ export default function Home() {
       },
     }));
   }, [activeMode, taskShot?.id, promptSubjects]);
+
+  useEffect(() => {
+    if (!taskShot) return;
+    const shotId = taskShot.id;
+    const remap = new Map<string, string>();
+    (['image', 'video', 'audio'] as ReferenceKind[]).forEach((kind) => {
+      const prefix = `${shotId}-${kind}-`;
+      const entries = Object.entries(referenceAssets)
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, asset]) => ({
+          key,
+          asset,
+          index: Number(key.slice(prefix.length)),
+        }))
+        .filter((entry) => Number.isInteger(entry.index))
+        .sort((left, right) => left.index - right.index);
+      entries.forEach((entry, index) => {
+        const nextKey = referenceKey(shotId, kind, index);
+        if (entry.key !== nextKey) remap.set(entry.key, nextKey);
+      });
+    });
+    if (!remap.size) return;
+    setReferenceAssets((current) => {
+      const next = { ...current };
+      remap.forEach((nextKey, oldKey) => {
+        const asset = next[oldKey];
+        if (!asset) return;
+        delete next[oldKey];
+        next[nextKey] = asset;
+      });
+      return next;
+    });
+    setPromptSubjects((current) => {
+      const subjects = current[shotId];
+      if (!subjects?.length) return current;
+      const remapKey = (assetKey: string) => remap.get(assetKey) ?? assetKey;
+      return {
+        ...current,
+        [shotId]: remapSubjectReferenceKeys(subjects, remapKey),
+      };
+    });
+  }, [taskShot?.id, referenceAssets]);
   const frameButtonTitle = !videoUrl
     ? "先生成或加载当前镜头视频"
     : activeShot >= shots.length - 1
@@ -2395,13 +2437,15 @@ export default function Home() {
     const shotId = shots[activeShot]?.id;
     if (!shotId) return;
     const subject = promptSubjects[shotId]?.[index];
-    const removedKeys = new Set(subject?.assetKeys ?? []);
+    const collectSubjectKeys = (item: PromptSubject): string[] => [
+      ...item.assetKeys,
+      ...(item.children ?? []).flatMap(collectSubjectKeys),
+    ];
+    const removedKeys = new Set(subject ? collectSubjectKeys(subject) : []);
     const remainingSubjects = (promptSubjects[shotId] ?? []).filter(
       (_, subjectIndex) => subjectIndex !== index,
     );
-    const retainedKeys = new Set(
-      remainingSubjects.flatMap((item) => item.assetKeys),
-    );
+    const retainedKeys = new Set(remainingSubjects.flatMap(collectSubjectKeys));
     setPromptSubjects((current) => ({
       ...current,
       [shotId]: remainingSubjects,
