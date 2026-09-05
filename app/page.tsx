@@ -43,6 +43,8 @@ type Shot = {
   state: string;
 };
 type ProjectShotRecord = Shot & {
+  references?: { subjects?: PromptSubject[] };
+  generation?: { mode?: string; duration?: number; resolution?: string; aspect?: string; fps?: number; model?: keyof typeof modelProfiles; turbo?: boolean; seed?: string; seedMode?: "fixed" | "random"; keyframeMode?: string; steps?: number };
   mode?: string;
   duration?: number;
   resolution?: string;
@@ -51,6 +53,7 @@ type ProjectShotRecord = Shot & {
   subjectIds?: string[];
   subjects?: PromptSubject[];
   prompt?: {
+    subject_definitions?: string;
     summary?: string;
     retention_analysis?: string;
     detailed_description?: PromptSegment[];
@@ -130,6 +133,41 @@ type PromptSubject = {
   assetRoles?: Record<string, string>;
   children?: PromptSubject[];
 };
+function referenceLabel(assetKey: string) {
+  const match = assetKey.match(/-(image|video|audio)-(\d+)$/);
+  if (!match) return null;
+  const label = match[1] === "image" ? "Picture" : match[1] === "video" ? "Video" : "Audio";
+  return `<${label} ${Number(match[2]) + 1}>`;
+}
+function referenceRoleText(role: string) {
+  return ({
+    identity: "facial identity and frontal appearance reference",
+    full_body: "full-body multi-view reference",
+    clothing: "authoritative wardrobe reference",
+    pose: "pose and body-language reference",
+    environment: "environment reference",
+    object: "object-design reference",
+    style: "visual-style reference",
+  } as Record<string, string>)[role] ?? "visual reference";
+}
+function buildSubjectDefinitions(subjects: PromptSubject[]) {
+  return subjects.filter((subject) => subject.name.trim()).map((subject, index) => {
+    const own = subject.assetKeys.map((key) => {
+      const label = referenceLabel(key);
+      return label ? `${label} provides the ${referenceRoleText(subject.assetRoles?.[key] ?? "composite")}` : "";
+    }).filter(Boolean);
+    const children = (subject.children ?? []).map((child) => {
+      const refs = child.assetKeys.map((key) => {
+        const label = referenceLabel(key);
+        return label ? `${label} provides the ${referenceRoleText(child.assetRoles?.[key] ?? "composite")}` : "";
+      }).filter(Boolean).join(". ");
+      const role = child.assetRoles?.[child.assetKeys[0]] ?? "composite";
+      const noun = role === "clothing" ? "wardrobe reference" : role === "object" ? "prop reference" : role === "environment" ? "environment reference" : "associated reference";
+      return `The ${noun} "${child.name.trim()}" is assigned to <Subject ${index + 1}>${refs ? ` and is defined by ${refs}` : ""}.`;
+    }).join(" ");
+    return `<Subject ${index + 1}> is the subject named "${subject.name.trim()}"${own.length ? `. ${own.join(". ")}.` : "."}${children ? ` ${children}` : ""}`;
+  }).join("\n");
+}
 type PromptSegment = {
   id: string;
   description: string;
@@ -585,6 +623,7 @@ type ReferenceKind = "image" | "video" | "audio";
 type ReferenceAsset = {
   name: string;
   url: string;
+  sourcePath?: string;
   comfyName?: string;
   comfySubfolder?: string;
   kind: ReferenceKind;
@@ -948,7 +987,7 @@ function safeFileStem(title: string) {
       .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
       .trim()
       .replace(/[. ]+$/g, "")
-      .slice(0, 120) || "未命名镜头"
+      .slice(0, 120) || "未命名片段"
   );
 }
 
@@ -1050,6 +1089,7 @@ async function readProjectShots(
         const file = await folder.getFileHandle("clip.json");
         const data = JSON.parse(await (await file.getFile()).text()) as {
           mode?: string;
+          generation?: ProjectShotRecord["generation"];
           duration?: number;
           resolution?: string;
           aspect?: string;
@@ -1057,7 +1097,9 @@ async function readProjectShots(
           output?: string;
           subjectIds?: string[];
           subjects?: PromptSubject[];
+          references?: { subjects?: PromptSubject[] };
           prompt?: {
+            subject_definitions?: string;
             summary?: string;
             retention_analysis?: string;
             detailed_description?: PromptSegment[];
@@ -1080,8 +1122,10 @@ async function readProjectShots(
           resolution: data.resolution,
           aspect: data.aspect,
           fps: data.fps,
+          generation: data.generation,
           subjectIds: data.subjectIds,
-          subjects: data.subjects,
+          subjects: data.references?.subjects,
+          references: data.references,
           prompt: data.prompt,
         };
       } catch {
@@ -1257,7 +1301,7 @@ export default function Home() {
   const [comfyUrl, setComfyUrl] = useState("http://127.0.0.1:8188");
   const [comfyUrlDraft, setComfyUrlDraft] = useState("http://127.0.0.1:8188");
   const [engineSettingsOpen, setEngineSettingsOpen] = useState(false);
-  const profile = modelProfiles[model];
+  const profile = modelProfiles[model] ?? modelProfiles.H3;
   const outputDirectoryTitle = "打开导演台输出目录";
   const modes = profile.modes;
   const activeMode = (modes as readonly string[]).includes(mode)
@@ -1346,7 +1390,8 @@ export default function Home() {
       ref2vaFields[taskShot.id]?.retentionAnalysis?.trim() ?? "";
     if (
       !subjects.length ||
-      (existingRetention && !/^<Subject\s+\d+>/i.test(existingRetention))
+      !existingRetention ||
+      !/^<Subject\s+\d+>/i.test(existingRetention)
     )
       return;
     const defaults = subjects
@@ -1671,22 +1716,28 @@ export default function Home() {
         const settings = shotSettings[shot.id] ?? shotSettingDefaults;
         const fields = ref2vaFields[shot.id] ?? ref2vaDefaults;
         await writeClipManifest(shot, {
-          mode: settings.mode,
-          duration: Number.parseFloat(settings.duration) || 6,
-          resolution: settings.resolution,
-          aspect: settings.aspect,
-          fps: Number.parseInt(settings.fps, 10) || 24,
-          subjectIds: (promptSubjects[shot.id] ?? [])
-            .filter((subject) => subject.name.trim())
-            .map((subject) => subject.name.trim()),
-          subjects: promptSubjects[shot.id] ?? [],
+          generation: {
+            mode: settings.mode,
+            duration: Number.parseFloat(settings.duration) || 6,
+            resolution: settings.resolution,
+            aspect: settings.aspect,
+            fps: Number.parseInt(settings.fps, 10) || 24,
+            model: settings.model,
+            turbo: settings.turbo,
+            ...(shotTasks[shot.id]
+              ? { seed: shotTasks[shot.id].seed, seedMode: shotTasks[shot.id].seedMode, steps: shotTasks[shot.id].steps }
+              : {}),
+            ...(shot.id === taskShot?.id && settings.mode === "I2VA"
+              ? { keyframeMode }
+              : {}),
+          },
           prompt: {
+          subject_definitions: buildSubjectDefinitions(promptSubjects[shot.id] ?? []),
             summary: fields.summary,
             retention_analysis: fields.retentionAnalysis,
             detailed_description: promptSegments[shot.id] ?? [],
             overall_soundscape: fields.soundscape,
             non_diegetic_music: fields.music,
-            full_prompt: shotPrompts[shot.id] ?? "",
           },
           output: shotVideos[shot.id]
             ? (shotFileNames[shot.id] ??
@@ -1707,6 +1758,7 @@ export default function Home() {
     shotPrompts,
     shotVideos,
     shotFileNames,
+    keyframeMode,
   ]);
 
   useEffect(() => {
@@ -1957,7 +2009,7 @@ export default function Home() {
     setTurboMode(settings?.turbo ?? shotSettingDefaults.turbo);
   }
   function addShot() {
-    setNewTitle(`未命名镜头 ${String(shots.length + 1).padStart(2, "0")}`);
+    setNewTitle(`未命名片段 ${String(shots.length + 1).padStart(2, "0")}`);
     setAddDialog(true);
     return;
   }
@@ -1977,13 +2029,16 @@ export default function Home() {
     setShots((current) => [...current, shot]);
     try {
       await writeClipManifest(shot, {
-        mode: "T2VA",
-        duration: 6,
-        resolution: "864x480",
-        aspect: "16:9",
-        fps: 24,
-        subjectIds: [],
-        prompt: {},
+        generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
+        references: { subjects: [] },
+        prompt: {
+          subject_definitions: "",
+          summary: "",
+          retention_analysis: "",
+          detailed_description: [],
+          overall_soundscape: ref2vaDefaults.soundscape,
+          non_diegetic_music: ref2vaDefaults.music,
+        },
       });
     } catch {
       setGenerationStatus(
@@ -1999,6 +2054,11 @@ export default function Home() {
     // subject library, so a new shot cannot accidentally process prior-shot
     // characters that were never added to it.
     setPromptSubjects((current) => ({ ...current, [id]: [] }));
+    setRef2vaFields((current) => ({
+      ...current,
+      [id]: { ...ref2vaDefaults, retentionAnalysis: "" },
+    }));
+    setPromptSegments((current) => ({ ...current, [id]: [] }));
     setShotSettings((current) => ({
       ...current,
       [id]: { ...shotSettingDefaults },
@@ -2011,6 +2071,21 @@ export default function Home() {
         .forEach((key) => delete next[key]);
       return next;
     });
+    setReferenceAssets((current) =>
+      Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${id}-`))),
+    );
+    const clearShotEntry = <T,>(current: Record<string, T>) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    };
+    setShotVideos(clearShotEntry);
+    setShotFileNames(clearShotEntry);
+    setGenerationDurations(clearShotEntry);
+    setShotTasks(clearShotEntry);
+    setShotStages(clearShotEntry);
+    setSubmittingShots(clearShotEntry);
+    setActivePromptSegment(clearShotEntry);
     setActiveShot(shots.length);
     activeShotIdRef.current = id;
     setPrompt("");
@@ -2045,39 +2120,31 @@ export default function Home() {
     setDeleteIndex(index);
     return;
   }
-  async function deleteSavedShotFiles(shotId: string) {
-    if (!outputDirectory) return;
-    const writableDirectory = outputDirectory as WritableDirectoryHandle;
+  async function deleteSavedShotFiles(shotId: string, shotTitle: string) {
+    if (!projectDirectory) return;
+    const clips = await projectDirectory.getDirectoryHandle("片段");
+    const writableDirectory = clips as WritableDirectoryHandle;
     if (!writableDirectory.removeEntry) return;
     const permission = writableDirectory.queryPermission
       ? await writableDirectory.queryPermission({ mode: "readwrite" })
       : "granted";
     if (permission !== "granted") throw new Error("输出目录没有写入权限");
     try {
-      await writableDirectory.removeEntry(`shot-${shotId}`, {
+      await writableDirectory.removeEntry(`${shotId}-${safeFileStem(shotTitle)}`, {
         recursive: true,
       });
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "NotFoundError"))
         throw error;
     }
-    // Remove files from the earlier flat layout as well.
-    for (const name of [`shot-${shotId}.mp4`, `shot-${shotId}.json`]) {
-      try {
-        await writableDirectory.removeEntry(name);
-      } catch (error) {
-        if (!(error instanceof DOMException && error.name === "NotFoundError"))
-          throw error;
-      }
-    }
   }
-  async function confirmDeleteShot() {
+  async function confirmDeleteShot(deleteFromDisk = false) {
     if (deleteIndex === null) return;
     const index = deleteIndex;
     const deletedId = shots[index]?.id;
-    if (deletedId) {
+    if (deletedId && deleteFromDisk) {
       try {
-        await deleteSavedShotFiles(deletedId);
+        await deleteSavedShotFiles(deletedId, shots[index]?.title ?? "");
       } catch {
         if (activeShotIdRef.current === deletedId)
           setGenerationStatus("镜头已删除，但输出文件删除失败");
@@ -2100,6 +2167,16 @@ export default function Home() {
         const nextSubjects = { ...current };
         delete nextSubjects[deletedId];
         return nextSubjects;
+      });
+      setRef2vaFields((current) => {
+        const nextFields = { ...current };
+        delete nextFields[deletedId];
+        return nextFields;
+      });
+      setPromptSegments((current) => {
+        const nextSegments = { ...current };
+        delete nextSegments[deletedId];
+        return nextSegments;
       });
       setShotSettings((current) => {
         const nextSettings = { ...current };
@@ -2193,11 +2270,18 @@ export default function Home() {
     if (!shotId) return;
     setShotSettings((current) => ({
       ...current,
-      [shotId]: { ...current[shotId], [key]: value },
+      [shotId]: { ...shotSettingDefaults, ...(current[shotId] ?? {}), [key]: value },
     }));
   }
+  function ensureReferenceMode(shotId: string) {
+    const current = shotSettings[shotId] ?? shotSettingDefaults;
+    if (current.mode === "R2VA") return;
+    const next = { ...current, mode: "R2VA" };
+    setShotSettings((settings) => ({ ...settings, [shotId]: next }));
+    if (taskShot?.id === shotId) setMode("R2VA");
+  }
   function getShotSettings(shot: Shot) {
-    return shotSettings[shot.id] ?? shotSettingDefaults;
+    return { ...shotSettingDefaults, ...(shotSettings[shot.id] ?? {}) };
   }
   function shotDetail(shot: Shot) {
     const settings = getShotSettings(shot);
@@ -2641,6 +2725,7 @@ export default function Home() {
   async function bindCharacterAsset(name: string) {
     const shotId = taskShot?.id;
     if (!shotId || !projectDirectory) return;
+    ensureReferenceMode(shotId);
     const parentIndex = assetSubjectParentIndexRef.current;
     if (
       parentIndex !== null &&
@@ -2733,6 +2818,7 @@ export default function Home() {
             comfyName: uploaded.name,
             comfySubfolder: uploaded.subfolder || undefined,
             kind,
+            sourcePath: `资产/角色/${name}/${folderName}/${reference.file}`,
           },
         }));
         uploadedKeys.push(key);
@@ -2799,6 +2885,7 @@ export default function Home() {
     if (asset.type === "character") return bindCharacterAsset(asset.name);
     const shotId = taskShot?.id;
     if (!shotId || !projectDirectory) return;
+    ensureReferenceMode(shotId);
     const parentIndex = assetSubjectParentIndexRef.current;
     if (
       parentIndex === null &&
@@ -2894,6 +2981,7 @@ export default function Home() {
             comfyName: uploaded.name,
             comfySubfolder: uploaded.subfolder || undefined,
             kind,
+            sourcePath: `资产/${folderName}/${asset.name}/${reference.file}`,
           },
         }));
         uploadedKeys.push(key);
@@ -3791,6 +3879,13 @@ export default function Home() {
               : {}),
             ...(record.aspect ? { aspect: record.aspect } : {}),
             ...(record.fps ? { fps: `${record.fps} fps` } : {}),
+            ...(record.generation?.mode ? { mode: record.generation.mode } : {}),
+            ...(record.generation?.duration ? { duration: `${record.generation.duration} 秒` } : {}),
+            ...(record.generation?.resolution ? { resolution: record.generation.resolution.replace(/\s*[x×]\s*/i, " × ") } : {}),
+            ...(record.generation?.aspect ? { aspect: record.generation.aspect } : {}),
+            ...(record.generation?.fps ? { fps: `${record.generation.fps} fps` } : {}),
+            ...(record.generation?.model ? { model: record.generation.model } : {}),
+            ...(typeof record.generation?.turbo === "boolean" ? { turbo: record.generation.turbo } : {}),
           },
         ]),
     );
@@ -4856,13 +4951,14 @@ export default function Home() {
     const shotSubjects = promptSubjects[shot.id] ?? [];
     const serializeReference = (assetKey: string, role: string) => ({
       assetKey,
-      role,
+      role: role === "clothing" ? "wardrobe" : role,
       ...(referenceAssets[assetKey]
         ? {
             name: referenceAssets[assetKey].name,
             kind: referenceAssets[assetKey].kind,
             comfyName: referenceAssets[assetKey].comfyName,
             comfySubfolder: referenceAssets[assetKey].comfySubfolder,
+            ...(referenceAssets[assetKey].sourcePath ? { sourcePath: referenceAssets[assetKey].sourcePath } : {}),
           }
         : {}),
     });
@@ -4889,12 +4985,13 @@ export default function Home() {
               .map((assetKey) => child.assetRoles?.[assetKey])
               .find(Boolean) ?? "composite";
           return {
-            assetId:
-              child.assetKeys[0] ??
-              `asset-${shot.id}-${safeFileStem(child.name.trim())}`,
+            subjectId: `subject-${shot.id}-${safeFileStem(child.name.trim())}`,
             name: child.name.trim(),
-            role: childRole,
-            relation: relationForRole(childRole),
+            role: childRole === "clothing" ? "wardrobe" : childRole,
+            relation: {
+              type: relationForRole(childRole),
+              parentSubjectId: `subject-${shot.id}-${safeFileStem(subject.name.trim())}`,
+            },
             references: child.assetKeys.map((assetKey) =>
               serializeReference(
                 assetKey,
@@ -4904,8 +5001,7 @@ export default function Home() {
           };
         });
         return {
-          subjectId:
-            subject.assetKeys[0] ?? `subject-${shot.id}-${subject.name.trim()}`,
+          subjectId: `subject-${shot.id}-${safeFileStem(subject.name.trim())}`,
           name: subject.name.trim(),
           references,
           ...(children.length ? { children } : {}),
@@ -4916,8 +5012,7 @@ export default function Home() {
         {
           id: shot.id,
           title: shot.title,
-          subjects,
-          references: subjects.flatMap((subject) => subject.references),
+          references: { subjects },
           ...overrides,
         },
         null,
@@ -6380,7 +6475,7 @@ export default function Home() {
                     </span>
                     <span className="truncate">{asset.name}</span>
                     <span className="ml-auto text-[9px] text-muted-foreground">
-                      {asset.type}
+                      {asset.type === "clothing" ? "服装" : asset.type === "scene" ? "场景" : asset.type === "prop" ? "道具" : asset.type === "audio" ? "音频" : asset.type === "video" ? "视频" : "自定义"}
                     </span>
                   </button>
                 ))}
@@ -6727,7 +6822,7 @@ export default function Home() {
                   </span>
                   <span className="truncate">{asset.name}</span>
                   <span className="ml-auto text-[9px] text-muted-foreground">
-                    {asset.type}
+                    {asset.type === "clothing" ? "服装" : asset.type === "scene" ? "场景" : asset.type === "prop" ? "道具" : asset.type === "audio" ? "音频" : asset.type === "video" ? "视频" : "自定义"}
                   </span>
                 </button>
               ))}
@@ -7138,11 +7233,11 @@ export default function Home() {
                                 variant="ghost"
                                 size="sm"
                                 className="h-7 gap-1 px-2 text-[10px] text-zinc-500 hover:bg-primary/10 hover:text-primary"
-                                aria-label="添加子主体"
-                                title="添加子主体"
+                                aria-label="添加关联参考"
+                                title="添加关联参考"
                               >
                                 <Plus className="size-3" />
-                                添加子主体
+                                添加关联参考
                               </Button>
                               <Button
                                 type="button"
@@ -8002,14 +8097,17 @@ export default function Home() {
           >
             <h2 className="text-sm font-semibold">删除片段</h2>
             <p className="mt-2 text-xs text-muted-foreground">
-              确定删除“{shots[deleteIndex].title}”吗？此操作无法撤销。
+              请选择删除方式：仅从导演台移除不会修改磁盘文件；从磁盘删除会同时删除片段目录和输出文件。
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setDeleteIndex(null)}>
                 取消
               </Button>
-              <Button variant="destructive" onClick={confirmDeleteShot}>
-                删除片段
+              <Button variant="outline" onClick={() => void confirmDeleteShot(false)}>
+                仅从导演台移除
+              </Button>
+              <Button variant="destructive" onClick={() => void confirmDeleteShot(true)}>
+                从磁盘删除
               </Button>
             </div>
           </div>
