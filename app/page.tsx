@@ -178,12 +178,16 @@ type PromptSegment = {
 };
 type Ref2vaFields = {
   summary: string;
+  taskType: "reference generation" | "video editing" | "video continuation";
+  audioProcessing: Array<"audio reuse" | "audio reference">;
   retentionAnalysis: string;
   soundscape: string;
   music: string;
 };
 const ref2vaDefaults: Ref2vaFields = {
   summary: "",
+  taskType: "reference generation",
+  audioProcessing: [],
   retentionAnalysis: "",
   soundscape:
     "Use natural diegetic ambience and synchronized physical sounds supported by the visible environment, actions, objects, and spatial context. Keep the sound realistic, restrained, and grounded in the scene. Do not add unrelated sounds or invent dialogue. Spoken lines are defined only in detailed_description.",
@@ -1703,11 +1707,22 @@ export default function Home() {
       for (const shot of shots) {
         const settings = shotSettings[shot.id] ?? shotSettingDefaults;
         const fields = ref2vaFields[shot.id] ?? ref2vaDefaults;
+        const taskSummary: Record<Ref2vaFields["taskType"], string> = {
+          "reference generation": "The target video is generated based on the provided references",
+          "video editing": "The target video is an edited version of the provided source video",
+          "video continuation": "The target video continues from the provided source video",
+        };
+        const audioSummary = fields.audioProcessing.includes("audio reuse")
+          ? " while reusing the provided audio."
+          : fields.audioProcessing.includes("audio reference")
+            ? " using the provided audio as a reference."
+            : "";
+        const generatedSummary = `[${fields.taskType}${fields.audioProcessing.length ? ` + ${fields.audioProcessing.join(" + ")}` : ""}] ${taskSummary[fields.taskType]}${audioSummary || "."}`;
         const detailedDescription = promptSegments[shot.id] ?? [];
         const promptData = settings.mode === "R2VA"
           ? {
               subject_definitions: buildSubjectDefinitions(promptSubjects[shot.id] ?? []),
-              summary: fields.summary,
+              summary: generatedSummary,
               retention_analysis: buildRetentionAnalysis(promptSubjects[shot.id] ?? []) || fields.retentionAnalysis,
               detailed_description: detailedDescription,
               overall_soundscape: fields.soundscape,
@@ -3280,12 +3295,21 @@ export default function Home() {
             ? `<${reference.token.slice(1, -1)}> (used throughout the target video): reference - use the referenced audio characteristics without copying an unrelated source signal.`
             : `<${reference.token.slice(1, -1)}> (used throughout the target video): weak_reference - use only the assigned source structure or motion relationship.`,
         );
-      const summaryPrefix =
-        "[reference generation] The target video is generated based on the provided references.";
+      const taskSummary: Record<Ref2vaFields["taskType"], string> = {
+        "reference generation": "The target video is generated based on the provided references",
+        "video editing": "The target video is an edited version of the provided source video",
+        "video continuation": "The target video continues from the provided source video",
+      };
+      const audioSummary = refFields.audioProcessing.includes("audio reuse")
+        ? " while reusing the provided audio."
+        : refFields.audioProcessing.includes("audio reference")
+          ? " using the provided audio as a reference."
+          : "";
+      const summaryPrefix = `[${refFields.taskType}${refFields.audioProcessing.length ? ` + ${refFields.audioProcessing.join(" + ")}` : ""}] ${taskSummary[refFields.taskType]}${audioSummary || "."}`;
       const customSummary = refFields.summary
         .trim()
         .replace(
-          /^\[reference generation\]\s*The target video is (?:a realistic (?:live-action )?cinematic scene|generated) based on the provided references\.?\s*/i,
+          /^\[[^\]]+\]\s*.*?\s*/i,
           "",
         )
         .trim();
@@ -7194,41 +7218,41 @@ export default function Home() {
                 </div>
               )}
               {activeMode === "R2VA" && (
-                <div className="grid gap-2 rounded-lg border border-border bg-muted/20 p-2">
-                  {(
-                    [
-                      [
-                        "summary",
-                        "任务摘要（summary）",
-                        "手动填写本次视频的整体意图",
-                      ],
-                      [
-                        "retentionAnalysis",
-                        "保留分析（retention_analysis）",
-                        "说明主体、身份、服装和参考内容需要如何保持",
-                      ],
-                    ] as const
-                  ).map(([key, label, placeholder]) => (
-                    <label key={key}>
-                      <span className="field-label">{label}</span>
-                      <textarea
-                        value={ref2vaFields[taskShot.id]?.[key] ?? ""}
-                        onChange={(event) =>
-                          setRef2vaFields((current) => ({
-                            ...current,
-                            [taskShot.id]: {
-                              ...ref2vaDefaults,
-                              ...(current[taskShot.id] ?? {}),
-                              [key]: event.target.value,
-                            },
-                          }))
-                        }
-                        placeholder={placeholder}
-                        className="mt-1 min-h-14 w-full resize-y rounded-md border border-border bg-muted/25 p-2 text-[10px] leading-4 outline-none placeholder:text-muted-foreground focus:border-primary/60"
-                      />
-                    </label>
-                  ))}
+                <>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-border bg-muted/20 p-2">
+                  <div className="basis-full">
+                    <span className="field-label">任务摘要（summary）</span>
+                  </div>
+                  <div className="flex basis-full flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="field-label">视频</span>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      {(["reference generation", "video editing", "video continuation"] as const).map((taskType) => (
+                        <label key={taskType} className="flex items-center gap-1.5">
+                          <input type="radio" name={`r2va-task-${taskShot.id}`} checked={(ref2vaFields[taskShot.id]?.taskType ?? ref2vaDefaults.taskType) === taskType} onChange={() => setRef2vaFields((current) => ({ ...current, [taskShot.id]: { ...ref2vaDefaults, ...(current[taskShot.id] ?? {}), taskType } }))} />
+                          {taskType === "reference generation" ? "参考生成" : taskType === "video editing" ? "视频编辑" : "视频续写"}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex basis-full flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="field-label">音频</span>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      {(["", "audio reuse", "audio reference"] as const).map((audioType) => {
+                        const selected = audioType === ""
+                          ? (ref2vaFields[taskShot.id]?.audioProcessing ?? []).length === 0
+                          : (ref2vaFields[taskShot.id]?.audioProcessing ?? [])[0] === audioType;
+                        return <label key={audioType || "none"} className="flex items-center gap-1.5"><input type="radio" name={`r2va-audio-${taskShot.id}`} checked={selected} onChange={() => setRef2vaFields((current) => { const fields = { ...ref2vaDefaults, ...(current[taskShot.id] ?? {}) }; return { ...current, [taskShot.id]: { ...fields, audioProcessing: audioType ? [audioType] : [] } }; })} />{audioType === "" ? "不处理" : audioType === "audio reuse" ? "复用原音频" : "音频仅作参考"}</label>;
+                      })}
+                    </div>
+                  </div>
                 </div>
+                <div className="rounded-lg border border-border bg-muted/20 p-2">
+                  <label>
+                    <span className="field-label">保留分析（retention_analysis）</span>
+                    <textarea readOnly value={ref2vaFields[taskShot.id]?.retentionAnalysis ?? ""} placeholder="根据主体和参考素材自动生成" className="mt-1 min-h-14 w-full resize-y rounded-md border border-border bg-muted/25 p-2 text-[10px] leading-4 outline-none placeholder:text-muted-foreground" />
+                  </label>
+                </div>
+                </>
               )}
               <div className="rounded-lg border border-border bg-muted/20 p-2">
                 <div className="flex items-center justify-between">
