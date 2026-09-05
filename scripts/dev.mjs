@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
-import { mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 function directorPath(outputRoot) {
@@ -62,7 +62,7 @@ function readRequestBody(request) {
   });
 }
 
-async function waitForFile(filePath, attempts = 8) {
+async function waitForFile(filePath, attempts = 60) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -111,18 +111,6 @@ async function finalizeOutput(body) {
     await unlink(finalPath).catch(() => undefined);
     await rename(sourcePath, finalPath);
   }
-  const metadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
-  const metadataPath = finalPath.replace(/\.[^.]+$/, '.json');
-  await writeFile(metadataPath, JSON.stringify({
-    ...metadata,
-    id: shotId,
-    shot_title: body.shot_title ?? title,
-    file: finalName,
-    source,
-    source_subfolder: sourceSubfolder,
-    status: 'completed',
-    generated_at: metadata.generated_at ?? new Date().toISOString(),
-  }, null, 2), 'utf8');
   return {
     ok: true,
     filename: finalName,

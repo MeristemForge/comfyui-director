@@ -1,4 +1,4 @@
-import { mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { normalizeComfyUrl } from '../../comfy-url';
@@ -34,7 +34,7 @@ function safeChildPath(root: string, child: string) {
   return resolvedChild;
 }
 
-async function waitForFile(filePath: string, attempts = 8) {
+async function waitForFile(filePath: string, attempts = 60) {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -79,18 +79,6 @@ export async function POST(request: Request) {
       await unlink(pathToFileURL(finalPath)).catch(() => undefined);
       await rename(pathToFileURL(sourcePath), pathToFileURL(finalPath));
     }
-    const metadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
-    const metadataPath = finalPath.replace(/\.[^.]+$/, '.json');
-    await writeFile(pathToFileURL(metadataPath), JSON.stringify({
-      ...metadata,
-      id: shotId,
-      shot_title: body.shot_title ?? title,
-      file: finalName,
-      source,
-      source_subfolder: sourceSubfolder,
-      status: 'completed',
-      generated_at: (metadata as { generated_at?: unknown }).generated_at ?? new Date().toISOString(),
-    }, null, 2), 'utf8');
     const relativeSubfolder = path.relative(outputRoot, directorDirectory).replaceAll('\\', '/');
     const comfyUrl = normalizeComfyUrl(typeof body.comfy_url === 'string' ? body.comfy_url : undefined);
     return Response.json({

@@ -1416,13 +1416,7 @@ export default function Home() {
     const subjects = (promptSubjects[taskShot.id] ?? []).filter((subject) =>
       subject.name.trim(),
     );
-    const existingRetention =
-      ref2vaFields[taskShot.id]?.retentionAnalysis?.trim() ?? "";
-    if (
-      !subjects.length ||
-      !existingRetention ||
-      !/^<Subject\s+\d+>/i.test(existingRetention)
-    )
+    if (!subjects.length)
       return;
     const defaults = subjects
       .map((subject, index) => {
@@ -3441,7 +3435,13 @@ export default function Home() {
     const storedDescription = storedPrompt?.detailed_description
       ?.map((segment, index) => {
         const shotNumber = segment.id.match(/segment-(\d+)$/i)?.[1] ?? `${index + 1}`;
-        return `[Shot ${shotNumber}]\n${segment.description.trim()}`;
+        const settings = normalizePromptBuilderSettings(segment.settings);
+        const cameraParts = [
+          settings.framing && promptBuilderPhrases.framing[settings.framing],
+          settings.camera && promptBuilderPhrases.camera[settings.camera],
+          settings.lens && promptBuilderPhrases.lens[settings.lens],
+        ].filter(Boolean);
+        return `[Shot ${shotNumber}]\nAction:\n${segment.description.trim()}\nCamera:\n${cameraParts.length ? cameraParts.join(". ") + "." : "No specific camera language is set; follow the action naturally."}`;
       })
       .filter(Boolean)
       .join("\n\n");
@@ -3471,9 +3471,9 @@ export default function Home() {
         const start = shot.start ?? fallbackStart;
         return {
           ...(existing[index] ?? {
-            id: `${taskShot.id}-segment-${index + 1}`,
             settings: { ...promptBuilderDefaults },
           }),
+          id: `${taskShot.id}-segment-${index + 1}`,
           description: shot.action,
           settings: inferPromptCameraSettings(
             shot.camera,
@@ -5225,26 +5225,40 @@ export default function Home() {
           finalUrl,
           finalName,
         );
-        if (archivedToProject)
+        if (archivedToProject) {
           await writeClipManifest(targetShot, { output: finalName });
+          await fetch("/api/output/cleanup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              filename: finalName,
+              subfolder: "director",
+              comfy_url: comfyUrl,
+            }),
+          });
+        }
       } catch {
         archiveFailed = true;
         setGenerationStatus("视频已生成，但归档到项目片段目录失败");
       }
-      setShotStages((current) => ({ ...current, [shotId]: "已完成" }));
+      const persisted = archivedToProject && !archiveFailed;
+      setShotStages((current) => ({
+        ...current,
+        [shotId]: persisted ? "已完成" : "归档失败",
+      }));
       setShots((items) =>
         items.map((item) =>
-          item.id === shotId ? { ...item, state: "已完成" } : item,
+          item.id === shotId
+            ? { ...item, state: persisted ? "已完成" : "归档失败" }
+            : item,
         ),
       );
       if (activeShotIdRef.current === shotId) {
         setVideoUrl(finalUrl);
         setGenerationStatus(
-          archiveFailed
-            ? "已完成，但归档到项目片段目录失败"
-            : archivedToProject
-              ? "已完成，视频已复制到当前项目片段"
-              : "已完成，视频保留在 ComfyUI 输出目录",
+          persisted
+            ? "已完成，视频已复制到当前项目片段"
+            : "生成完成，但归档到项目片段目录失败",
         );
       }
     } catch (error) {
@@ -5906,9 +5920,11 @@ export default function Home() {
                 ...current,
                 [shotId]: "整理输出",
               }));
+              // ComfyUI 已完成，但项目文件尚未归档；最终状态在
+              // saveVideoToDirectory 成功写入 clip.json 后再置为“已完成”。
               setShots((items) =>
                 items.map((item) =>
-                  item.id === shotId ? { ...item, state: "已完成" } : item,
+                  item.id === shotId ? { ...item, state: "整理输出" } : item,
                 ),
               );
               if (activeShotIdRef.current === shotId)
@@ -6228,6 +6244,7 @@ export default function Home() {
         return;
       }
     }
+    const generationPrompt = generateH3Prompt(activeMode) ?? prompt;
     setVideoUrl(null);
     setSubmittingShots((current) => ({ ...current, [shotId]: true }));
     void fetch("/api/generate", {
@@ -6236,7 +6253,7 @@ export default function Home() {
       body: JSON.stringify({
         shot_id: shotId,
         shot_title: taskShot.title,
-        prompt,
+        prompt: generationPrompt,
         seed: submittedSeed,
         duration,
         resolution: availableResolution,
@@ -6289,7 +6306,7 @@ export default function Home() {
             promptId: result.prompt_id as string,
             seed: submittedSeed,
             seedMode,
-            prompt,
+            prompt: generationPrompt,
             title: taskShot.title,
             fileName,
             duration: taskSettings.duration,
@@ -7323,7 +7340,7 @@ export default function Home() {
                 <div className="rounded-lg border border-border bg-muted/20 p-2">
                   <label>
                     <span className="field-label">保留分析（retention_analysis）</span>
-                    <textarea readOnly value={ref2vaFields[taskShot.id]?.retentionAnalysis || taskShot.prompt?.retention_analysis || ""} placeholder="根据主体和参考素材自动生成" className="mt-1 min-h-14 w-full resize-y rounded-md border border-border bg-muted/25 p-2 text-[10px] leading-4 outline-none placeholder:text-muted-foreground" />
+                    <textarea readOnly value={buildRetentionAnalysis(promptSubjects[taskShot.id] ?? []) || ref2vaFields[taskShot.id]?.retentionAnalysis || taskShot.prompt?.retention_analysis || ""} placeholder="根据主体和参考素材自动生成" className="mt-1 min-h-14 w-full resize-y rounded-md border border-border bg-muted/25 p-2 text-[10px] leading-4 outline-none placeholder:text-muted-foreground" />
                   </label>
                 </div>
                 </>
@@ -8164,7 +8181,7 @@ export default function Home() {
             <textarea
               autoFocus
               value={promptDraft}
-              readOnly
+              onChange={(event) => setPromptDraft(event.target.value)}
               placeholder="当前片段暂无可显示的提示词"
               className="mt-4 min-h-0 flex-1 resize-none rounded-lg border border-border bg-muted/25 p-3 font-mono text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/60"
             />
@@ -8176,6 +8193,16 @@ export default function Home() {
                 className="h-8 px-4 text-xs"
               >
                 取消
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  savePromptDraft();
+                  setPromptViewerOpen(false);
+                }}
+                className="h-8 bg-[#f4bd50] px-4 text-xs font-semibold text-[#17120a] hover:bg-[#ffd070]"
+              >
+                保存
               </Button>
             </div>
           </div>
