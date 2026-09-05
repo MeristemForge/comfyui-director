@@ -49,6 +49,7 @@ type ProjectShotRecord = Shot & {
   aspect?: string;
   fps?: number;
   subjectIds?: string[];
+  subjects?: PromptSubject[];
   prompt?: {
     summary?: string;
     retention_analysis?: string;
@@ -1055,6 +1056,7 @@ async function readProjectShots(
           fps?: number;
           output?: string;
           subjectIds?: string[];
+          subjects?: PromptSubject[];
           prompt?: {
             summary?: string;
             retention_analysis?: string;
@@ -1079,6 +1081,7 @@ async function readProjectShots(
           aspect: data.aspect,
           fps: data.fps,
           subjectIds: data.subjectIds,
+          subjects: data.subjects,
           prompt: data.prompt,
         };
       } catch {
@@ -1676,6 +1679,7 @@ export default function Home() {
           subjectIds: (promptSubjects[shot.id] ?? [])
             .filter((subject) => subject.name.trim())
             .map((subject) => subject.name.trim()),
+          subjects: promptSubjects[shot.id] ?? [],
           prompt: {
             summary: fields.summary,
             retention_analysis: fields.retentionAnalysis,
@@ -3824,7 +3828,9 @@ export default function Home() {
         .filter((record) => record.subjectIds?.length)
         .map((record) => [
           record.id,
-          record.subjectIds!.map((name) => ({ name, assetKeys: [] })),
+          record.subjects?.length
+            ? record.subjects
+            : record.subjectIds!.map((name) => ({ name, assetKeys: [] })),
         ]),
     );
     setPromptSubjects(subjects);
@@ -7130,12 +7136,13 @@ export default function Home() {
                                   setAssetSubjectPickerOpen(true);
                                 }}
                                 variant="ghost"
-                                size="icon-sm"
-                                className="size-7 text-zinc-500 hover:bg-primary/10 hover:text-primary"
+                                size="sm"
+                                className="h-7 gap-1 px-2 text-[10px] text-zinc-500 hover:bg-primary/10 hover:text-primary"
                                 aria-label="添加子主体"
                                 title="添加子主体"
                               >
                                 <Plus className="size-3" />
+                                添加子主体
                               </Button>
                               <Button
                                 type="button"
