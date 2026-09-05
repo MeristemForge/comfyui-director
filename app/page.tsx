@@ -1719,6 +1719,17 @@ export default function Home() {
             : "";
         const generatedSummary = `[${fields.taskType}${fields.audioProcessing.length ? ` + ${fields.audioProcessing.join(" + ")}` : ""}] ${taskSummary[fields.taskType]}${audioSummary || "."}`;
         const detailedDescription = promptSegments[shot.id] ?? [];
+        const integratedDescription = detailedDescription
+          .map((segment) => segment.description.trim())
+          .filter(Boolean)
+          .join("\n\n");
+        const i2vaAlignment = settings.mode === "I2VA" && shot.id === taskShot?.id
+          ? keyframeMode === "first_last"
+            ? "How the reference pictures align with the target video — Picture 1 aligns with the 0.00-second mark of the target video; Picture 2 aligns with the final timestamp of the target video."
+            : keyframeMode === "last"
+              ? "How the reference pictures align with the target video — <Picture 1> aligns with the final timestamp of the target video."
+              : "For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
+          : "";
         const promptData = settings.mode === "R2VA"
           ? {
               subject_definitions: buildSubjectDefinitions(promptSubjects[shot.id] ?? []),
@@ -1729,8 +1740,7 @@ export default function Home() {
               non_diegetic_music: fields.music,
             }
           : {
-              integrated_multimodal_description: detailedDescription
-                .map((segment) => segment.description.trim())
+              integrated_multimodal_description: [i2vaAlignment, integratedDescription]
                 .filter(Boolean)
                 .join("\n\n"),
               overall_soundscape: fields.soundscape,
@@ -7257,7 +7267,9 @@ export default function Home() {
               <div className="rounded-lg border border-border bg-muted/20 p-2">
                 <div className="flex items-center justify-between">
                   <span className="field-label">
-                    详细描述（detailed_description）
+                    {activeMode === "R2VA"
+                      ? "详细描述（detailed_description）"
+                      : "综合多模态描述（integrated_multimodal_description）"}
                   </span>
                   <Button
                     type="button"
