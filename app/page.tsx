@@ -23,7 +23,6 @@ import {
   Settings,
   Shirt,
   SlidersHorizontal,
-  Sparkles,
   Trash2 as TrashIcon,
   UserRound,
   X,
@@ -45,21 +44,15 @@ type Shot = {
 type ProjectShotRecord = Shot & {
   references?: { subjects?: PromptSubject[] };
   generation?: { mode?: string; duration?: number; resolution?: string; aspect?: string; fps?: number; model?: keyof typeof modelProfiles; turbo?: boolean; seed?: string; seedMode?: "fixed" | "random"; keyframeMode?: string; steps?: number };
-  mode?: string;
-  duration?: number;
-  resolution?: string;
-  aspect?: string;
-  fps?: number;
-  subjectIds?: string[];
   subjects?: PromptSubject[];
   prompt?: {
+    integrated_multimodal_description?: string;
     subject_definitions?: string;
     summary?: string;
     retention_analysis?: string;
     detailed_description?: PromptSegment[];
     overall_soundscape?: string;
     non_diegetic_music?: string;
-    full_prompt?: string;
   };
 };
 type ProjectAssetType =
@@ -157,15 +150,23 @@ function buildSubjectDefinitions(subjects: PromptSubject[]) {
       return label ? `${label} provides the ${referenceRoleText(subject.assetRoles?.[key] ?? "composite")}` : "";
     }).filter(Boolean);
     const children = (subject.children ?? []).map((child) => {
-      const refs = child.assetKeys.map((key) => {
-        const label = referenceLabel(key);
-        return label ? `${label} provides the ${referenceRoleText(child.assetRoles?.[key] ?? "composite")}` : "";
-      }).filter(Boolean).join(". ");
+      const refs = child.assetKeys.map((key) => referenceLabel(key)).filter(Boolean);
       const role = child.assetRoles?.[child.assetKeys[0]] ?? "composite";
       const noun = role === "clothing" ? "wardrobe reference" : role === "object" ? "prop reference" : role === "environment" ? "environment reference" : "associated reference";
-      return `The ${noun} "${child.name.trim()}" is assigned to <Subject ${index + 1}>${refs ? ` and is defined by ${refs}` : ""}.`;
+      const referenceText = refs.length
+        ? `${refs.length === 1 ? refs[0] : `${refs.slice(0, -1).join(", ")}, and ${refs.at(-1)}`}, which ${refs.length === 1 ? "provides" : "together provide"} the ${referenceRoleText(role)}`
+        : "";
+      return `The ${noun} "${child.name.trim()}" is assigned to <Subject ${index + 1}>${referenceText ? ` and is defined by ${referenceText}.` : "."}`;
     }).join(" ");
     return `<Subject ${index + 1}> is the subject named "${subject.name.trim()}"${own.length ? `. ${own.join(". ")}.` : "."}${children ? ` ${children}` : ""}`;
+  }).join("\n");
+}
+function buildRetentionAnalysis(subjects: PromptSubject[]) {
+  return subjects.filter((subject) => subject.name.trim()).flatMap((subject, index) => {
+    const roles = subject.assetKeys.map((key) => subject.assetRoles?.[key] ?? "composite");
+    const ownOnlyWardrobe = roles.length > 0 && roles.every((role) => role === "clothing");
+    if (ownOnlyWardrobe) return [];
+    return [`<Subject ${index + 1}> (appears throughout the target video): fully_preserved - preserve ${subject.name.trim()}'s identity, facial features, hairstyle, and body proportions throughout the target video.`];
   }).join("\n");
 }
 type PromptSegment = {
@@ -1088,15 +1089,8 @@ async function readProjectShots(
         );
         const file = await folder.getFileHandle("clip.json");
         const data = JSON.parse(await (await file.getFile()).text()) as {
-          mode?: string;
           generation?: ProjectShotRecord["generation"];
-          duration?: number;
-          resolution?: string;
-          aspect?: string;
-          fps?: number;
           output?: string;
-          subjectIds?: string[];
-          subjects?: PromptSubject[];
           references?: { subjects?: PromptSubject[] };
           prompt?: {
             subject_definitions?: string;
@@ -1105,25 +1099,19 @@ async function readProjectShots(
             detailed_description?: PromptSegment[];
             overall_soundscape?: string;
             non_diegetic_music?: string;
-            full_prompt?: string;
           };
         };
-        const durationText = `${data.duration ?? 6}s`;
-        const resolutionText = data.resolution ?? "864×480";
-        const fpsText = `${data.fps ?? 24}fps`;
+        const generation = data.generation ?? {};
+        const durationText = `${generation.duration ?? 6}s`;
+        const resolutionText = generation.resolution ?? "864×480";
+        const fpsText = `${generation.fps ?? 24}fps`;
         return {
           id: clip.id,
           title: clip.title,
-          detail: `${durationText} · ${data.mode ?? "R2VA"} · ${resolutionText} · ${fpsText}`,
-          meta: `${data.aspect ?? "16:9"}${data.output ? " · 已归档" : ""}`,
+          detail: `${durationText} · ${generation.mode ?? "T2VA"} · ${resolutionText} · ${fpsText}`,
+          meta: `${generation.aspect ?? "16:9"}${data.output ? " · 已归档" : ""}`,
           state: data.output ? "已完成" : "草稿",
-          mode: data.mode,
-          duration: data.duration,
-          resolution: data.resolution,
-          aspect: data.aspect,
-          fps: data.fps,
-          generation: data.generation,
-          subjectIds: data.subjectIds,
+          generation,
           subjects: data.references?.subjects,
           references: data.references,
           prompt: data.prompt,
@@ -1406,7 +1394,7 @@ export default function Home() {
           ? "preserve spatial layout, lighting, color palette, architectural structure, and key props."
           : isObject
             ? "preserve shape, material, color, size, and spatial relationships."
-            : "preserve identity, facial features, hairstyle, clothing, and body proportions.";
+            : "preserve identity, facial features, hairstyle, and body proportions.";
         return `<Subject ${index + 1}> (appears throughout the target video): fully_preserved - ${text}`;
       })
       .join("\n");
@@ -1715,6 +1703,24 @@ export default function Home() {
       for (const shot of shots) {
         const settings = shotSettings[shot.id] ?? shotSettingDefaults;
         const fields = ref2vaFields[shot.id] ?? ref2vaDefaults;
+        const detailedDescription = promptSegments[shot.id] ?? [];
+        const promptData = settings.mode === "R2VA"
+          ? {
+              subject_definitions: buildSubjectDefinitions(promptSubjects[shot.id] ?? []),
+              summary: fields.summary,
+              retention_analysis: buildRetentionAnalysis(promptSubjects[shot.id] ?? []) || fields.retentionAnalysis,
+              detailed_description: detailedDescription,
+              overall_soundscape: fields.soundscape,
+              non_diegetic_music: fields.music,
+            }
+          : {
+              integrated_multimodal_description: detailedDescription
+                .map((segment) => segment.description.trim())
+                .filter(Boolean)
+                .join("\n\n"),
+              overall_soundscape: fields.soundscape,
+              non_diegetic_music: fields.music,
+            };
         await writeClipManifest(shot, {
           generation: {
             mode: settings.mode,
@@ -1731,14 +1737,7 @@ export default function Home() {
               ? { keyframeMode }
               : {}),
           },
-          prompt: {
-          subject_definitions: buildSubjectDefinitions(promptSubjects[shot.id] ?? []),
-            summary: fields.summary,
-            retention_analysis: fields.retentionAnalysis,
-            detailed_description: promptSegments[shot.id] ?? [],
-            overall_soundscape: fields.soundscape,
-            non_diegetic_music: fields.music,
-          },
+          prompt: promptData,
           output: shotVideos[shot.id]
             ? (shotFileNames[shot.id] ??
               `shot-${shot.id}-${safeFileStem(shot.title)}.mp4`)
@@ -2030,12 +2029,8 @@ export default function Home() {
     try {
       await writeClipManifest(shot, {
         generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
-        references: { subjects: [] },
         prompt: {
-          subject_definitions: "",
-          summary: "",
-          retention_analysis: "",
-          detailed_description: [],
+          integrated_multimodal_description: "",
           overall_soundscape: ref2vaDefaults.soundscape,
           non_diegetic_music: ref2vaDefaults.music,
         },
@@ -3276,25 +3271,7 @@ export default function Home() {
       const subjectRetention = subjects
         .filter((subject) => subject.name.trim())
         .map((subject, index) => {
-          const subjectName = subject.name.trim().toLowerCase();
-          const shotLocations = segments
-            .map((segment, segmentIndex) =>
-              segment.description.toLowerCase().includes(subjectName)
-                ? `[Shot ${segmentIndex + 1}]`
-                : "",
-            )
-            .filter(Boolean);
-          const locationText = shotLocations.length
-            ? shotLocations.join(", ")
-            : "throughout the target video";
-          const hasWardrobeReference = subject.assetKeys.some(
-            (assetKey) =>
-              (subject.assetRoles?.[assetKey] ?? "composite") === "clothing",
-          ) || childReferenceBindings(subject).some((binding) => binding.role === "clothing");
-          const wardrobeRule = hasWardrobeReference
-            ? ` Preserve the exact wardrobe reference, including clothing design, colors, materials, accessories, and wearing state; do not add, remove, redesign, simplify, or change any garment or accessory unless an explicit action requires it.`
-            : "";
-          return `<Subject ${index + 1}> (appears in ${locationText}): fully_preserved - preserve ${subject.name.trim()}'s identity and assigned visual attributes.${wardrobeRule}`;
+          return `<Subject ${index + 1}> (appears throughout the target video): fully_preserved - preserve ${subject.name.trim()}'s identity, facial features, hairstyle, and body proportions throughout the target video.`;
         });
       const referenceRetention = refs
         .filter((reference) => reference.kind !== "image")
@@ -3355,18 +3332,6 @@ export default function Home() {
     setShotPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
     return nextPrompt;
   }
-  function handleGeneratePrompt() {
-    try {
-      if (!taskShot) throw new Error("missing shot");
-      generateH3Prompt();
-      setPromptNotice({ type: "success", text: "提示词生成成功" });
-    } catch {
-      setPromptNotice({
-        type: "error",
-        text: "提示词生成失败，请检查画面内容和设置",
-      });
-    }
-  }
   function changeGenerationMode(nextMode: string) {
     setMode(nextMode);
     updateSetting("mode", nextMode);
@@ -3386,11 +3351,7 @@ export default function Home() {
     return null;
   }
   function openPromptViewer() {
-    const templateMode = detectPromptTemplateMode(prompt);
-    const nextPrompt =
-      templateMode && templateMode !== activeMode
-        ? generateH3Prompt(activeMode)
-        : prompt;
+    const nextPrompt = generateH3Prompt(activeMode);
     setPromptDraft(nextPrompt ?? "");
     setPromptViewerOpen(true);
   }
@@ -3845,40 +3806,17 @@ export default function Home() {
   function applyProjectShotRecords(records: ProjectShotRecord[]) {
     setShots(
       records.map(
-        ({
-          mode: _mode,
-          duration: _duration,
-          resolution: _resolution,
-          aspect: _aspect,
-          fps: _fps,
-          subjectIds: _subjectIds,
-          prompt: _prompt,
-          ...shot
-        }) => shot,
+        ({ generation: _generation, references: _references, prompt: _prompt, ...shot }) => shot,
       ),
     );
     const settings = Object.fromEntries(
       records
-        .filter(
-          (record) =>
-            record.mode ||
-            record.duration ||
-            record.resolution ||
-            record.aspect ||
-            record.fps,
-        )
+        .filter((record) => record.generation)
         .map((record) => [
           record.id,
           {
             ...shotSettingDefaults,
             ...(shotSettings[record.id] ?? {}),
-            ...(record.mode ? { mode: record.mode } : {}),
-            ...(record.duration ? { duration: `${record.duration} 秒` } : {}),
-            ...(record.resolution
-              ? { resolution: record.resolution.replace(/\s*[x×]\s*/i, " × ") }
-              : {}),
-            ...(record.aspect ? { aspect: record.aspect } : {}),
-            ...(record.fps ? { fps: `${record.fps} fps` } : {}),
             ...(record.generation?.mode ? { mode: record.generation.mode } : {}),
             ...(record.generation?.duration ? { duration: `${record.generation.duration} 秒` } : {}),
             ...(record.generation?.resolution ? { resolution: record.generation.resolution.replace(/\s*[x×]\s*/i, " × ") } : {}),
@@ -3890,12 +3828,7 @@ export default function Home() {
         ]),
     );
     setShotSettings(settings);
-    const prompts = Object.fromEntries(
-      records
-        .filter((record) => record.prompt?.full_prompt)
-        .map((record) => [record.id, record.prompt!.full_prompt!]),
-    );
-    setShotPrompts(prompts);
+    setShotPrompts({});
     const segments = Object.fromEntries(
       records
         .filter((record) => record.prompt?.detailed_description?.length)
@@ -3920,12 +3853,10 @@ export default function Home() {
     setRef2vaFields(fields);
     const subjects = Object.fromEntries(
       records
-        .filter((record) => record.subjectIds?.length)
+        .filter((record) => record.subjects?.length)
         .map((record) => [
           record.id,
-          record.subjects?.length
-            ? record.subjects
-            : record.subjectIds!.map((name) => ({ name, assetKeys: [] })),
+          record.subjects!,
         ]),
     );
     setPromptSubjects(subjects);
@@ -5007,12 +4938,14 @@ export default function Home() {
           ...(children.length ? { children } : {}),
         };
       });
+    const manifestMode =
+      (overrides.generation as { mode?: string } | undefined)?.mode ?? "T2VA";
     await writable.write(
       JSON.stringify(
         {
           id: shot.id,
           title: shot.title,
-          references: { subjects },
+          ...(manifestMode === "R2VA" ? { references: { subjects } } : {}),
           ...overrides,
         },
         null,
@@ -7037,7 +6970,7 @@ export default function Home() {
             </div>
           </div>
           <div
-            className="relative flex min-h-0 flex-none flex-col overflow-y-auto border-t border-white/7 bg-card/35"
+            className="relative flex min-h-0 flex-none flex-col overflow-hidden border-t border-white/7 bg-card/35"
             style={{ height: promptPanelHeight }}
           >
             <div
@@ -7057,7 +6990,7 @@ export default function Home() {
               <span className="field-label">H3 提示词模块</span>
               <span className="text-[10px] text-zinc-500">{activeMode}</span>
             </div>
-            <div className="space-y-2 px-4 pt-2">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 pt-2">
               {activeMode === "R2VA" && (
                 <div className="rounded-lg border border-border bg-muted/20 p-2">
                   <div className="flex items-start justify-between gap-2">
@@ -7541,8 +7474,8 @@ export default function Home() {
                 </div>
               )}
             </div>
-            <div className="sticky bottom-0 z-20 border-t border-border/60 bg-card/95 px-4 pt-2 pb-3 backdrop-blur">
-              <div className="min-h-4 text-center text-[9px] font-medium">
+            <div className="relative mt-auto shrink-0 border-t border-border/60 bg-card/95 p-4 backdrop-blur">
+              <div className="pointer-events-none absolute bottom-full left-0 right-0 min-h-4 text-center text-[9px] font-medium">
                 {promptNotice && (
                   <span
                     className={
@@ -7555,24 +7488,14 @@ export default function Home() {
                   </span>
                 )}
               </div>
-              <div className="flex w-full gap-2">
-                <Button
-                  type="button"
-                  onClick={handleGeneratePrompt}
-                  className="h-10 flex-1 gap-1.5 bg-[#f4bd50] px-3 text-[10px] font-semibold text-[#17120a] hover:bg-[#ffd070]"
-                >
-                  <Sparkles className="size-3.5" />
-                  生成提示词
-                </Button>
-                <Button
-                  type="button"
-                  onClick={openPromptViewer}
-                  className="h-10 flex-1 gap-1.5 bg-[#f4bd50] px-3 text-[10px] font-semibold text-[#17120a] hover:bg-[#ffd070]"
-                >
-                  <Eye className="size-3.5" />
-                  查看完整提示词
-                </Button>
-              </div>
+              <Button
+                type="button"
+                onClick={openPromptViewer}
+                className="h-10 w-full gap-1.5 bg-[#f4bd50] px-3 text-[10px] font-semibold text-[#17120a] hover:bg-[#ffd070]"
+              >
+                <Eye className="size-3.5" />
+                查看完整提示词
+              </Button>
             </div>
           </div>
         </section>
@@ -8126,8 +8049,7 @@ export default function Home() {
               <div>
                 <h2 className="text-sm font-semibold">完整提示词</h2>
                 <p className="mt-1 text-[10px] text-muted-foreground">
-                  保存后会更新当前提示词，并同步结构化的画面描述、时间和 Ref2VA
-                  字段 · {activeMode}
+                  内容根据当前片段的 clip.json 提示词字段实时拼接 · {activeMode}
                 </p>
               </div>
               <button
@@ -8142,8 +8064,8 @@ export default function Home() {
             <textarea
               autoFocus
               value={promptDraft}
-              onChange={(event) => setPromptDraft(event.target.value)}
-              placeholder="请先生成提示词，或粘贴外部 AI 优化后的 H3 提示词"
+              readOnly
+              placeholder="当前片段暂无可显示的提示词"
               className="mt-4 min-h-0 flex-1 resize-none rounded-lg border border-border bg-muted/25 p-3 font-mono text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/60"
             />
             <div className="mt-4 flex justify-end gap-2">
@@ -8154,13 +8076,6 @@ export default function Home() {
                 className="h-8 px-4 text-xs"
               >
                 取消
-              </Button>
-              <Button
-                type="button"
-                onClick={savePromptDraft}
-                className="h-8 bg-[#f4bd50] px-4 text-xs font-semibold text-[#17120a] hover:bg-[#ffd070]"
-              >
-                保存
               </Button>
             </div>
           </div>
