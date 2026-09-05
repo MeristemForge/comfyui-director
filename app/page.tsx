@@ -1877,6 +1877,20 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [shotTasks]);
 
+  // Keep ComfyUI responsive during active work, but release cached models
+  // after 15 minutes with no running generation task.
+  useEffect(() => {
+    if (Object.keys(shotTasks).length) return;
+    const timer = window.setTimeout(() => {
+      void fetch('/api/comfyui/free', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comfy_url: comfyUrl }),
+      });
+    }, 15 * 60 * 1000);
+    return () => window.clearTimeout(timer);
+  }, [shotTasks, comfyUrl]);
+
   useEffect(() => {
     let disposed = false;
     const checkConnection = async () => {
