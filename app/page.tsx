@@ -40,6 +40,15 @@ type Shot = {
   detail: string;
   meta: string;
   state: string;
+  prompt?: {
+    integrated_multimodal_description?: string;
+    subject_definitions?: string;
+    summary?: string;
+    retention_analysis?: string;
+    detailed_description?: PromptSegment[];
+    overall_soundscape?: string;
+    non_diegetic_music?: string;
+  };
 };
 type ProjectShotRecord = Shot & {
   references?: { subjects?: PromptSubject[] };
@@ -115,9 +124,6 @@ type PromptBuilderSettings = {
   framing: string;
   camera: string;
   lens: string;
-  lighting: string;
-  emotion: string;
-  music: string;
 };
 type PromptBuilderSettingsInput = Partial<PromptBuilderSettings>;
 type PromptSubject = {
@@ -198,18 +204,16 @@ const promptBuilderDefaults: PromptBuilderSettings = {
   framing: "",
   camera: "",
   lens: "",
-  lighting: "",
-  emotion: "",
-  music: "none",
 };
 function normalizePromptBuilderSettings(
   settings?: PromptBuilderSettingsInput,
 ): PromptBuilderSettings {
-  const normalizedMusic =
-    settings?.music && settings.music !== "none"
-      ? "music"
-      : promptBuilderDefaults.music;
-  return { ...promptBuilderDefaults, ...settings, music: normalizedMusic };
+  return {
+    style: settings?.style ?? promptBuilderDefaults.style,
+    framing: settings?.framing ?? promptBuilderDefaults.framing,
+    camera: settings?.camera ?? promptBuilderDefaults.camera,
+    lens: settings?.lens ?? promptBuilderDefaults.lens,
+  };
 }
 const promptBuilderOptions = {
   style: [
@@ -221,6 +225,9 @@ const promptBuilderOptions = {
     ["noir", "黑色电影"],
     ["soft_romance", "柔和爱情片"],
     ["animation_3d", "三维动画"],
+    ["hitchcock_suspense", "希区柯克式悬疑"],
+    ["neo_noir", "现代黑色电影"],
+    ["arthouse_minimal", "作者电影·极简"],
   ] as const,
   framing: [
     ["closeup", "特写"],
@@ -230,6 +237,10 @@ const promptBuilderOptions = {
     ["two_shot", "双人中景（同框）"],
     ["over_shoulder", "过肩镜头"],
     ["insert", "局部特写"],
+    ["extreme_closeup", "极端特写"],
+    ["wide_establishing", "大全景·建立镜头"],
+    ["pov", "POV 主观视角"],
+    ["aerial", "航拍全景"],
   ],
   camera: [
     ["static", "静止"],
@@ -241,6 +252,10 @@ const promptBuilderOptions = {
     ["arc", "弧线环绕"],
     ["rack_focus", "焦点转移"],
     ["handheld", "轻微手持"],
+    ["dolly_zoom", "希区柯克变焦"],
+    ["drone_orbit", "无人机环绕"],
+    ["drone_rise", "无人机升空拉远"],
+    ["crane", "升降摇臂"],
   ],
   lens: [
     ["ultra_wide_14", "超广角 · 14mm"],
@@ -251,6 +266,10 @@ const promptBuilderOptions = {
     ["standard_50", "标准人像 · 50mm"],
     ["portrait_85", "人像长焦 · 85mm"],
     ["tele_135", "长焦 · 135mm"],
+    ["fisheye_8", "鱼眼 · 8mm"],
+    ["macro_100", "微距 · 100mm"],
+    ["anamorphic_50", "变形宽银幕 · 50mm"],
+    ["anamorphic_75", "变形宽银幕 · 75mm"],
   ],
   lighting: [
     ["warm", "暖黄色"],
@@ -306,10 +325,7 @@ const subjectAssetRoleGroups = [
   { label: "场景与物体", values: ["environment", "object"] },
   { label: "视觉属性", values: ["style"] },
 ] as const;
-const promptBuilderPhrases: Record<
-  keyof PromptBuilderSettings,
-  Record<string, string>
-> = {
+const promptBuilderPhrases: Record<string, Record<string, string>> = {
   style: {
     realistic_cinematic:
       "Realistic live-action cinematic imagery with coherent lighting, natural skin texture, and detailed facial features.",
@@ -326,6 +342,12 @@ const promptBuilderPhrases: Record<
       "Cinematic live-action romantic imagery with gentle natural light, soft tonal transitions, and intimate visual detail.",
     animation_3d:
       "High-quality 3D animated cinematic imagery with coherent materials, expressive facial detail, controlled lighting, and stable character design.",
+    hitchcock_suspense:
+      "Hitchcockian suspense imagery with precise visual geometry, subjective tension, controlled reveals, and psychologically motivated camera language.",
+    neo_noir:
+      "Contemporary neo-noir imagery with urban night contrast, motivated practical light, reflective surfaces, and morally uneasy atmosphere.",
+    arthouse_minimal:
+      "Minimalist arthouse cinema with patient observation, deliberate negative space, restrained camera movement, and composed natural performances.",
   },
   framing: {
     closeup: "a close-up shot",
@@ -335,6 +357,10 @@ const promptBuilderPhrases: Record<
     two_shot: "a medium two-shot",
     over_shoulder: "an over-the-shoulder shot",
     insert: "an insert close-up shot",
+    extreme_closeup: "an extreme close-up shot isolating a precise facial or object detail",
+    wide_establishing: "a wide establishing shot that clearly maps the environment and spatial relationships",
+    pov: "a first-person point-of-view shot from the subject's visual perspective",
+    aerial: "a high aerial establishing shot that reveals the surrounding geography",
   },
   camera: {
     static: "The camera holds a static shot",
@@ -347,6 +373,10 @@ const promptBuilderPhrases: Record<
     rack_focus:
       "The focus shifts gently between the foreground and background subject",
     handheld: "The camera has a restrained handheld film-camera movement",
+    dolly_zoom: "The camera performs a controlled dolly zoom, shifting perspective while keeping the subject's scale nearly constant",
+    drone_orbit: "The camera makes a smooth stabilized drone orbit around the subject or location",
+    drone_rise: "The camera rises and pulls back in a smooth stabilized drone reveal",
+    crane: "The camera moves on a controlled crane or jib, changing height with deliberate cinematic ease",
   },
   lens: {
     ultra_wide_14:
@@ -365,6 +395,14 @@ const promptBuilderPhrases: Record<
       "Use a wide-aperture 85mm portrait telephoto lens with flattering facial proportions, compressed space, and shallow depth of field",
     tele_135:
       "Use a 135mm telephoto cinematic lens with compressed space, isolated subject detail, and strongly softened background",
+    fisheye_8:
+      "Use an 8mm fisheye lens with pronounced barrel distortion, expanded foreground perspective, and clearly controlled edge warping",
+    macro_100:
+      "Use a 100mm macro lens for precise close detail, shallow depth of field, and physically plausible focus falloff",
+    anamorphic_50:
+      "Use a 50mm anamorphic lens with widescreen compression, oval bokeh, subtle horizontal flare, and cinematic depth",
+    anamorphic_75:
+      "Use a 75mm anamorphic portrait lens with widescreen compression, controlled oval bokeh, and elegant subject separation",
     wide_shallow:
       "Use a wide-aperture 50mm standard cinematic lens for natural human proportions, detailed facial features, and shallow depth of field",
     standard:
@@ -1735,7 +1773,10 @@ export default function Home() {
               subject_definitions: buildSubjectDefinitions(promptSubjects[shot.id] ?? []),
               summary: generatedSummary,
               retention_analysis: buildRetentionAnalysis(promptSubjects[shot.id] ?? []) || fields.retentionAnalysis,
-              detailed_description: detailedDescription,
+              detailed_description: detailedDescription.map((segment, index) => ({
+                ...segment,
+                settings: normalizePromptBuilderSettings(segment.settings),
+              })),
               overall_soundscape: fields.soundscape,
               non_diegetic_music: fields.music,
             }
@@ -3193,14 +3234,10 @@ export default function Home() {
     const styleOpening =
       promptBuilderPhrases.style[globalSettings.style] ??
       promptBuilderPhrases.style.realistic_cinematic;
-    const musicSettings = globalSettings;
     const sound = ref2vaDefaults.soundscape;
     const customSoundscape = refFields.soundscape.trim();
     const soundscape = customSoundscape || sound;
-    const music =
-      musicSettings.music === "music"
-        ? promptBuilderPhrases.music.music
-        : promptBuilderPhrases.music.none;
+    const music = promptBuilderPhrases.music.none;
     const refs = promptMode === "R2VA" ? referenceMentionOptions() : [];
     const subjectDefinitions = subjects
       .filter((subject) => subject.name.trim())
@@ -3346,7 +3383,7 @@ export default function Home() {
         )
           ? `\n${wardrobeSubjects.map((subject) => `The wardrobe reference assigned to "${subject.name.trim()}" is authoritative: preserve the exact clothing, colors, materials, accessories, and wearing state throughout the target video unless an explicit action changes them.`).join("\n")}`
           : "";
-      nextPrompt = `subject_definitions:\n${definitions}\n\nsummary:\n${summary}\n\nretention_analysis:\n${retentionAnalysis || [...subjectRetention, ...referenceRetention].join("\n") || "<Subject 1> remains consistent throughout the target video."}${wardrobeContinuity}\n\ndetailed_description:\n${visualBody}\n\noverall_soundscape: ${soundscape}\n\nnon_diegetic_music: ${refFields.music.trim() || music}`;
+      nextPrompt = `subject_definitions:\n${definitions}\n\nsummary:\n${summary}\n\nretention_analysis:\n${retentionAnalysis || [...subjectRetention, ...referenceRetention].join("\n") || "<Subject 1> remains consistent throughout the target video."}${wardrobeContinuity}\n\ndetailed_description:\n${visualBody}\n\noverall_soundscape:\n${soundscape}\n\nnon_diegetic_music:\n${refFields.music.trim() || music}`;
     } else {
       const alignment =
         frameMode === "first_last"
@@ -3360,7 +3397,7 @@ export default function Home() {
         promptMode === "T2VA"
           ? "integrated_multimodal_description"
           : "integrated_multimodal_description";
-      nextPrompt = `${alignment ? `${alignment}\n\n` : ""}${field}:\n${visualBody}\n\noverall_soundscape: ${soundscape}\n\nnon_diegetic_music: ${music}`;
+      nextPrompt = `${alignment ? `${alignment}\n\n` : ""}${field}:\n${visualBody}\n\noverall_soundscape:\n${soundscape}\n\nnon_diegetic_music:\n${music}`;
     }
     setPrompt(nextPrompt);
     setShotPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
@@ -3384,8 +3421,35 @@ export default function Home() {
     if (/^integrated_multimodal_description:/i.test(normalized)) return "T2VA";
     return null;
   }
-  function openPromptViewer() {
-    const nextPrompt = generateH3Prompt(activeMode);
+  async function openPromptViewer() {
+    let storedPrompt = taskShot?.prompt;
+    if (projectDirectory && taskShot) {
+      try {
+        const clips = await projectDirectory.getDirectoryHandle("片段");
+        const directory = await clips.getDirectoryHandle(
+          `${taskShot.id}-${safeFileStem(taskShot.title)}`,
+        );
+        const file = await directory.getFileHandle("clip.json");
+        const data = JSON.parse(await (await file.getFile()).text()) as {
+          prompt?: ProjectShotRecord["prompt"];
+        };
+        storedPrompt = data.prompt ?? storedPrompt;
+      } catch {
+        // Fall back to the loaded in-memory prompt when the manifest is unavailable.
+      }
+    }
+    const storedDescription = storedPrompt?.detailed_description
+      ?.map((segment, index) => {
+        const shotNumber = segment.id.match(/segment-(\d+)$/i)?.[1] ?? `${index + 1}`;
+        return `[Shot ${shotNumber}]\n${segment.description.trim()}`;
+      })
+      .filter(Boolean)
+      .join("\n\n");
+    const nextPrompt = storedPrompt
+      ? activeMode === "R2VA"
+        ? `subject_definitions:\n${storedPrompt.subject_definitions ?? ""}\n\nsummary:\n${storedPrompt.summary ?? ""}\n\nretention_analysis:\n${storedPrompt.retention_analysis ?? ""}\n\ndetailed_description:\n${storedDescription ?? ""}\n\noverall_soundscape:\n${storedPrompt.overall_soundscape ?? ""}\n\nnon_diegetic_music:\n${storedPrompt.non_diegetic_music ?? ""}`
+        : `integrated_multimodal_description:\n${storedPrompt.integrated_multimodal_description ?? ""}\n\noverall_soundscape:\n${storedPrompt.overall_soundscape ?? ""}\n\nnon_diegetic_music:\n${storedPrompt.non_diegetic_music ?? ""}`
+      : generateH3Prompt(activeMode);
     setPromptDraft(nextPrompt ?? "");
     setPromptViewerOpen(true);
   }
@@ -3840,7 +3904,7 @@ export default function Home() {
   function applyProjectShotRecords(records: ProjectShotRecord[]) {
     setShots(
       records.map(
-        ({ generation: _generation, references: _references, prompt: _prompt, ...shot }) => shot,
+        ({ generation: _generation, references: _references, ...shot }) => shot,
       ),
     );
     const settings = Object.fromEntries(
@@ -7259,7 +7323,7 @@ export default function Home() {
                 <div className="rounded-lg border border-border bg-muted/20 p-2">
                   <label>
                     <span className="field-label">保留分析（retention_analysis）</span>
-                    <textarea readOnly value={ref2vaFields[taskShot.id]?.retentionAnalysis ?? ""} placeholder="根据主体和参考素材自动生成" className="mt-1 min-h-14 w-full resize-y rounded-md border border-border bg-muted/25 p-2 text-[10px] leading-4 outline-none placeholder:text-muted-foreground" />
+                    <textarea readOnly value={ref2vaFields[taskShot.id]?.retentionAnalysis || taskShot.prompt?.retention_analysis || ""} placeholder="根据主体和参考素材自动生成" className="mt-1 min-h-14 w-full resize-y rounded-md border border-border bg-muted/25 p-2 text-[10px] leading-4 outline-none placeholder:text-muted-foreground" />
                   </label>
                 </div>
                 </>
