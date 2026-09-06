@@ -195,7 +195,7 @@ function buildSubjectDefinitions(subjects: PromptSubject[]) {
       const childId = existingIndex >= 0 ? existingIndex + 1 : ++childNumber;
       if (existingIndex >= 0) return "";
       return role === "clothing"
-        ? `<Subject ${childId}> is the wardrobe-only reference "${child.name.trim()}"${sourceText}. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference.`
+        ? `<Subject ${childId}> is the wardrobe-only reference "${child.name.trim()}"${sourceText}, to be worn by <Subject ${index + 1}>. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference. <Subject ${childId}> must not appear as a separate visible person or independent subject in the target video.`
         : `<Subject ${childId}> is the ${noun} "${child.name.trim()}"${sourceText}.`;
     }).filter(Boolean).join("\n");
     const roles = subject.assetKeys.map((key) => subject.assetRoles?.[key] ?? "composite");
@@ -203,7 +203,7 @@ function buildSubjectDefinitions(subjects: PromptSubject[]) {
     const vocalLine = isVocalCharacter ? `\nThe associated vocal source is (S${index + 1}).` : "";
     const wardrobeRefs = subject.assetKeys.filter((key) => subject.assetRoles?.[key] === "clothing").map((key) => referenceLabel(key)).filter(Boolean);
     const definition = roles.length > 0 && roles.every((role) => role === "clothing")
-      ? `<Subject ${index + 1}> is the wardrobe-only reference "${subject.name.trim()}"${wardrobeRefs.length ? ` from ${wardrobeRefs.join(", ")}` : ""}. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference.`
+      ? `<Subject ${index + 1}> is the wardrobe-only reference "${subject.name.trim()}"${wardrobeRefs.length ? ` from ${wardrobeRefs.join(", ")}` : ""}. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference. <Subject ${index + 1}> must not appear as a separate visible person or independent subject in the target video.`
       : `<Subject ${index + 1}> is the subject named "${subject.name.trim()}"${own.length ? `. ${own.join(". ")}.` : "."}`;
     const identityGuard = "";
     return `${definition}${identityGuard}${vocalLine}${children ? `\n${children}` : ""}`;
