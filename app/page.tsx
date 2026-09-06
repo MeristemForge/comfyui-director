@@ -219,7 +219,10 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
       const childId = existingIndex >= 0 ? existingIndex + 1 : ++childNumber;
       child.assetKeys.forEach((key) => childIds.set(key, childId));
       const alreadyConfigured = child.assetKeys.some((key) => Boolean(subject.referenceRetentions?.[key]?.visual));
-      return alreadyConfigured ? "" : `<Subject ${childId}> (appears on <Subject ${index + 1}> throughout the target video): ${action}${refs ? ` from ${refs}` : ""} onto <Subject ${index + 1}>.`;
+      if (alreadyConfigured) return "";
+      const transferRule = `<Subject ${childId}> (appears on <Subject ${index + 1}> throughout the target video): ${action}${refs ? ` from ${refs}` : ""} onto <Subject ${index + 1}>.`;
+      if (role === "clothing") return `<Subject ${childId}>: fully_preserved - preserve the complete wardrobe reference, including accessories, garment details, colors, and materials throughout the target video.\n${transferRule}`;
+      return transferRule;
     }).filter(Boolean);
     const roles = subject.assetKeys.map((key) => subject.assetRoles?.[key] ?? "composite");
     const ownOnlyWardrobe = roles.length > 0 && roles.every((role) => role === "clothing");
@@ -236,16 +239,22 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
     const audioRule = subject.audioRetention
       ? `<Subject ${index + 1}> audio reference: ${subject.audioRetention}.`
       : "";
-    const aggregateScopes = subject.assetKeys.map((assetKey) => {
+    const aggregateEntries = subject.assetKeys.map((assetKey) => {
       const role = subject.assetRoles?.[assetKey] ?? "composite";
-      return role === "identity" ? "facial identity and facial features" : role === "full_body" ? "body proportions, physical build, and full-body structure" : role === "composite" ? "facial identity, facial features, body proportions, and physical build" : role === "pose" ? "pose and body language" : role === "motion" ? "motion and action patterns" : role === "voice" ? "vocal identity and performance characteristics" : "";
-    }).filter(Boolean);
-    const aggregateRule = aggregateScopes.length
-      ? `<Subject ${index + 1}>: ${retentionMode} - preserve the referenced ${Array.from(new Set(aggregateScopes)).join(", ")} throughout the target video.`
-      : "";
+      const scope = role === "identity" ? "facial identity and facial features" : role === "full_body" ? "body proportions, physical build, and full-body structure" : role === "composite" ? "facial identity, facial features, body proportions, and physical build" : role === "pose" ? "pose and body language" : role === "motion" ? "motion and action patterns" : role === "voice" ? "vocal identity and performance characteristics" : "";
+      return scope ? { mode: subject.referenceRetentions?.[assetKey]?.visual ?? "fully_preserved", scope } : null;
+    }).filter(Boolean) as Array<{ mode: string; scope: string }>;
+    const aggregateModes = Array.from(new Set(aggregateEntries.map((entry) => entry.mode)));
+    const aggregateRule = aggregateModes.map((mode) => {
+      const scopes = Array.from(new Set(aggregateEntries.filter((entry) => entry.mode === mode).map((entry) => entry.scope))).join(", ");
+      return mode === "partially_preserved" ? `partially preserve the key aspects of ${scopes}` : mode === "weak_reference" ? `use only the general characteristics of ${scopes}` : mode === "attribute_transfer" ? `transfer the referenced ${scopes}` : `fully preserve the referenced ${scopes}`;
+    }).join("; ");
+    const aggregateMode = aggregateModes.length === 1 ? aggregateModes[0] : "partially_preserved";
+    const aggregateLine = aggregateRule ? `<Subject ${index + 1}>: ${aggregateMode} - ${aggregateRule} throughout the target video.` : "";
     const retentionAssetKeys = [...subject.assetKeys, ...(subject.children ?? []).flatMap((child) => child.assetKeys)];
     const assetRules = retentionAssetKeys.map((assetKey) => {
       const config = subject.referenceRetentions?.[assetKey] ?? {};
+      if (childIds.has(assetKey) && !config.visual) return "";
       const label = referenceLabel(assetKey) ?? assetKey;
       const mode = config.visual ?? "fully_preserved";
       const target = `<Subject ${index + 1}>`;
@@ -280,9 +289,12 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
           : mode === "attribute_transfer"
             ? `transfer the referenced ${preservedScope} onto ${target}`
             : `use the referenced ${preservedScope} only as a weak visual guide`;
+      if (childIds.has(assetKey) && role === "clothing" && mode === "attribute_transfer") {
+        return `${ruleSubject}: fully_preserved - preserve the referenced wardrobe, accessories, garment details, colors, and materials throughout the target video.\n${ruleSubject}: ${mode} - ${relationText}.`;
+      }
       return `${ruleSubject}: ${mode} - ${relationText}.`;
     }).filter(Boolean);
-    return [...(aggregateRule ? [aggregateRule] : []), ...assetRules, ...(aggregateRule || assetRules.length ? [] : [`<Subject ${index + 1}> (appears throughout the target video): ${retentionMode} - ${retentionText}`]), ...(audioRule ? [audioRule] : []), ...childRules];
+    return [...(aggregateLine ? [aggregateLine] : []), ...assetRules, ...(aggregateLine || assetRules.length ? [] : [`<Subject ${index + 1}> (appears throughout the target video): ${retentionMode} - ${retentionText}`]), ...(audioRule ? [audioRule] : []), ...childRules];
   }).join("\n");
 }
 type PromptSegment = {
@@ -2549,13 +2561,15 @@ export default function Home() {
     const mirror = document.createElement("div");
     const marker = document.createElement("span");
     const inputRect = input.getBoundingClientRect();
-    Object.assign(mirror.style, { position: "fixed", left: `${inputRect.left}px`, top: `${inputRect.top}px`, visibility: "hidden", whiteSpace: "pre", width: "max-content", font: style.font, lineHeight: style.lineHeight, padding: style.padding, border: style.border, boxSizing: "border-box" });
+    Object.assign(mirror.style, { position: "fixed", left: `${inputRect.left - input.scrollLeft}px`, top: `${inputRect.top}px`, visibility: "hidden", whiteSpace: "pre", width: "max-content", font: style.font, lineHeight: style.lineHeight, padding: style.padding, border: style.border, boxSizing: "border-box" });
     mirror.textContent = input.value.slice(0, caret) || "\u200b";
     marker.textContent = "\u200b";
     mirror.appendChild(marker);
     document.body.appendChild(mirror);
     const markerRect = marker.getBoundingClientRect();
-    setMentionPosition({ left: markerRect.right + 6, top: markerRect.bottom + 4 });
+    const popupWidth = 256;
+    const left = Math.min(markerRect.right + 6, window.innerWidth - popupWidth - 8);
+    setMentionPosition({ left: Math.max(8, left), top: markerRect.bottom + 4 });
     mirror.remove();
   }
   function refocusSubjectInput() {
@@ -5956,10 +5970,10 @@ export default function Home() {
       rightSideLeft + popupWidth <= window.innerWidth - 8
         ? rightSideLeft
         : Math.max(8, markerRect.left - popupWidth - 6);
-    const top = Math.min(
-      Math.max(8, markerRect.top - 4),
-      Math.max(8, window.innerHeight - popupHeight - 8),
-    );
+    const belowTop = markerRect.bottom + 4;
+    const top = belowTop + popupHeight <= window.innerHeight - 8
+      ? belowTop
+      : Math.max(8, markerRect.top - popupHeight - 4);
     setMentionPosition({ left, top });
     mirror.remove();
   }
