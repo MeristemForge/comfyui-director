@@ -15,6 +15,7 @@ import {
   ImagePlus,
   MapPinned,
   Mic,
+  Minus,
   MoreHorizontal,
   Package,
   Play,
@@ -24,6 +25,7 @@ import {
   Shirt,
   Trash2 as TrashIcon,
   UserRound,
+  Video,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -301,9 +303,25 @@ type PromptSegment = {
   id: string;
   description: string;
   settings: PromptBuilderSettings;
+  layoutEntities?: Array<{ id: string; type: "camera" | "subject" | "object"; name: string; x: number; y: number; facing?: string; relationRole?: string }>;
+  cameraDirection?: string;
+  cameraDirectionCustom?: string;
+  cameraTarget?: string;
   start?: number;
   end?: number;
 };
+function buildLayoutDescription(entities: PromptSegment["layoutEntities"]) {
+  if (!entities?.length) return "";
+  const lines = entities.filter((entity) => entity.type !== "camera").map((entity) => {
+    const x = Math.round(entity.x * 100);
+    const y = Math.round(entity.y * 100);
+    const zone = x < 34 ? "left" : x > 66 ? "right" : "center";
+    const vertical = y < 34 ? "upper" : y > 66 ? "lower" : "middle";
+    const facing = entity.facing ? `, facing ${entity.facing}` : "";
+    return `${entity.type === "subject" ? entity.name : `The object named "${entity.name}"`} is positioned in the ${vertical}-${zone} area of the frame (approximately ${x}% from the left and ${y}% from the top)${facing}.`;
+  });
+  return lines.length ? `Spatial blocking:\n${lines.join("\n")}\nMaintain these screen positions throughout the shot and do not swap subject sides unless explicitly instructed.` : "";
+}
 type Ref2vaFields = {
   summary: string;
   taskType: "reference generation" | "video editing" | "video continuation";
@@ -1324,6 +1342,9 @@ export default function Home() {
   const [duration, setDuration] = useState("6 秒");
   const [resolution, setResolution] = useState("864 × 480");
   const [aspect, setAspect] = useState("16:9");
+  const [layoutSelectedEntity, setLayoutSelectedEntity] = useState(0);
+  const [objectDialogOpen, setObjectDialogOpen] = useState(false);
+  const [objectDialogName, setObjectDialogName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [promptBuilderSettings, setPromptBuilderSettings] = useState<
     Record<string, PromptBuilderSettings>
@@ -1456,6 +1477,23 @@ export default function Home() {
   const durationSeconds = Number.parseFloat(duration) || 6;
   const settingsSegment =
     settingsSegmentIndex !== null ? activeSegments[settingsSegmentIndex] : null;
+  useEffect(() => {
+    if (!taskShot) return;
+    const subjects = promptSubjects[taskShot.id] ?? [];
+    if (!subjects.length) return;
+    setPromptSegments((current) => {
+      const segments = current[taskShot.id] ?? [];
+      const next = segments.map((segment) => {
+        const existing = segment.layoutEntities ?? [];
+        const required = [{ id: "camera", type: "camera" as const, name: "摄像机", x: 0.5, y: 0.92 }, ...subjects.map((subject, index) => ({ id: `subject-${index + 1}`, type: "subject" as const, name: subject.name || `<Subject ${index + 1}>`, x: (index + 1) / (subjects.length + 1), y: 0.5 }))];
+        const merged = required.map((entity) => existing.find((item) => item.id === entity.id) ?? entity);
+        const customObjects = existing.filter((item) => item.type === "object");
+        const nextEntities = [...merged, ...customObjects];
+        return JSON.stringify(nextEntities) === JSON.stringify(existing) ? segment : { ...segment, layoutEntities: nextEntities };
+      });
+      return next === segments ? current : { ...current, [taskShot.id]: next };
+    });
+  }, [taskShot, promptSubjects]);
   useEffect(() => {
     const savedComfyUrl = window.localStorage.getItem("comfyui-url");
     if (savedComfyUrl) {
@@ -3433,7 +3471,9 @@ export default function Home() {
           settings.camera && promptBuilderPhrases.camera[settings.camera],
           settings.lens && promptBuilderPhrases.lens[settings.lens],
         ].filter(Boolean);
-        const integratedDescription = [segmentDescription, cameraParts.join(". ")].filter(Boolean).join(" ");
+        const selectedDirection = segment.cameraDirection === "自定义" ? segment.cameraDirectionCustom?.trim() : segment.cameraDirection;
+        const cameraLayout = [selectedDirection && `The camera uses a ${selectedDirection} viewing direction.`, segment.cameraTarget && `The camera is aimed at ${segment.cameraTarget}.`].filter(Boolean).join(" ");
+        const integratedDescription = [buildLayoutDescription(segment.layoutEntities), cameraLayout, segmentDescription, cameraParts.join(". ")].filter(Boolean).join("\n\n");
         return `[Shot ${index + 1}]${timing}\n${integratedDescription}${dialogueGuard}`;
       })
       .join("\n\n");
@@ -7149,6 +7189,16 @@ export default function Home() {
           </div>
         </div>
       )}
+      {objectDialogOpen && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-black/60 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setObjectDialogOpen(false); }}>
+          <div className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between"><span className="text-sm font-semibold">添加场景物体</span><button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setObjectDialogOpen(false)} aria-label="关闭">×</button></div>
+            <label className="field-label">物体名称</label>
+            <input autoFocus value={objectDialogName} onChange={(event) => setObjectDialogName(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setObjectDialogOpen(false); if (event.key === "Enter" && objectDialogName.trim()) { const segment = activeSegments[activeSegmentIndex]; if (segment) updatePromptSegment(activeSegmentIndex, { layoutEntities: [...(segment.layoutEntities ?? []), { id: `object-${Date.now()}`, type: "object", name: objectDialogName.trim(), x: 0.5, y: 0.5 }] }); setObjectDialogOpen(false); } }} placeholder="例如：桌子、门、汽车" className="mt-1 h-9 w-full rounded border border-border bg-muted/25 px-2 text-sm outline-none focus:border-primary" />
+            <div className="mt-4 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setObjectDialogOpen(false)}>取消</Button><Button type="button" disabled={!objectDialogName.trim()} onClick={() => { const segment = activeSegments[activeSegmentIndex]; if (segment) updatePromptSegment(activeSegmentIndex, { layoutEntities: [...(segment.layoutEntities ?? []), { id: `object-${Date.now()}`, type: "object", name: objectDialogName.trim(), x: 0.5, y: 0.5 }] }); setObjectDialogOpen(false); }}>添加物体</Button></div>
+          </div>
+        </div>
+      )}
       <header className="flex h-14 items-center justify-between border-b border-border bg-card px-4">
         <div className="flex items-center gap-3">
           <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
@@ -7678,6 +7728,30 @@ export default function Home() {
                           />
                         </label>
                         <div className="relative min-w-0 flex-1">
+                          <div className="relative grid gap-1.5 md:grid-cols-[minmax(0,1fr)_220px]">
+                            <div className="rounded border border-border/60 bg-black/10 p-1.5 md:col-start-1 md:row-start-1">
+                              <div className="mb-1 flex items-center justify-between text-[9px] text-muted-foreground"><span>场面调度（点击设置位置）</span><span>{aspect}</span></div>
+                            <div className="mb-1 flex flex-wrap gap-1"><button type="button" onClick={() => setLayoutSelectedEntity(0)} className={`rounded px-1.5 py-0.5 text-[8px] ${layoutSelectedEntity === 0 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>摄像机</button>{(promptSubjects[taskShot.id] ?? []).map((subject, subjectIndex) => <button key={subjectIndex} type="button" onClick={() => setLayoutSelectedEntity(subjectIndex + 1)} className={`rounded px-1.5 py-0.5 text-[8px] ${layoutSelectedEntity === subjectIndex + 1 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>{subject.name || `主体 ${subjectIndex + 1}`}</button>)}{(segment.layoutEntities ?? []).filter((entity) => entity.type === "object").map((entity, objectIndex) => <button key={entity.id} type="button" onClick={() => setLayoutSelectedEntity((segment.layoutEntities ?? []).findIndex((item) => item.id === entity.id))} className={`rounded px-1.5 py-0.5 text-[8px] ${layoutSelectedEntity === (segment.layoutEntities ?? []).findIndex((item) => item.id === entity.id) ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>◆ {entity.name}</button>)}</div>
+                            <div className="mb-1 flex w-full max-w-64 gap-1">
+                              <button type="button" className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded border border-primary/40 bg-primary/10 px-1.5 text-[8px] text-primary hover:bg-primary/20" onClick={() => { setObjectDialogName(""); setObjectDialogOpen(true); }}><Plus className="size-2.5" />添加物体</button>
+                              <button type="button" aria-label="删除当前物体" title="删除当前物体" className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded border border-red-400/40 bg-red-400/10 px-1.5 text-[8px] text-red-300 hover:bg-red-400/20 disabled:opacity-40" disabled={segment.layoutEntities?.[layoutSelectedEntity]?.type !== "object"} onClick={() => { const entities = [...(segment.layoutEntities ?? [])]; if (entities[layoutSelectedEntity]?.type !== "object") return; entities.splice(layoutSelectedEntity, 1); setLayoutSelectedEntity(0); updatePromptSegment(index, { layoutEntities: entities }); }}><TrashIcon className="size-2.5" />删除物体</button>
+                            </div>
+                            <div className="rounded border border-border/60 bg-black/10 p-1.5 md:absolute md:right-0 md:top-0 md:w-[220px]">
+                              <div className="mb-1 text-[9px] text-muted-foreground">摄像机调度</div>
+                              <div className="grid gap-1.5 sm:grid-cols-2">
+                                <label className="min-w-0"><span className="field-label mb-1">拍摄方向</span><select value={segment.cameraDirection ?? ""} onChange={(event) => updatePromptSegment(index, { cameraDirection: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="正面">正面</option><option value="侧面">侧面</option><option value="俯视">俯视</option><option value="仰视">仰视</option><option value="自定义">自定义</option></select>{segment.cameraDirection === "自定义" && <input value={segment.cameraDirectionCustom ?? ""} onChange={(event) => updatePromptSegment(index, { cameraDirectionCustom: event.target.value })} placeholder="输入拍摄方向" className="mt-1 h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black placeholder:text-zinc-500" />}</label>
+                                <label className="min-w-0"><span className="field-label mb-1">拍摄目标</span><select value={segment.cameraTarget ?? ""} onChange={(event) => updatePromptSegment(index, { cameraTarget: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="全场">全场</option>{(promptSubjects[taskShot.id] ?? []).map((subject, subjectIndex) => <option key={subjectIndex} value={`<Subject ${subjectIndex + 1}>`}>{subject.name || `主体 ${subjectIndex + 1}`}</option>)}</select></label>
+                              </div>
+                            </div>
+                            <div className="relative order-first grid w-full max-w-64 grid-cols-8 grid-rows-5 gap-px rounded bg-border/50 p-px md:col-start-1 md:row-start-2" style={{ aspectRatio: aspect.replace(" × ", "/").replace(":", "/") }}>
+                              {Array.from({ length: 40 }, (_, cell) => <button key={cell} type="button" className="relative rounded-[1px] bg-background/70 hover:bg-primary/20" onClick={() => {
+                                const entities = (segment.layoutEntities ?? (promptSubjects[taskShot.id] ?? []).map((subject, subjectIndex) => ({ id: `subject-${subjectIndex + 1}`, type: "subject" as const, name: subject.name || `<Subject ${subjectIndex + 1}>`, x: (subjectIndex + 1) / ((promptSubjects[taskShot.id] ?? []).length + 1), y: 0.5 }))).map((entity, entityIndex) => entityIndex === layoutSelectedEntity ? { ...entity, x: ((cell % 8) + 0.5) / 8, y: (Math.floor(cell / 8) + 0.5) / 5 } : entity);
+                                updatePromptSegment(index, { layoutEntities: entities });
+                              }} />)}
+                              {(segment.layoutEntities ?? []).map((entity, entityIndex) => <button key={entity.id} type="button" onClick={(event) => { event.stopPropagation(); setLayoutSelectedEntity(entityIndex); }} className="absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded bg-primary px-1 text-[8px] text-primary-foreground shadow" style={{ left: `${entity.x * 100}%`, top: `${entity.y * 100}%` }}>{entity.type === "camera" ? <Video className="inline size-3" aria-label="摄像机" /> : entity.type === "subject" ? <><UserRound className="mr-0.5 inline size-2.5" />{entity.name.replace(/^<Subject \d+>\s*/, "")}</> : `◆ ${entity.name}`}</button>)}
+                            </div>
+                            </div>
+                          </div>
                           <input
                             value={segment.description}
                             onChange={(event) => {
