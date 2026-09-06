@@ -307,6 +307,8 @@ type PromptSegment = {
   cameraDirection?: string;
   cameraDirectionCustom?: string;
   cameraTarget?: string;
+  shotSize?: string;
+  cameraMove?: string;
   start?: number;
   end?: number;
 };
@@ -3472,7 +3474,7 @@ export default function Home() {
           settings.lens && promptBuilderPhrases.lens[settings.lens],
         ].filter(Boolean);
         const selectedDirection = segment.cameraDirection === "自定义" ? segment.cameraDirectionCustom?.trim() : segment.cameraDirection;
-        const cameraLayout = [selectedDirection && `The camera uses a ${selectedDirection} viewing direction.`, segment.cameraTarget && `The camera is aimed at ${segment.cameraTarget}.`].filter(Boolean).join(" ");
+        const cameraLayout = [selectedDirection && `The camera uses a ${selectedDirection} viewing direction.`, segment.cameraTarget && `The camera is aimed at ${segment.cameraTarget}.`, segment.shotSize && `Shot size: ${segment.shotSize}.`, segment.cameraMove && `Camera movement: ${segment.cameraMove}.`].filter(Boolean).join(" ");
         const integratedDescription = [buildLayoutDescription(segment.layoutEntities), cameraLayout, segmentDescription, cameraParts.join(". ")].filter(Boolean).join("\n\n");
         return `[Shot ${index + 1}]${timing}\n${integratedDescription}${dialogueGuard}`;
       })
@@ -7741,6 +7743,8 @@ export default function Home() {
                               <div className="grid gap-1.5 sm:grid-cols-2">
                                 <label className="min-w-0"><span className="field-label mb-1">拍摄方向</span><select value={segment.cameraDirection ?? ""} onChange={(event) => updatePromptSegment(index, { cameraDirection: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="正面">正面</option><option value="侧面">侧面</option><option value="俯视">俯视</option><option value="仰视">仰视</option><option value="自定义">自定义</option></select>{segment.cameraDirection === "自定义" && <input value={segment.cameraDirectionCustom ?? ""} onChange={(event) => updatePromptSegment(index, { cameraDirectionCustom: event.target.value })} placeholder="输入拍摄方向" className="mt-1 h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black placeholder:text-zinc-500" />}</label>
                                 <label className="min-w-0"><span className="field-label mb-1">拍摄目标</span><select value={segment.cameraTarget ?? ""} onChange={(event) => updatePromptSegment(index, { cameraTarget: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="全场">全场</option>{(promptSubjects[taskShot.id] ?? []).map((subject, subjectIndex) => <option key={subjectIndex} value={`<Subject ${subjectIndex + 1}>`}>{subject.name || `主体 ${subjectIndex + 1}`}</option>)}</select></label>
+                                <label className="min-w-0"><span className="field-label mb-1">景别</span><select value={segment.shotSize ?? ""} onChange={(event) => updatePromptSegment(index, { shotSize: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="远景">远景</option><option value="全景">全景</option><option value="中景">中景</option><option value="近景">近景</option><option value="特写">特写</option></select></label>
+                                <label className="min-w-0"><span className="field-label mb-1">镜头运动</span><select value={segment.cameraMove ?? ""} onChange={(event) => updatePromptSegment(index, { cameraMove: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="固定">固定</option><option value="推近">推近</option><option value="拉远">拉远</option><option value="横移">横移</option><option value="环绕">环绕</option><option value="跟拍">跟拍</option><option value="摇镜">摇镜</option></select></label>
                               </div>
                             </div>
                             <div className="relative order-first grid w-full max-w-64 grid-cols-8 grid-rows-5 gap-px rounded bg-border/50 p-px md:col-start-1 md:row-start-2" style={{ aspectRatio: aspect.replace(" × ", "/").replace(":", "/") }}>
