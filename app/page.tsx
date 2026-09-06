@@ -16,7 +16,6 @@ import {
   MapPinned,
   MoreHorizontal,
   Package,
-  Palette,
   Play,
   Plus,
   RotateCcw,
@@ -197,7 +196,7 @@ const ref2vaDefaults: Ref2vaFields = {
   audioProcessing: [],
   retentionAnalysis: "",
   soundscape:
-    "Use natural diegetic ambience and synchronized physical sounds supported by the visible environment, actions, objects, and spatial context. Keep the sound realistic, restrained, and grounded in the scene. Do not add unrelated sounds or invent dialogue. Spoken lines are defined only in detailed_description.",
+    "Use natural diegetic ambience and synchronized physical sound effects based on the visible environment and actions. Keep the sound realistic and grounded in the scene. Do not add unrelated sounds or invent additional dialogue. Spoken dialogue is defined only in detailed_description.",
   music: "N/A",
 };
 const promptBuilderDefaults: PromptBuilderSettings = {
@@ -231,46 +230,20 @@ const promptBuilderOptions = {
     ["arthouse_minimal", "作者电影·极简"],
   ] as const,
   framing: [
-    ["closeup", "特写"],
-    ["close", "近景"],
-    ["medium_close", "中近景"],
-    ["medium", "中景"],
-    ["two_shot", "双人中景（同框）"],
-    ["over_shoulder", "过肩镜头"],
-    ["insert", "局部特写"],
-    ["extreme_closeup", "极端特写"],
-    ["wide_establishing", "大全景·建立镜头"],
-    ["pov", "POV 主观视角"],
-    ["aerial", "航拍全景"],
+    ["extreme_closeup", "大特写"], ["closeup", "特写"], ["close", "近景"],
+    ["medium_close", "中近景"], ["medium", "中景"], ["medium_wide", "中全景"],
+    ["wide", "全景"], ["extreme_wide", "大远景"],
   ],
   camera: [
-    ["static", "静止"],
-    ["push_slow", "慢速推近"],
-    ["pull_slow", "慢速拉远"],
-    ["track", "跟拍"],
-    ["pan", "横摇"],
-    ["tilt", "上下摇"],
-    ["arc", "弧线环绕"],
-    ["rack_focus", "焦点转移"],
-    ["handheld", "轻微手持"],
-    ["dolly_zoom", "希区柯克变焦"],
-    ["drone_orbit", "无人机环绕"],
-    ["drone_rise", "无人机升空拉远"],
-    ["crane", "升降摇臂"],
+    ["static", "固定镜头"], ["push_slow", "推镜"], ["pull_slow", "拉镜"],
+    ["front_follow", "前跟"], ["back_follow", "后跟"], ["side_follow", "侧跟"],
+    ["track", "横移"], ["pan", "摇镜"], ["crane_up", "升镜"], ["crane_down", "降镜"],
+    ["arc", "环绕"], ["handheld_follow", "手持跟拍"], ["gimbal_follow", "稳定器跟拍"], ["dolly_zoom", "希区柯克推拉"],
   ],
   lens: [
-    ["ultra_wide_14", "超广角 · 14mm"],
-    ["ultra_wide_18", "超广角 · 18mm"],
-    ["wide_24", "广角 · 24mm"],
-    ["wide_28", "广角 · 28mm"],
-    ["natural_35", "自然视角 · 35mm"],
-    ["standard_50", "标准人像 · 50mm"],
-    ["portrait_85", "人像长焦 · 85mm"],
-    ["tele_135", "长焦 · 135mm"],
-    ["fisheye_8", "鱼眼 · 8mm"],
-    ["macro_100", "微距 · 100mm"],
-    ["anamorphic_50", "变形宽银幕 · 50mm"],
-    ["anamorphic_75", "变形宽银幕 · 75mm"],
+    ["front_level", "正面平视"], ["side", "侧面"], ["back", "背面"],
+    ["low_angle", "低机位"], ["high_angle", "高机位"], ["overhead", "俯拍"],
+    ["upward", "仰拍"], ["over_shoulder", "过肩"], ["pov", "第一人称"],
   ],
   lighting: [
     ["warm", "暖黄色"],
@@ -1267,7 +1240,6 @@ export default function Home() {
     number | null
   >(null);
   const [promptViewerOpen, setPromptViewerOpen] = useState(false);
-  const [stylePanelOpen, setStylePanelOpen] = useState(false);
   const [promptDraft, setPromptDraft] = useState("");
   const [promptNotice, setPromptNotice] = useState<{
     type: "success" | "error";
@@ -1284,6 +1256,7 @@ export default function Home() {
     start: number;
     query: string;
     selected: number;
+    category: "root" | "subject" | "camera" | "lens" | "framing" | "cameraMove";
   } | null>(null);
   const [mentionPosition, setMentionPosition] = useState({ left: 16, top: 16 });
   const [addDialog, setAddDialog] = useState(false);
@@ -1378,11 +1351,6 @@ export default function Home() {
   const durationSeconds = Number.parseFloat(duration) || 6;
   const settingsSegment =
     settingsSegmentIndex !== null ? activeSegments[settingsSegmentIndex] : null;
-  const activeStyle = taskShot
-    ? normalizePromptBuilderSettings(
-        activeSegments[0]?.settings ?? promptBuilderSettings[taskShot.id],
-      ).style
-    : promptBuilderDefaults.style;
   useEffect(() => {
     const savedComfyUrl = window.localStorage.getItem("comfyui-url");
     if (savedComfyUrl) {
@@ -1398,7 +1366,7 @@ export default function Home() {
       const legacySoundscapes = [
         "McDonald's indoor ambience, customer conversations, footsteps, register beeps, paper movement, and synchronized object handling.",
         "Use only realistic, synchronized physical sounds directly supported by visible actions and objects, such as footsteps, breathing, fabric movement, door movement, and object handling. Do not add mood-setting ambience, horror atmosphere, emotional sound beds, drones, tension effects, or unrequested music.",
-        "Use natural diegetic ambience and synchronized physical sounds appropriate to the visible environment, character actions, object handling, and spatial context. Keep the sound realistic and do not add unrelated sounds.",
+        "Use natural diegetic ambience and synchronized physical sound effects based on the visible environment and actions. Keep the sound realistic and grounded in the scene. Do not add unrelated sounds or invent additional dialogue. Spoken dialogue is defined only in detailed_description.",
         "Use realistic diegetic ambience appropriate to the visible environment, together with synchronized physical sounds directly supported by visible actions and objects. Keep all sounds natural and restrained. Do not add horror atmosphere, emotional sound beds, drones, tension effects, or unrequested music.",
       ];
       const nextSoundscape =
@@ -1852,7 +1820,10 @@ export default function Home() {
         Math.max(0, getPromptSegments(taskShot.id).length - 1),
       ),
     }));
-    setVideoUrl(shotVideos[taskShot.id] ?? null);
+    setVideoUrl(shotVideos[taskShot.id] ?? (taskShot as typeof taskShot & { output?: string }).output ?? null);
+    void loadArchivedShotVideo(taskShot).then((url) => {
+      if (url && activeShotIdRef.current === taskShot.id) setVideoUrl(url);
+    });
     setDuration(settings.duration);
     setResolution(settings.resolution);
     setAspect(settings.aspect);
@@ -1873,7 +1844,7 @@ export default function Home() {
                 ? "已停止"
                 : "等待生成",
     );
-  }, [storageReady, taskShot?.id]);
+  }, [storageReady, taskShot?.id, shotVideos, shotSettings]);
 
   useEffect(() => {
     if (!storageReady) return;
@@ -2047,7 +2018,11 @@ export default function Home() {
     setActiveShot(index);
     activeShotIdRef.current = nextShot.id;
     setPrompt(shotPrompts[nextShot.id] ?? "");
-    setVideoUrl(shotVideos[nextShot.id] ?? null);
+    const savedVideo = shotVideos[nextShot.id];
+    setVideoUrl(savedVideo ?? null);
+    void loadArchivedShotVideo(nextShot).then((url) => {
+      if (url && activeShotIdRef.current === nextShot.id) setVideoUrl(url);
+    });
     setGenerationStatus(
       nextShot.state === "已完成"
         ? "已完成"
@@ -2474,6 +2449,105 @@ export default function Home() {
     updatePromptSegment(subjectMention.segmentIndex, {
       description: `${before}<Subject ${subjectIndex + 1}> ${after}`,
     });
+    setSubjectMention(null);
+  }
+  function updateSubjectMentionPosition(input: HTMLInputElement, caret: number) {
+    const style = window.getComputedStyle(input);
+    const mirror = document.createElement("div");
+    const marker = document.createElement("span");
+    const inputRect = input.getBoundingClientRect();
+    Object.assign(mirror.style, { position: "fixed", left: `${inputRect.left}px`, top: `${inputRect.top}px`, visibility: "hidden", whiteSpace: "pre", width: "max-content", font: style.font, lineHeight: style.lineHeight, padding: style.padding, border: style.border, boxSizing: "border-box" });
+    mirror.textContent = input.value.slice(0, caret) || "\u200b";
+    marker.textContent = "\u200b";
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+    const markerRect = marker.getBoundingClientRect();
+    setMentionPosition({ left: markerRect.right + 6, top: markerRect.bottom + 4 });
+    mirror.remove();
+  }
+  function refocusSubjectInput() {
+    window.setTimeout(() => {
+      const input = document.querySelector<HTMLInputElement>(
+        'input[placeholder="输入 @ 选择主体引用"]',
+      );
+      input?.focus();
+    }, 0);
+  }
+  useEffect(() => {
+    if (!subjectMention) return;
+    const input = document.querySelector<HTMLInputElement>('input[placeholder="输入 @ 选择主体引用"]');
+    const recalculate = () => {
+      if (input) updateSubjectMentionPosition(input, input.selectionStart ?? input.value.length);
+    };
+    const observer = input ? new ResizeObserver(recalculate) : null;
+    if (input) observer?.observe(input);
+    window.addEventListener("resize", recalculate);
+    window.addEventListener("scroll", recalculate, true);
+    const positionTimer = window.setInterval(recalculate, 100);
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      const target = event.target as Node;
+      const input = document.querySelector('input[placeholder="输入 @ 选择主体引用"]');
+      const popup = document.querySelector("[data-subject-mention-popup]");
+      if (!input?.contains(target) && !popup?.contains(target)) setSubjectMention(null);
+    };
+    document.addEventListener("mousedown", closeOnOutsidePointer);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsidePointer);
+      observer?.disconnect();
+      window.removeEventListener("resize", recalculate);
+      window.removeEventListener("scroll", recalculate, true);
+      window.clearInterval(positionTimer);
+    };
+  }, [subjectMention]);
+  useEffect(() => {
+    if (!subjectMention) return;
+    const active = document.querySelector(`[data-mention-option-index="${subjectMention.selected}"]`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [subjectMention?.selected, subjectMention?.category]);
+  function commitMentionOption(index: number) {
+    if (!subjectMention) return;
+    const option = getMentionOptions(subjectMention.query, subjectMention.category)[index];
+    const segment = activeSegments[subjectMention.segmentIndex];
+    if (!option || !segment || option.type === "category") return;
+    const before = segment.description.slice(0, subjectMention.start);
+    const after = segment.description.slice(subjectMention.start + 1 + subjectMention.query.length);
+    const cameraPhrases: Record<string, string> = {
+      extreme_closeup: "using an extreme close-up focused on facial or object detail",
+      closeup: "using a close-up shot",
+      close: "using a medium close-up framing from the chest up",
+      medium_close: "using a medium close-up shot",
+      medium: "using a medium shot",
+      medium_wide: "using a medium full shot showing most of the body",
+      wide: "using a full-body shot",
+      extreme_wide: "using an extreme wide shot showing the environment",
+      front_level: "using a front-facing eye-level shot",
+      side: "using a side-profile shot",
+      back: "using a rear-view shot",
+      low_angle: "using a low-angle shot looking upward",
+      high_angle: "using a high-angle shot looking downward",
+      overhead: "using an overhead shot looking straight down",
+      upward: "using an upward-looking camera angle",
+      over_shoulder: "using an over-the-shoulder shot",
+      pov: "using a first-person point-of-view shot",
+      static: "using a static locked-off shot with no camera movement",
+      push_slow: "using a slow push-in camera movement",
+      pull_slow: "using a slow pull-back camera movement",
+      front_follow: "using a forward tracking shot",
+      back_follow: "using a rear tracking shot",
+      side_follow: "using a side-tracking shot",
+      track: "using a lateral tracking shot",
+      pan: "using a gentle horizontal pan",
+      crane_up: "using a smooth rising crane shot",
+      crane_down: "using a smooth descending crane shot",
+      arc: "using a smooth orbiting shot",
+      handheld_follow: "using a handheld follow shot with natural movement",
+      gimbal_follow: "using a stabilized gimbal follow shot",
+      dolly_zoom: "using a controlled Hitchcock dolly zoom",
+    };
+    const replacement = option.type === "subject"
+      ? `<Subject ${option.index + 1}>`
+      : cameraPhrases[option.value] ?? option.name;
+    updatePromptSegment(subjectMention.segmentIndex, { description: `${before}${replacement} ${after}` });
     setSubjectMention(null);
   }
   function addPromptSegment() {
@@ -3228,7 +3302,8 @@ export default function Home() {
           settings.camera && promptBuilderPhrases.camera[settings.camera],
           settings.lens && promptBuilderPhrases.lens[settings.lens],
         ].filter(Boolean);
-        return `[Shot ${index + 1}]${timing}\nAction:\n${segmentDescription}${dialogueGuard}\nCamera:\n${cameraParts.length ? cameraParts.join(". ") + "." : "No specific camera language is set; follow the action naturally."}`;
+        const integratedDescription = [segmentDescription, cameraParts.join(". ")].filter(Boolean).join(" ");
+        return `[Shot ${index + 1}]${timing}\n${integratedDescription}${dialogueGuard}`;
       })
       .join("\n\n");
     const globalSettings = normalizePromptBuilderSettings(
@@ -3450,7 +3525,8 @@ export default function Home() {
           settings.camera && promptBuilderPhrases.camera[settings.camera],
           settings.lens && promptBuilderPhrases.lens[settings.lens],
         ].filter(Boolean);
-        return `[Shot ${shotNumber}]\nAction:\n${segment.description.trim()}\nCamera:\n${cameraParts.length ? cameraParts.join(". ") + "." : "No specific camera language is set; follow the action naturally."}`;
+        const integratedDescription = [segment.description.trim(), cameraParts.join(". ")].filter(Boolean).join(" ");
+        return `[Shot ${shotNumber}]\n${integratedDescription}`;
       })
       .filter(Boolean)
       .join("\n\n");
@@ -3461,6 +3537,22 @@ export default function Home() {
       : generateH3Prompt(activeMode);
     setPromptDraft(nextPrompt ?? "");
     setPromptViewerOpen(true);
+  }
+  function getMentionOptions(query: string, category: "root" | "subject" | "camera" | "lens" | "framing" | "cameraMove" = "root") {
+    const normalized = query.toLowerCase();
+    if (category === "root") return [
+      { type: "category" as const, name: "主体", category: "subject" as const },
+      { type: "category" as const, name: "镜头", category: "camera" as const },
+    ].filter((option) => option.name.includes(normalized));
+    const subjects = getMentionSubjects().map((subject, index) => ({ type: "subject" as const, name: subject.name, index }));
+    if (category === "camera") return [
+      { type: "category" as const, name: "机位", category: "lens" as const },
+      { type: "category" as const, name: "景别", category: "framing" as const },
+      { type: "category" as const, name: "运镜", category: "cameraMove" as const },
+    ].filter((option) => option.name.includes(normalized));
+    const key = category === "cameraMove" ? "camera" : category;
+    const cameras = key === "lens" || key === "framing" || key === "camera" ? promptBuilderOptions[key].map(([value, label]) => ({ type: "camera" as const, key, value, name: label })) : [];
+    return [...(category === "subject" ? subjects : []), ...cameras].filter((option) => option.name.toLowerCase().includes(normalized));
   }
   function savePromptDraft() {
     if (!taskShot) return;
@@ -5092,6 +5184,19 @@ export default function Home() {
     await writable.close();
     return true;
   }
+  async function loadArchivedShotVideo(shot: { id: string; title: string }) {
+    if (!projectDirectory) return null;
+    const fileName = shotFileNames[shot.id] ?? (shot as typeof shot & { output?: string }).output;
+    if (!fileName) return null;
+    try {
+      const clips = await projectDirectory.getDirectoryHandle("片段");
+      const directory = await clips.getDirectoryHandle(`${shot.id}-${safeFileStem(shot.title)}`);
+      const file = await directory.getFileHandle(fileName);
+      return URL.createObjectURL(await file.getFile());
+    } catch {
+      return null;
+    }
+  }
   async function openComfyOutputDirectory() {
     if (comfyUrl === "http://127.0.0.1:8188") {
       try {
@@ -5258,7 +5363,7 @@ export default function Home() {
       setShots((items) =>
         items.map((item) =>
           item.id === shotId
-            ? { ...item, state: persisted ? "已完成" : "归档失败" }
+            ? { ...item, state: persisted ? "已完成" : "归档失败", ...(persisted ? { output: finalName } : {}) }
             : item,
         ),
       );
@@ -5658,13 +5763,19 @@ export default function Home() {
         assetKey: key,
       };
     });
+    const counters: Record<ReferenceKind, number> = { image: 0, video: 0, audio: 0 };
     return options
       .filter((option): option is ReferenceMentionOption => option !== null)
       .sort(
         (left, right) =>
           kindOrder[left.kind] - kindOrder[right.kind] ||
           left.index - right.index,
-      );
+      )
+      .map((option) => {
+        const index = counters[option.kind]++;
+        const label = kindLabels[option.kind];
+        return { ...option, index, token: `<${label} ${index + 1}>` };
+      });
   }
 
   function updatePromptMention(value: string, caret: number | null) {
@@ -7156,14 +7267,14 @@ export default function Home() {
                         );
                         return (
                           <button
-                            key={subject.name}
+                            key={subject?.name ?? ""}
                             type="button"
                             disabled={used}
                             onClick={() => useProjectSubject(subject)}
                             className={`rounded border px-2 py-1 text-[9px] ${used ? "border-primary/30 bg-primary/10 text-primary/60" : "border-border bg-muted/20 hover:border-primary/50"}`}
                           >
                             {used ? "已使用 · " : "使用 · "}
-                            {subject.name}
+                            {subject?.name ?? ""}
                           </button>
                         );
                       })}
@@ -7178,7 +7289,7 @@ export default function Home() {
                         >
                           <div className="flex min-w-0 flex-wrap items-center gap-2">
                             <input
-                              value={subject.name}
+                              value={subject?.name ?? ""}
                               onChange={(event) =>
                                 subject.assetKeys[0]
                                   ? setReferenceSubjectName(
@@ -7200,16 +7311,8 @@ export default function Home() {
                                 );
                                 return option ? (
                                   <div key={assetKey} className="w-24 shrink-0">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        toggleSubjectAsset(
-                                          subjectIndex,
-                                          assetKey,
-                                        )
-                                      }
+                                    <div
                                       className="flex w-full items-center gap-1 rounded border border-primary/30 bg-primary/10 p-1 text-left"
-                                      title="点击取消绑定"
                                     >
                                       <span className="grid size-7 shrink-0 place-items-center overflow-hidden rounded bg-black/20">
                                         {option.kind === "image" ? (
@@ -7235,7 +7338,7 @@ export default function Home() {
                                           {option.name}
                                         </span>
                                       </span>
-                                    </button>
+                                    </div>
                                   </div>
                                 ) : null;
                               })}
@@ -7361,16 +7464,6 @@ export default function Home() {
                       ? "详细描述（detailed_description）"
                       : "综合多模态描述（integrated_multimodal_description）"}
                   </span>
-                  <Button
-                    type="button"
-                    onClick={() => setStylePanelOpen(true)}
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1 px-2 text-[10px] text-zinc-300"
-                  >
-                    <Palette className="size-3" />
-                    视觉风格
-                  </Button>
                 </div>
                 <div className="mt-1.5 space-y-1.5">
                   {activeSegments.map((segment, index) => (
@@ -7422,6 +7515,10 @@ export default function Home() {
                               updatePromptSegment(index, {
                                 description: value,
                               });
+                              if (!value.includes("@")) {
+                                setSubjectMention(null);
+                                return;
+                              }
                               const at = value.lastIndexOf("@");
                               const query = at >= 0 ? value.slice(at + 1) : "";
                               if (at >= 0 && !/[\s<>{}]/.test(query))
@@ -7430,40 +7527,59 @@ export default function Home() {
                                   start: at,
                                   query,
                                   selected: 0,
+                                  category: subjectMention?.segmentIndex === index ? subjectMention.category : "root",
                                 });
                               else setSubjectMention(null);
+                              if (at >= 0 && !/[\s<>{}]/.test(query)) updateSubjectMentionPosition(event.currentTarget, value.length);
                             }}
                             onKeyDown={(event) => {
+                              if (!subjectMention) {
+                                if (["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) {
+                                  event.preventDefault();
+                                  const at = event.currentTarget.value.lastIndexOf("@");
+                                  if (at >= 0) setSubjectMention({ segmentIndex: index, start: at, query: event.currentTarget.value.slice(at + 1), selected: 0, category: "root" });
+                                }
+                                return;
+                              }
                               if (
                                 !subjectMention ||
                                 subjectMention.segmentIndex !== index
                               )
                                 return;
-                              const options = getMentionSubjects().filter(
-                                (subject) =>
-                                  subject.name
-                                    .toLowerCase()
-                                    .includes(
-                                      subjectMention.query.toLowerCase(),
-                                    ),
-                              );
+                              const options = getMentionOptions(subjectMention.query, subjectMention.category);
                               if (
                                 event.key === "ArrowDown" ||
-                                event.key === "ArrowUp"
+                                event.key === "ArrowUp" ||
+                                event.code === "ArrowDown" ||
+                                event.code === "ArrowUp"
                               ) {
                                 event.preventDefault();
-                                setSubjectMention({
-                                  ...subjectMention,
-                                  selected:
-                                    (subjectMention.selected +
-                                      (event.key === "ArrowDown"
-                                        ? 1
-                                        : options.length - 1)) %
-                                    Math.max(1, options.length),
-                                });
-                              } else if (event.key === "Enter") {
+                                event.stopPropagation();
+                                const direction = event.key === "ArrowUp" || event.code === "ArrowUp" ? -1 : 1;
+                                if (direction === -1 && subjectMention.category === "camera" && subjectMention.selected === 0) {
+                                  setSubjectMention({ ...subjectMention, category: "root", query: "", selected: 1 });
+                                  return;
+                                }
+                                setSubjectMention((current) => current ? {
+                                  ...current,
+                                  selected: (current.selected + (direction === 1 ? 1 : options.length - 1)) % Math.max(1, options.length),
+                                } : current);
+                              } else if (event.key === "ArrowRight" || event.code === "ArrowRight") {
+                                const option = options[subjectMention.selected];
+                                if (option?.type === "category") {
+                                  event.preventDefault();
+                                  setSubjectMention({ ...subjectMention, category: option.category, query: "", selected: 0 });
+                                }
+                              } else if (event.key === "ArrowLeft" || event.code === "ArrowLeft") {
+                                if (subjectMention.category !== "root") {
+                                  event.preventDefault();
+                                  setSubjectMention({ ...subjectMention, category: subjectMention.category === "lens" || subjectMention.category === "framing" || subjectMention.category === "cameraMove" ? "camera" : "root", query: "", selected: 0 });
+                                }
+                              } else if (event.key === "Enter" || event.code === "Enter") {
                                 event.preventDefault();
-                                commitSubjectMention(subjectMention.selected);
+                                const option = options[subjectMention.selected];
+                                if (option?.type === "category") setSubjectMention({ ...subjectMention, category: option.category, query: "", selected: 0 });
+                                else commitMentionOption(subjectMention.selected);
                               } else if (event.key === "Escape")
                                 setSubjectMention(null);
                             }}
@@ -7471,17 +7587,24 @@ export default function Home() {
                             className="h-8 w-full rounded border border-border bg-muted/25 px-2 text-[10px] outline-none placeholder:text-muted-foreground"
                           />
                           {subjectMention?.segmentIndex === index && (
-                            <div className="absolute bottom-full left-0 z-40 mb-1 w-64 rounded-lg border border-border bg-card p-1 shadow-xl">
-                              {getMentionSubjects()
-                                .filter((subject) =>
-                                  subject.name
-                                    .toLowerCase()
-                                    .includes(
-                                      subjectMention.query.toLowerCase(),
-                                    ),
-                                )
-                                .map((subject, optionIndex) => {
-                                  const thumb = subject.assetKeys
+                            <div data-subject-mention-popup style={{ position: "fixed", left: mentionPosition.left, top: mentionPosition.top }} className="z-50 max-h-64 w-64 overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-xl">
+                              {getMentionOptions(subjectMention.query, subjectMention.category).map((option, optionIndex) => {
+                                if (option.type === "category") return (
+                                  <button data-mention-option-index={optionIndex} tabIndex={-1} type="button" key={option.category} onMouseDown={(event) => { event.preventDefault(); refocusSubjectInput(); setSubjectMention({ ...subjectMention, category: option.category, query: "", selected: 0 }); }} className={`flex w-full items-center rounded px-2 py-2 text-left text-[10px] ${optionIndex === subjectMention.selected ? "bg-primary/15 text-primary" : "hover:bg-muted"}`}>
+                                    <span className="truncate">{option.name} <span className="text-muted-foreground">›</span></span>
+                                  </button>
+                                );
+                                const subject = option.type === "subject" ? getMentionSubjects()[option.index] : null;
+                                if (option.type === "subject" && !subject) return null;
+                                if (option.type === "camera") return (
+                                  <button data-mention-option-index={optionIndex} tabIndex={-1} type="button" key={`${option.key}-${option.value}`} onMouseDown={(event) => { event.preventDefault(); refocusSubjectInput(); commitMentionOption(optionIndex); }} className={`flex w-full items-center rounded px-2 py-1.5 text-left text-[10px] ${optionIndex === subjectMention.selected ? "bg-primary/15 text-primary" : "hover:bg-muted"}`}>
+                                    <span className="truncate">
+                                      {(option.key === "lens" ? "机位" : option.key === "framing" ? "景别" : "运镜") + " · " + option.name}
+                                    </span>
+                                  </button>
+                                );
+                                {
+                                  const thumb = (subject?.assetKeys ?? [])
                                     .map((key) =>
                                       referenceMentionOptions().find(
                                         (item) => item.assetKey === key,
@@ -7490,11 +7613,14 @@ export default function Home() {
                                     .find((item) => item?.kind === "image");
                                   return (
                                     <button
+                                      data-mention-option-index={optionIndex}
+                                      tabIndex={-1}
                                       type="button"
                                       key={optionIndex}
                                       onMouseDown={(event) => {
                                         event.preventDefault();
-                                        commitSubjectMention(optionIndex);
+                                        refocusSubjectInput();
+                                        commitSubjectMention(option.index);
                                       }}
                                       className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[10px] ${optionIndex === subjectMention.selected ? "bg-primary/15 text-primary" : "hover:bg-muted"}`}
                                     >
@@ -7512,24 +7638,15 @@ export default function Home() {
                                         )}
                                       </span>
                                       <span className="truncate">
-                                        {subject.name}
+                                        {subject?.name ?? ""}
                                       </span>
                                     </button>
                                   );
-                                })}
+                                }
+                              })}
                             </div>
                           )}
                         </div>
-                        <Button
-                          type="button"
-                          onClick={() => setSettingsSegmentIndex(index)}
-                          variant="outline"
-                          size="sm"
-                          className="h-8 shrink-0 gap-1 px-2 text-[10px] text-zinc-300"
-                        >
-                          <SlidersHorizontal className="size-3" />
-                          镜头语言
-                        </Button>
                         <Button
                           type="button"
                           onClick={() => removePromptSegment(index)}
@@ -7562,8 +7679,7 @@ export default function Home() {
                   H3 提示词。
                 </p>
               </div>
-              {activeMode === "R2VA" && (
-                <div className="grid gap-2 rounded-lg border border-border bg-muted/20 p-2">
+              <div className="grid gap-2 rounded-lg border border-border bg-muted/20 p-2">
                   {(
                     [
                       [
@@ -7597,8 +7713,7 @@ export default function Home() {
                       />
                     </label>
                   ))}
-                </div>
-              )}
+              </div>
             </div>
             <div className="relative mt-auto shrink-0 border-t border-border/60 bg-card/95 p-4 backdrop-blur">
               <div className="pointer-events-none absolute bottom-full left-0 right-0 min-h-4 text-center text-[9px] font-medium">
@@ -8217,76 +8332,6 @@ export default function Home() {
           </div>
         </div>
       )}
-      {stylePanelOpen && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onMouseDown={() => setStylePanelOpen(false)}
-        >
-          <div
-            className="w-full max-w-xl rounded-xl border border-border bg-card p-5 shadow-2xl"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-sm font-semibold">视觉风格</h2>
-                <p className="mt-1 text-[10px] text-muted-foreground">
-                  应用于当前片段的 detailed_description 开场风格，只生成一次。
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setStylePanelOpen(false)}
-                className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                aria-label="关闭视觉风格"
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="sm:col-span-2">
-                <span className="field-label mb-1">风格预设</span>
-                <select
-                  value={activeStyle}
-                  onChange={(event) =>
-                    updatePromptBuilder("style", event.target.value, 0)
-                  }
-                  aria-label="视觉风格预设"
-                  className="select-like h-9 w-full appearance-none px-2 text-xs"
-                >
-                  <option value="">未设置（使用默认写实风格）</option>
-                  {promptBuilderOptions.style.map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <p className="mt-3 text-[9px] leading-4 text-muted-foreground">
-              风格控制视觉媒介、质感、色彩和整体呈现；景别、运镜与焦段仍在镜头语言中单独设置。
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() =>
-                  updatePromptBuilder("style", "realistic_cinematic", 0)
-                }
-                className="h-8 px-4 text-xs"
-              >
-                恢复默认
-              </Button>
-              <Button
-                type="button"
-                onClick={() => setStylePanelOpen(false)}
-                className="h-8 bg-[#f4bd50] px-4 text-xs font-semibold text-[#17120a] hover:bg-[#ffd070]"
-              >
-                完成
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
       {settingsSegmentIndex !== null && settingsSegment && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
@@ -8371,3 +8416,6 @@ export default function Home() {
     </main>
   );
 }
+
+
+
