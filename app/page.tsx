@@ -204,7 +204,7 @@ function buildSubjectDefinitions(subjects: PromptSubject[]) {
     const wardrobeRefs = subject.assetKeys.filter((key) => subject.assetRoles?.[key] === "clothing").map((key) => referenceLabel(key)).filter(Boolean);
     const definition = roles.length > 0 && roles.every((role) => role === "clothing")
       ? `<Subject ${index + 1}> is the wardrobe-only reference "${subject.name.trim()}"${wardrobeRefs.length ? ` from ${wardrobeRefs.join(", ")}` : ""}. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference. <Subject ${index + 1}> must not appear as a separate visible person or independent subject in the target video.`
-      : `<Subject ${index + 1}> is the subject named "${subject.name.trim()}"${own.length ? `. ${own.join(". ")}.` : "."}`;
+      : `<Subject ${index + 1}> is the subject named "${subject.name.trim()}"${own.length ? `. ${own.join(". ")}.` : "."} Do not preserve clothing from the character reference image.`;
     const identityGuard = "";
     return `${definition}${identityGuard}${vocalLine}${children ? `\n${children}` : ""}`;
   }).join("\n");
@@ -227,7 +227,7 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
       const alreadyConfigured = child.assetKeys.some((key) => Boolean(subject.referenceRetentions?.[key]?.visual));
       if (alreadyConfigured) return "";
       const transferRule = `<Subject ${childId}> (appears on <Subject ${index + 1}> throughout the target video): ${action}${refs ? ` from ${refs}` : ""} onto <Subject ${index + 1}>.`;
-      if (role === "clothing") return `<Subject ${childId}>: attribute_transfer - transfer the referenced wardrobe, accessories, garment details, colors, and materials onto <Subject ${index + 1}>, preserving these wardrobe characteristics throughout the target video.`;
+      if (role === "clothing") return `<Subject ${childId}>: attribute_transfer - transfer the referenced wardrobe, accessories, garment details, colors, and materials onto <Subject ${index + 1}>, replacing any clothing visible in the character reference image and preserving these wardrobe characteristics throughout the target video.`;
       return transferRule;
     }).filter(Boolean);
     const roles = subject.assetKeys.map((key) => subject.assetRoles?.[key] ?? "composite");
@@ -295,7 +295,7 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
           : mode === "attribute_transfer"
             ? `transfer the referenced ${preservedScope} onto ${target}`
             : `use the referenced ${preservedScope} only as a weak visual guide`;
-      if (childIds.has(assetKey) && role === "clothing" && mode === "attribute_transfer") return `${ruleSubject}: attribute_transfer - transfer the referenced wardrobe, accessories, garment details, colors, and materials onto ${target}, preserving these wardrobe characteristics throughout the target video.`;
+      if (childIds.has(assetKey) && role === "clothing" && mode === "attribute_transfer") return `${ruleSubject}: attribute_transfer - transfer the referenced wardrobe, accessories, garment details, colors, and materials onto ${target}, replacing any clothing visible in the character reference image and preserving these wardrobe characteristics throughout the target video.`;
       return `${ruleSubject}: ${mode} - ${relationText}.`;
     }).filter(Boolean);
     return [...(aggregateLine ? [aggregateLine] : []), ...assetRules, ...(aggregateLine || assetRules.length ? [] : [`<Subject ${index + 1}> (appears throughout the target video): ${retentionMode} - ${retentionText}`]), ...(audioRule ? [audioRule] : []), ...childRules];
