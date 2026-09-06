@@ -155,6 +155,7 @@ function referenceRoleText(role: string) {
     identity: "facial identity and frontal appearance reference",
     full_body: "full-body multi-view reference",
     composite: "combined facial and full-body reference",
+    character: "single character reference",
     clothing: "authoritative wardrobe reference",
     pose: "pose and body-language reference",
     voice: "vocal identity and performance reference",
@@ -175,7 +176,7 @@ function buildSubjectDefinitions(subjects: PromptSubject[]) {
       if (!label) return "";
       if (role === "identity") return `${label} defines the facial identity`;
       if (role === "full_body") return `${label} defines body proportions and physical build`;
-      if (role === "composite") return `${label} defines the facial identity, body proportions, and physical build`;
+      if (role === "composite" || role === "character") return `${label} defines the subject's facial identity, facial features, hairstyle, body proportions, and physical build`;
       return `${label} provides the ${referenceRoleText(role)}`;
     }).filter(Boolean);
     const children = (subject.children ?? []).map((child) => {
@@ -193,16 +194,19 @@ function buildSubjectDefinitions(subjects: PromptSubject[]) {
         : "";
       const childId = existingIndex >= 0 ? existingIndex + 1 : ++childNumber;
       if (existingIndex >= 0) return "";
-      return `<Subject ${childId}> is the ${noun} "${child.name.trim()}"${sourceText}.`;
+      return role === "clothing"
+        ? `<Subject ${childId}> is the wardrobe-only reference "${child.name.trim()}"${sourceText}. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference.`
+        : `<Subject ${childId}> is the ${noun} "${child.name.trim()}"${sourceText}.`;
     }).filter(Boolean).join("\n");
     const roles = subject.assetKeys.map((key) => subject.assetRoles?.[key] ?? "composite");
-    const isVocalCharacter = roles.length === 0 || roles.some((role) => ["identity", "full_body", "composite", "pose"].includes(role));
+    const isVocalCharacter = roles.length === 0 || roles.some((role) => ["identity", "full_body", "composite", "character", "pose"].includes(role));
     const vocalLine = isVocalCharacter ? `\nThe associated vocal source is (S${index + 1}).` : "";
     const wardrobeRefs = subject.assetKeys.filter((key) => subject.assetRoles?.[key] === "clothing").map((key) => referenceLabel(key)).filter(Boolean);
     const definition = roles.length > 0 && roles.every((role) => role === "clothing")
-      ? `<Subject ${index + 1}> is the wardrobe reference "${subject.name.trim()}"${wardrobeRefs.length ? ` from ${wardrobeRefs.join(", ")}` : ""}.`
+      ? `<Subject ${index + 1}> is the wardrobe-only reference "${subject.name.trim()}"${wardrobeRefs.length ? ` from ${wardrobeRefs.join(", ")}` : ""}. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference.`
       : `<Subject ${index + 1}> is the subject named "${subject.name.trim()}"${own.length ? `. ${own.join(". ")}.` : "."}`;
-    return `${definition}${vocalLine}${children ? `\n${children}` : ""}`;
+    const identityGuard = "";
+    return `${definition}${identityGuard}${vocalLine}${children ? `\n${children}` : ""}`;
   }).join("\n");
 }
 function buildRetentionAnalysis(subjects: PromptSubject[]) {
@@ -217,13 +221,13 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
       );
       const role = child.assetRoles?.[child.assetKeys[0]] ?? "composite";
       const refs = child.assetKeys.map((key) => referenceLabel(key)).filter(Boolean).join(", ");
-      const action = role === "clothing" ? "attribute_transfer - transfer the complete wardrobe reference" : role === "pose" ? "attribute_transfer - transfer the pose and body-language reference" : role === "object" ? "attribute_transfer - preserve and apply the prop reference" : "attribute_transfer - transfer the associated reference";
+      const action = role === "clothing" ? "attribute_transfer - transfer only the referenced wardrobe, accessories, garment design, colors, materials, and details; do not transfer any mannequin, body, head, face, skin, or pose characteristics" : role === "pose" ? "attribute_transfer - transfer the pose and body-language reference" : role === "object" ? "attribute_transfer - preserve and apply the prop reference" : "attribute_transfer - transfer the associated reference";
       const childId = existingIndex >= 0 ? existingIndex + 1 : ++childNumber;
       child.assetKeys.forEach((key) => childIds.set(key, childId));
       const alreadyConfigured = child.assetKeys.some((key) => Boolean(subject.referenceRetentions?.[key]?.visual));
       if (alreadyConfigured) return "";
       const transferRule = `<Subject ${childId}> (appears on <Subject ${index + 1}> throughout the target video): ${action}${refs ? ` from ${refs}` : ""} onto <Subject ${index + 1}>.`;
-      if (role === "clothing") return `<Subject ${childId}>: fully_preserved - preserve the complete wardrobe reference, including accessories, garment details, colors, and materials throughout the target video.\n${transferRule}`;
+      if (role === "clothing") return `<Subject ${childId}>: attribute_transfer - transfer the referenced wardrobe, accessories, garment details, colors, and materials onto <Subject ${index + 1}>, preserving these wardrobe characteristics throughout the target video.`;
       return transferRule;
     }).filter(Boolean);
     const roles = subject.assetKeys.map((key) => subject.assetRoles?.[key] ?? "composite");
@@ -243,7 +247,7 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
       : "";
     const aggregateEntries = subject.assetKeys.map((assetKey) => {
       const role = subject.assetRoles?.[assetKey] ?? "composite";
-      const scope = role === "identity" ? "facial identity and facial features" : role === "full_body" ? "body proportions, physical build, and full-body structure" : role === "composite" ? "facial identity, facial features, body proportions, and physical build" : role === "pose" ? "pose and body language" : role === "motion" ? "motion and action patterns" : role === "voice" ? "vocal identity and performance characteristics" : "";
+      const scope = role === "identity" ? "facial identity and facial features" : role === "full_body" ? "body proportions, physical build, and full-body structure" : role === "composite" || role === "character" ? "facial identity, facial features, hairstyle, body proportions, and physical build" : role === "pose" ? "pose and body language" : role === "motion" ? "motion and action patterns" : role === "voice" ? "vocal identity and performance characteristics" : "";
       return scope ? { mode: subject.referenceRetentions?.[assetKey]?.visual ?? "fully_preserved", scope } : null;
     }).filter(Boolean) as Array<{ mode: string; scope: string }>;
     const aggregateModes = Array.from(new Set(aggregateEntries.map((entry) => entry.mode)));
@@ -261,7 +265,7 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
       const mode = config.visual ?? "fully_preserved";
       const target = `<Subject ${index + 1}>`;
       const role = subject.assetRoles?.[assetKey] ?? subject.children?.map((child) => child.assetRoles?.[assetKey]).find(Boolean) ?? "composite";
-      if (["identity", "full_body", "composite", "pose", "motion", "voice"].includes(role)) return "";
+      if (["identity", "full_body", "character", "composite", "pose", "motion", "voice"].includes(role)) return "";
       const ruleSubject = childIds.has(assetKey) ? `<Subject ${childIds.get(assetKey)}>` : `<Subject ${index + 1}>`;
       const preservedScope = role === "identity"
         ? "facial identity, facial features, and frontal appearance"
@@ -291,9 +295,7 @@ function buildRetentionAnalysis(subjects: PromptSubject[]) {
           : mode === "attribute_transfer"
             ? `transfer the referenced ${preservedScope} onto ${target}`
             : `use the referenced ${preservedScope} only as a weak visual guide`;
-      if (childIds.has(assetKey) && role === "clothing" && mode === "attribute_transfer") {
-        return `${ruleSubject}: fully_preserved - preserve the referenced wardrobe, accessories, garment details, colors, and materials throughout the target video.\n${ruleSubject}: ${mode} - ${relationText}.`;
-      }
+      if (childIds.has(assetKey) && role === "clothing" && mode === "attribute_transfer") return `${ruleSubject}: attribute_transfer - transfer the referenced wardrobe, accessories, garment details, colors, and materials onto ${target}, preserving these wardrobe characteristics throughout the target video.`;
       return `${ruleSubject}: ${mode} - ${relationText}.`;
     }).filter(Boolean);
     return [...(aggregateLine ? [aggregateLine] : []), ...assetRules, ...(aggregateLine || assetRules.length ? [] : [`<Subject ${index + 1}> (appears throughout the target video): ${retentionMode} - ${retentionText}`]), ...(audioRule ? [audioRule] : []), ...childRules];
@@ -1184,7 +1186,7 @@ async function readCharacterThumbnail(
     };
     const preferred = data.references?.find(
       (reference) =>
-        reference.role === "identity" || reference.category === "半身正脸",
+        reference.role === "full_body" || reference.role === "identity" || reference.category === "全身参考" || reference.category === "半身正脸",
     )?.file;
     if (!preferred) return undefined;
     const identity = await character.getDirectoryHandle("身份");
@@ -1480,11 +1482,11 @@ export default function Home() {
   const settingsSegment =
     settingsSegmentIndex !== null ? activeSegments[settingsSegmentIndex] : null;
   useEffect(() => {
-    if (!taskShot) return;
+    if (!storageReady || !taskShot) return;
     const subjects = promptSubjects[taskShot.id] ?? [];
     if (!subjects.length) return;
     setPromptSegments((current) => {
-      const segments = current[taskShot.id] ?? [];
+      const segments = current[taskShot.id]?.length ? current[taskShot.id] : getPromptSegments(taskShot.id);
       const next = segments.map((segment) => {
         const existing = segment.layoutEntities ?? [];
         const required = [{ id: "camera", type: "camera" as const, name: "摄像机", x: 0.5, y: 0.92 }, ...subjects.map((subject, index) => ({ id: `subject-${index + 1}`, type: "subject" as const, name: subject.name || `<Subject ${index + 1}>`, x: (index + 1) / (subjects.length + 1), y: 0.5 }))];
@@ -1495,7 +1497,7 @@ export default function Home() {
       });
       return next === segments ? current : { ...current, [taskShot.id]: next };
     });
-  }, [taskShot, promptSubjects]);
+  }, [storageReady, taskShot, promptSubjects]);
   useEffect(() => {
     const savedComfyUrl = window.localStorage.getItem("comfyui-url");
     if (savedComfyUrl) {
@@ -2570,11 +2572,11 @@ export default function Home() {
     });
   }
   function getMentionSubjects() {
-    return taskShot
-      ? (promptSubjects[taskShot.id] ?? []).filter((subject) =>
-          subject.name.trim(),
-        )
-      : [];
+    if (!taskShot) return [];
+    return (promptSubjects[taskShot.id] ?? []).flatMap((subject) => [
+      subject,
+      ...(subject.children ?? []).map((child) => ({ ...child, assetKeys: child.assetKeys, name: child.name })),
+    ]).filter((subject) => subject.name.trim());
   }
   function commitSubjectMention(index: number) {
     if (!subjectMention || !taskShot) return;
@@ -3069,7 +3071,7 @@ export default function Home() {
         if (
           !reference.file ||
           !reference.role ||
-          !["identity", "full_body", "voice"].includes(reference.role)
+          !["identity", "full_body", "character", "voice"].includes(reference.role)
         )
           continue;
         const folderName = reference.role === "voice" ? "声音" : "身份";
@@ -3109,7 +3111,7 @@ export default function Home() {
           },
         }));
         uploadedKeys.push(key);
-        uploadedRoles.push(reference.role);
+        uploadedRoles.push(reference.role === "full_body" ? "character" : reference.role);
       }
       setPromptSubjects((current) => {
         let subjects = [...(current[shotId] ?? [])];
@@ -3583,7 +3585,7 @@ export default function Home() {
     const referenceSummary = refs.length
       ? ` Use ${refs.map((reference) => reference.token).join(", ")} according to the subject, role, and temporal position assigned above.`
       : "";
-    const visualBody = `${styleOpening} ${frameAnchor ? `${frameAnchor} ` : ""}${promptSegmentsText}\n\nContinuity:\nMaintain subject identity, facial features, hairstyle, body proportions, clothing, object positions, and spatial relationships throughout the target video. Maintain each subject's world-space position, screen-side relationship, facing direction, relative distance, and interaction geometry across shot changes. Unless the Action explicitly changes them, a cut may change framing or viewpoint but must not relocate, swap, or re-stage the subjects. Follow the assigned references consistently. A wardrobe reference is authoritative for its assigned subject; unless the Action explicitly changes the wardrobe, preserve it unchanged across every shot and do not replace, redesign, simplify, or borrow clothing or accessories from another reference. Dialogue and vocal audio follow only explicit <d> lines; speak lines in written order, one speaker at a time, without overlap, repetition, extension, or invention. Avoid unintended cuts, subtitles, and logos.${referenceSummary}`;
+    const visualBody = `${styleOpening} ${frameAnchor ? `${frameAnchor} ` : ""}Exactly two human protagonists appear in the scene: <Subject 1> and <Subject 2>. Any wardrobe reference is applied only to its assigned subject and must not generate a separate person, mannequin, employee, or character.\\n\\n${promptSegmentsText}\n\nContinuity:\nMaintain subject identity, facial features, hairstyle, body proportions, clothing, object positions, and spatial relationships throughout the target video. Maintain each subject's world-space position, screen-side relationship, facing direction, relative distance, and interaction geometry across shot changes. Unless the Action explicitly changes them, a cut may change framing or viewpoint but must not relocate, swap, or re-stage the subjects. Follow the assigned references consistently. A wardrobe reference is authoritative for its assigned subject; unless the Action explicitly changes the wardrobe, preserve it unchanged across every shot and do not replace, redesign, simplify, or borrow clothing or accessories from another reference. Dialogue and vocal audio follow only explicit <d> lines; speak lines in written order, one speaker at a time, without overlap, repetition, extension, or invention. Avoid unintended cuts, subtitles, and logos.${referenceSummary}`;
     let nextPrompt: string;
     if (promptMode === "R2VA") {
       const definitions =
@@ -3706,7 +3708,9 @@ export default function Home() {
           settings.camera && promptBuilderPhrases.camera[settings.camera],
           settings.lens && promptBuilderPhrases.lens[settings.lens],
         ].filter(Boolean);
-        const integratedDescription = [segment.description.trim(), cameraParts.join(". ")].filter(Boolean).join(" ");
+        const selectedDirection = segment.cameraDirection === "自定义" ? segment.cameraDirectionCustom?.trim() : segment.cameraDirection;
+        const cameraLayout = [selectedDirection && `The camera uses a ${selectedDirection} viewing direction.`, segment.cameraTarget && `The camera is aimed at ${segment.cameraTarget}.`, segment.shotSize && `Shot size: ${segment.shotSize}.`, segment.cameraMove && `Camera movement: ${segment.cameraMove}.`].filter(Boolean).join(" ");
+        const integratedDescription = [buildLayoutDescription(segment.layoutEntities), cameraLayout, segment.description.trim(), cameraParts.join(". ")].filter(Boolean).join("\n\n");
         return `[Shot ${shotNumber}]\n${integratedDescription}`;
       })
       .filter(Boolean)
@@ -3727,7 +3731,9 @@ export default function Home() {
     ].filter((option) => option.name.includes(normalized));
     const subjects = getMentionSubjects().flatMap((subject, index) => [
       { type: "subject" as const, name: subject.name, index },
-      { type: "subjectVoice" as const, name: `${subject.name} 说`, index },
+      ...(subject.assetRoles && Object.values(subject.assetRoles).some((role) => ["character", "identity", "full_body", "composite"].includes(role))
+        ? [{ type: "subjectVoice" as const, name: `${subject.name} 说`, index }]
+        : []),
     ]);
     if (category === "camera") return [
       { type: "category" as const, name: "机位", category: "lens" as const },
@@ -5092,15 +5098,13 @@ export default function Home() {
   async function createCharacter() {
     const name = newCharacterName.trim();
     if (!name) return;
-    const halfBodyFile = newCharacterHalfBodyFile;
     const fullBodyFile = newCharacterFullBodyFile;
     const voiceFile = newCharacterVoiceFile;
-    if (!halfBodyFile || !fullBodyFile) {
-      setGenerationStatus("请先上传半身正脸和全身多视角身份参考图");
+    if (!fullBodyFile) {
+      setGenerationStatus("请先上传角色全身参考图");
       return;
     }
     if (
-      !halfBodyFile.type.startsWith("image/") ||
       !fullBodyFile.type.startsWith("image/")
     ) {
       setGenerationStatus("身份参考必须是图片文件");
@@ -5127,24 +5131,13 @@ export default function Home() {
       const voice = await character.getDirectoryHandle("声音", {
         create: true,
       });
-      const identityReferences = [
-        {
-          role: "identity",
-          view: "front_half",
-          file: halfBodyFile.name,
-          mimeType: halfBodyFile.type,
-        },
-        {
-          role: "full_body",
-          view: "multi_view",
+      const identityReferences = [{
+          role: "character",
+          view: "combined_full_body",
           file: fullBodyFile.name,
           mimeType: fullBodyFile.type,
-        },
-      ];
-      for (const identityReference of [
-        { file: halfBodyFile, category: "半身正脸" },
-        { file: fullBodyFile, category: "全身多视角" },
-      ]) {
+        }];
+      for (const identityReference of [{ file: fullBodyFile, category: "全身参考" }]) {
         const target = await identity.getFileHandle(
           identityReference.file.name,
           { create: true },
@@ -5190,7 +5183,7 @@ export default function Home() {
       );
       setProjectCharacterThumbnails((current) => ({
         ...current,
-        [name]: URL.createObjectURL(halfBodyFile),
+        [name]: URL.createObjectURL(fullBodyFile),
       }));
       const shotId = shots[activeShot]?.id;
       if (shotId)
@@ -5286,7 +5279,7 @@ export default function Home() {
             : "associated_with";
     const subjects = shotSubjects
       .filter((subject) => subject.name.trim())
-      .map((subject) => {
+      .flatMap((subject) => {
         const references = subject.assetKeys.map((assetKey) =>
           serializeReference(
             assetKey,
@@ -5314,12 +5307,17 @@ export default function Home() {
             ),
           };
         });
-        return {
+        const parent = {
           subjectId: `subject-${shot.id}-${safeFileStem(subject.name.trim())}`,
           name: subject.name.trim(),
           references,
-          ...(children.length ? { children } : {}),
         };
+        return [parent, ...children.map((child) => ({
+          subjectId: child.subjectId,
+          name: child.name,
+          relation: child.relation,
+          references: child.references,
+        }))];
       });
     const manifestMode =
       (overrides.generation as { mode?: string } | undefined)?.mode ?? "T2VA";
@@ -6697,7 +6695,7 @@ export default function Home() {
                 htmlFor="new-character-half-body-empty"
                 className="field-label mt-4"
               >
-                半身正脸身份参考图
+                附加身份参考图（可选）
               </label>
               <input
                 id="new-character-half-body-empty"
@@ -6712,7 +6710,7 @@ export default function Home() {
                 htmlFor="new-character-full-body-empty"
                 className="field-label mt-4"
               >
-                全身多视角身份参考图
+                全身角色参考图
               </label>
               <input
                 id="new-character-full-body-empty"
@@ -6739,7 +6737,7 @@ export default function Home() {
                 className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
               />
               <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
-                两张身份参考图必填；声音参考可稍后补充。
+                一张全身角色参考图即可；声音参考可选。
               </p>
               <div className="mt-5 flex justify-end gap-2">
                 <Button
@@ -6752,7 +6750,6 @@ export default function Home() {
                   onClick={() => void createCharacter()}
                   disabled={
                     !newCharacterName.trim() ||
-                    !newCharacterHalfBodyFile ||
                     !newCharacterFullBodyFile ||
                     !projectDirectory
                   }
@@ -7050,7 +7047,7 @@ export default function Home() {
               htmlFor="new-character-half-body"
               className="field-label mt-4"
             >
-              半身正脸身份参考图
+              附加身份参考图（可选）
             </label>
             <input
               id="new-character-half-body"
@@ -7065,7 +7062,7 @@ export default function Home() {
               htmlFor="new-character-full-body"
               className="field-label mt-4"
             >
-              全身多视角身份参考图
+              全身角色参考图
             </label>
             <input
               id="new-character-full-body"
@@ -7089,7 +7086,7 @@ export default function Home() {
               className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
             />
             <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
-              两张身份参考图必填；声音参考可稍后补充。
+              一张全身角色参考图即可；声音参考可选。
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setCharacterDialog(false)}>
@@ -7099,7 +7096,6 @@ export default function Home() {
                 onClick={() => void createCharacter()}
                 disabled={
                   !newCharacterName.trim() ||
-                  !newCharacterHalfBodyFile ||
                   !newCharacterFullBodyFile ||
                   !projectDirectory
                 }
@@ -7482,6 +7478,9 @@ export default function Home() {
                           className="flex min-w-0 flex-col gap-1.5 rounded-md border border-primary/35 bg-primary/5 p-1.5"
                         >
                           <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded bg-muted">
+                              {projectCharacterThumbnails[subject?.name ?? ""] ? <img src={projectCharacterThumbnails[subject.name]} alt="" className="size-full object-cover" /> : <UserRound className="size-3 text-muted-foreground" />}
+                            </span>
                             <input
                               value={subject?.name ?? ""}
                               onChange={(event) =>
@@ -7539,9 +7538,7 @@ export default function Home() {
                                       className="reference-role-select mt-1 h-6 w-full rounded border border-border/70 bg-black/10 px-1 text-[9px] text-foreground"
                                       aria-label={`${option.token} 参考类型`}
                                     >
-                                      <option value="identity">面部参考</option>
-                                      <option value="full_body">全身参考</option>
-                                      <option value="composite">面部与全身</option>
+                                      <option value="character">角色参考</option>
                                       <option value="clothing">服装参考</option>
                                       <option value="pose">姿态参考</option>
                                       <option value="motion">动作/运动参考</option>
@@ -7578,7 +7575,7 @@ export default function Home() {
                                         aria-label={`${option.token} 参考类型`}
                                       >
                                         <option value="identity">面部参考</option>
-                                        <option value="full_body">全身参考</option>
+                                        <option value="character">角色参考</option>
                                         <option value="composite">面部与全身</option>
                                         <option value="clothing">服装参考</option>
                                         <option value="pose">姿态参考</option>
@@ -7738,7 +7735,8 @@ export default function Home() {
                               {(promptSubjects[taskShot.id] ?? []).map((subject, subjectIndex) => {
                                 const entityIndex = (segment.layoutEntities ?? []).findIndex((entity) => entity.id === `subject-${subjectIndex + 1}`);
                                 const facing = entityIndex >= 0 ? segment.layoutEntities?.[entityIndex]?.facing ?? "" : "";
-                                return <label key={subjectIndex} className="flex items-center gap-1 text-[8px] text-muted-foreground"><span className="w-16 truncate">{subject.name || `主体 ${subjectIndex + 1}`}朝向</span><select value={facing} onChange={(event) => { const entities = [...(segment.layoutEntities ?? [])]; if (entityIndex < 0) return; entities[entityIndex] = { ...entities[entityIndex], facing: event.target.value }; updatePromptSegment(index, { layoutEntities: entities }); }} className="h-6 min-w-0 flex-1 rounded border border-zinc-400 bg-white px-1 text-[8px] text-black"><option value="">未指定</option><option value="面向镜头">面向镜头</option><option value="背对镜头">背对镜头</option><option value="左侧面">左侧面</option><option value="右侧面">右侧面</option><option value="自定义">自定义</option></select></label>;
+                                const standardFacing = ["", "面向镜头", "背对镜头", "左侧面", "右侧面"].includes(facing) ? facing : "自定义";
+                                return <label key={subjectIndex} className="flex flex-wrap items-center gap-1 text-[8px] text-muted-foreground"><span className="w-16 truncate">{subject.name || `主体 ${subjectIndex + 1}`}朝向</span><select value={standardFacing} onChange={(event) => { const entities = [...(segment.layoutEntities ?? [])]; const entity = { id: `subject-${subjectIndex + 1}`, type: "subject" as const, name: subject.name || `<Subject ${subjectIndex + 1}>`, x: 0.5, y: 0.5 }; const targetIndex = entityIndex >= 0 ? entityIndex : entities.push(entity) - 1; entities[targetIndex] = { ...entities[targetIndex], facing: event.target.value === "自定义" ? "自定义" : event.target.value }; updatePromptSegment(index, { layoutEntities: entities }); }} className="h-6 min-w-0 flex-1 rounded border border-zinc-400 bg-white px-1 text-[8px] text-black"><option value="">未指定</option><option value="面向镜头">面向镜头</option><option value="背对镜头">背对镜头</option><option value="左侧面">左侧面</option><option value="右侧面">右侧面</option><option value="自定义">自定义</option></select>{standardFacing === "自定义" && <input value={facing} onChange={(event) => { const entities = [...(segment.layoutEntities ?? [])]; const targetIndex = entityIndex >= 0 ? entityIndex : entities.findIndex((item) => item.id === `subject-${subjectIndex + 1}`); if (targetIndex < 0) return; entities[targetIndex] = { ...entities[targetIndex], facing: event.target.value }; updatePromptSegment(index, { layoutEntities: entities }); }} placeholder="如：背对取餐台" className="h-6 w-full rounded border border-zinc-400 bg-white px-1 text-[8px] text-black placeholder:text-zinc-500" />}</label>;
                               })}
                             </div>
                             <div className="mb-1 flex w-full max-w-64 gap-1">
@@ -8676,6 +8674,10 @@ export default function Home() {
     </main>
   );
 }
+
+
+
+
 
 
 
