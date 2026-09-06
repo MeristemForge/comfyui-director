@@ -7609,7 +7609,6 @@ export default function Home() {
                         </div>
                       ))}
                     </div>
-                    <textarea key={`retention-${taskShot.id}-${JSON.stringify(promptSubjects[taskShot.id] ?? [])}`} readOnly value={(promptSubjects[taskShot.id] ?? []).length ? buildRetentionAnalysis(promptSubjects[taskShot.id] ?? []) : ""} placeholder="根据主体和参考素材自动生成" className="mt-1 min-h-14 w-full resize-y rounded-md border border-border bg-muted/25 p-2 text-[10px] leading-4 outline-none placeholder:text-muted-foreground" />
                   </label>
                 </div>
                 </>
