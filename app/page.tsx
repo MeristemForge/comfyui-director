@@ -51,6 +51,7 @@ type Shot = {
   };
 };
 type ProjectShotRecord = Shot & {
+  output?: string;
   references?: { subjects?: PromptSubject[] };
   generation?: { mode?: string; duration?: number; resolution?: string; aspect?: string; fps?: number; model?: keyof typeof modelProfiles; turbo?: boolean; seed?: string; seedMode?: "fixed" | "random"; keyframeMode?: string; steps?: number };
   subjects?: PromptSubject[];
@@ -1147,12 +1148,20 @@ async function readProjectShots(
         const durationText = `${generation.duration ?? 6}s`;
         const resolutionText = generation.resolution ?? "864×480";
         const fpsText = `${generation.fps ?? 24}fps`;
+        let output = typeof data.output === "string" ? data.output : undefined;
+        if (!output) {
+          const entries = (folder as FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> }).entries();
+          for await (const [name, entry] of entries) {
+            if (entry.kind === "file" && /\.(mp4|webm|mov)$/i.test(name)) { output = name; break; }
+          }
+        }
         return {
           id: clip.id,
           title: clip.title,
           detail: `${durationText} · ${generation.mode ?? "T2VA"} · ${resolutionText} · ${fpsText}`,
-          meta: `${generation.aspect ?? "16:9"}${data.output ? " · 已归档" : ""}`,
-          state: data.output ? "已完成" : "草稿",
+          meta: `${generation.aspect ?? "16:9"}${output ? " · 已归档" : ""}`,
+          state: output ? "已完成" : "草稿",
+          output,
           generation,
           subjects: data.references?.subjects,
           references: data.references,
@@ -1752,7 +1761,7 @@ export default function Home() {
         const generatedSummary = `[${fields.taskType}${fields.audioProcessing.length ? ` + ${fields.audioProcessing.join(" + ")}` : ""}] ${taskSummary[fields.taskType]}${audioSummary || "."}`;
         const detailedDescription = promptSegments[shot.id] ?? [];
         const integratedDescription = detailedDescription
-          .map((segment) => segment.description.trim())
+          .map((segment, index) => `[Shot ${index + 1}]\n${segment.description.trim()}`)
           .filter(Boolean)
           .join("\n\n");
         const i2vaAlignment = settings.mode === "I2VA" && shot.id === taskShot?.id
@@ -1798,8 +1807,8 @@ export default function Home() {
               : {}),
           },
           prompt: promptData,
-          output: shotVideos[shot.id]
-            ? (shotFileNames[shot.id] ??
+          output: shotVideos[shot.id] || shot.output
+            ? (shotFileNames[shot.id] ?? shot.output ??
               `shot-${shot.id}-${safeFileStem(shot.title)}.mp4`)
             : undefined,
         });
