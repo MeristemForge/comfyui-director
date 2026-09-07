@@ -50,6 +50,7 @@ button { cursor: pointer; }
 select[aria-label="迁移目标"] { display: none; }
 label[for="new-character-half-body"], #new-character-half-body,
 label[for="new-character-half-body-empty"], #new-character-half-body-empty { display: none !important; }
+select option[value="全场"] { display: none; }
 span:has(> svg.lucide-video) { font-size: 0; }
 .upload-tile { display: grid; min-height: 84px; place-items: center; align-content: center; gap: 3px; border: 1px dashed color-mix(in oklch, var(--muted-foreground), transparent 65%); border-radius: 9px; background: color-mix(in oklch, var(--muted), transparent 55%); font-size: 11px; transition: .2s; }
 .upload-tile:hover { border-color: var(--primary); background: color-mix(in oklch, var(--primary), transparent 92%); }
