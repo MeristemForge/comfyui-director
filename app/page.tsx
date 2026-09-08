@@ -653,21 +653,15 @@ function restoreProjectShotReferences(
     subject.assetRoles = { ...subject.assetRoles, [assetKey]: role };
     if (referenceAssets[assetKey]) return;
     const kind = inferReferenceKind(assetKey, reference.kind);
-    const params = new URLSearchParams({
-      filename: reference.comfyName ?? "",
-      type: "input",
-      comfy_url: comfyUrl,
-    });
-    if (reference.comfySubfolder)
-      params.set("subfolder", reference.comfySubfolder);
-    referenceAssets[assetKey] = {
+    const restoredAsset = {
       name: reference.name?.trim() || assetKey,
-      url: reference.comfyName ? `/api/video?${params.toString()}` : "",
+      comfyName: reference.comfyName,
+      comfySubfolder: reference.comfySubfolder,
       kind,
-      ...(reference.comfyName ? { comfyName: reference.comfyName } : {}),
-      ...(reference.comfySubfolder
-        ? { comfySubfolder: reference.comfySubfolder }
-        : {}),
+    };
+    referenceAssets[assetKey] = {
+      ...restoredAsset,
+      url: referenceAssetUrl(restoredAsset, comfyUrl),
       ...(reference.sourcePath ? { sourcePath: reference.sourcePath } : {}),
     };
   };
@@ -711,6 +705,88 @@ function restoreProjectShotReferences(
     }
   });
   return { subjects, referenceAssets };
+}
+
+function referenceAssetUrl(
+  asset: Pick<ReferenceAsset, "comfyName" | "comfySubfolder">,
+  comfyUrl: string,
+) {
+  if (!asset.comfyName) return "";
+  const params = new URLSearchParams({
+    filename: asset.comfyName,
+    type: "input",
+    comfy_url: comfyUrl,
+  });
+  if (asset.comfySubfolder) params.set("subfolder", asset.comfySubfolder);
+  return `/api/video?${params.toString()}`;
+}
+
+async function readProjectSourceFile(
+  project: FileSystemDirectoryHandle,
+  sourcePath: string,
+) {
+  const parts = sourcePath
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter(Boolean);
+  const pathParts = parts[0] === "资产" ? parts.slice(1) : parts;
+  if (
+    !pathParts.length ||
+    pathParts.some((part) => part === "." || part === "..")
+  )
+    return null;
+  let directory = project;
+  for (const part of pathParts.slice(0, -1))
+    directory = await directory.getDirectoryHandle(part);
+  return directory.getFileHandle(pathParts[pathParts.length - 1]).then((file) =>
+    file.getFile(),
+  );
+}
+
+async function uploadReferenceFile(
+  file: File,
+  kind: ReferenceKind,
+  comfyUrl: string,
+) {
+  const form = new FormData();
+  form.append("image", file, file.name);
+  form.append("kind", kind);
+  form.append("comfy_url", comfyUrl);
+  const response = await fetch("/api/upload", { method: "POST", body: form });
+  const uploaded = (await response.json().catch(() => ({}))) as {
+    name?: string;
+    subfolder?: string;
+    error?: string;
+  };
+  if (!response.ok || !uploaded.name)
+    throw new Error(uploaded.error ?? `上传${file.name}失败`);
+  return {
+    kind,
+    comfyName: uploaded.name,
+    comfySubfolder: uploaded.subfolder || undefined,
+  };
+}
+
+async function isReferenceAssetAvailable(
+  asset: Pick<ReferenceAsset, "comfyName" | "comfySubfolder">,
+  comfyUrl: string,
+) {
+  if (!asset.comfyName) return false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(referenceAssetUrl(asset, comfyUrl), {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    await response.body?.cancel();
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+  }
 }
 
 function formatElapsed(milliseconds: number) {
@@ -1303,7 +1379,14 @@ export default function Home() {
           // clips list. Never let the global fallback state leak into another
           // project's editor.
           resetProjectEditorState();
-          if (projectShots) applyProjectShotRecords(projectShots);
+          if (projectShots) {
+            const restoredAssets = applyProjectShotRecords(projectShots);
+            await hydrateProjectReferenceAssets(
+              projectHandle,
+              restoredAssets,
+              persistedComfyUrl,
+            );
+          }
           setActiveShot(0);
         } catch {
           // Keep local state when the persisted directory handle is unavailable.
@@ -1435,6 +1518,7 @@ export default function Home() {
     shotVideos,
     shotFileNames,
     keyframeMode,
+    referenceAssets,
   ]);
 
   useEffect(() => {
@@ -2153,31 +2237,13 @@ export default function Home() {
         }
         const index = nextReferenceIndex(shotId, kind, uploadedKeys);
         const key = referenceKey(shotId, kind, index);
-        const response = await fetch("/api/upload", {
-          method: "POST",
-          body: (() => {
-            const form = new FormData();
-            form.append("image", file, file.name);
-            form.append("kind", kind);
-            form.append("comfy_url", comfyUrl);
-            return form;
-          })(),
-        });
-        const uploaded = (await response.json().catch(() => ({}))) as {
-          name?: string;
-          subfolder?: string;
-          error?: string;
-        };
-        if (!response.ok || !uploaded.name)
-          throw new Error(uploaded.error ?? `上传${file.name}失败`);
+        const uploaded = await uploadReferenceFile(file, kind, comfyUrl);
         setReferenceAssets((current) => ({
           ...current,
           [key]: {
             name: file.name,
             url: URL.createObjectURL(file),
-            comfyName: uploaded.name,
-            comfySubfolder: uploaded.subfolder || undefined,
-            kind,
+            ...uploaded,
             sourcePath: `资产/${folderName}/${asset.name}${directFile ? "" : `/${file.name}`}`,
           },
         }));
@@ -2427,7 +2493,14 @@ export default function Home() {
       void saveProjectDirectoryHandle(directory);
       try {
         const loaded = await readProjectShots(directory);
-        if (loaded) applyProjectShotRecords(loaded);
+        if (loaded) {
+          const restoredAssets = applyProjectShotRecords(loaded);
+          await hydrateProjectReferenceAssets(
+            directory,
+            restoredAssets,
+            comfyUrl,
+          );
+        }
       } catch {
         // Keep an empty editor for projects without a readable manifest.
       }
@@ -2562,6 +2635,57 @@ export default function Home() {
     });
     setPromptSubjects(restored);
     setReferenceAssets(restoredReferenceAssets);
+    return restoredReferenceAssets;
+  }
+  async function hydrateProjectReferenceAssets(
+    project: FileSystemDirectoryHandle,
+    assets: Record<string, ReferenceAsset>,
+    comfyUrlValue: string,
+  ) {
+    const nextAssets = { ...assets };
+    let restoredCount = 0;
+    let missingCount = 0;
+    for (const [assetKey, asset] of Object.entries(assets)) {
+      if (!asset.sourcePath) continue;
+      if (await isReferenceAssetAvailable(asset, comfyUrlValue)) continue;
+      let sourceFile: File;
+      try {
+        const resolvedSourceFile = await readProjectSourceFile(
+          project,
+          asset.sourcePath,
+        );
+        if (!resolvedSourceFile) {
+          missingCount += 1;
+          continue;
+        }
+        sourceFile = resolvedSourceFile;
+      } catch {
+        missingCount += 1;
+        continue;
+      }
+      try {
+        const uploaded = await uploadReferenceFile(
+          sourceFile,
+          asset.kind,
+          comfyUrlValue,
+        );
+        nextAssets[assetKey] = {
+          ...asset,
+          ...uploaded,
+          url: referenceAssetUrl(uploaded, comfyUrlValue),
+        };
+        restoredCount += 1;
+      } catch {
+        missingCount += 1;
+      }
+    }
+    if (restoredCount) setReferenceAssets(nextAssets);
+    if (restoredCount || missingCount)
+      setGenerationStatus(
+        missingCount
+          ? `已重新上传 ${restoredCount} 个引用，${missingCount} 个源文件无法恢复`
+          : `已重新上传 ${restoredCount} 个项目引用`,
+      );
   }
   async function selectProjectByName(name: string) {
     const handle = projectDirectories.find(
@@ -2574,7 +2698,10 @@ export default function Home() {
     setProjectDirectoryName(handle.name);
     try {
       const loaded = await readProjectShots(handle);
-      if (loaded) applyProjectShotRecords(loaded);
+      if (loaded) {
+        const restoredAssets = applyProjectShotRecords(loaded);
+        await hydrateProjectReferenceAssets(handle, restoredAssets, comfyUrl);
+      }
       setActiveShot(0);
     } catch (error) {
       if (
@@ -2676,19 +2803,10 @@ export default function Home() {
       ),
     );
   }
-  async function removeProjectAsset(asset: ProjectTreeAsset, permanent: boolean) {
+  async function removeProjectAsset(asset: ProjectTreeAsset) {
     if (!projectDirectory) return;
     const label = assetLabel(asset);
     try {
-      if (!permanent) {
-        removeAssetReferences(asset);
-        setProjectAssets((current) =>
-          current.filter((item) => !(item.type === asset.type && item.name === asset.name)),
-        );
-        setAssetDeleteCandidate(null);
-        setGenerationStatus(`已从当前项目移除${label}“${asset.name}”，源文件已保留`);
-        return;
-      }
       const writable = projectDirectory as WritableDirectoryHandle;
       const currentPermission = writable.queryPermission
         ? await writable.queryPermission({ mode: "readwrite" })
@@ -2891,7 +3009,14 @@ export default function Home() {
     let switchFailed = false;
     try {
       const loaded = await readProjectShots(nextHandle);
-      if (loaded) applyProjectShotRecords(loaded);
+      if (loaded) {
+        const restoredAssets = applyProjectShotRecords(loaded);
+        await hydrateProjectReferenceAssets(
+          nextHandle,
+          restoredAssets,
+          comfyUrl,
+        );
+      }
       setActiveShot(0);
     } catch {
       switchFailed = true;
@@ -2959,7 +3084,14 @@ export default function Home() {
           setProjectDirectoryName(nextHandle.name);
           try {
             const loaded = await readProjectShots(nextHandle);
-            if (loaded) applyProjectShotRecords(loaded);
+            if (loaded) {
+              const restoredAssets = applyProjectShotRecords(loaded);
+              await hydrateProjectReferenceAssets(
+                nextHandle,
+                restoredAssets,
+                comfyUrl,
+              );
+            }
             setActiveShot(0);
           } catch {
             setGenerationStatus(
@@ -3009,9 +3141,9 @@ export default function Home() {
           className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
           onMouseDown={(event) => event.stopPropagation()}
         >
-          <h2 className="text-sm font-semibold">移除资产</h2>
+          <h2 className="text-sm font-semibold">永久删除资产</h2>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            请选择对“{assetDeleteCandidate.name}”的处理方式。仅从当前项目移除会解除镜头引用并保留源文件；永久删除会删除资产目录及其中的全部文件。
+            确定永久删除“{assetDeleteCandidate.name}”及其源文件吗？相关镜头引用也会被解除。
           </p>
           <div className="mt-5 flex justify-end gap-2">
             <Button
@@ -3023,15 +3155,8 @@ export default function Home() {
             </Button>
             <Button
               type="button"
-              variant="outline"
-              onClick={() => void removeProjectAsset(assetDeleteCandidate, false)}
-            >
-              仅从当前项目移除
-            </Button>
-            <Button
-              type="button"
               variant="destructive"
-              onClick={() => void removeProjectAsset(assetDeleteCandidate, true)}
+              onClick={() => void removeProjectAsset(assetDeleteCandidate)}
             >
               永久删除
             </Button>
@@ -3396,7 +3521,7 @@ export default function Home() {
           : role === "environment"
             ? "located_in"
             : "associated_with";
-    const subjects = shotSubjects
+    const subjects: PersistedPromptSubject[] = shotSubjects
       .filter((subject) => subject.name.trim())
       .flatMap((subject) => {
         const references = subject.assetKeys.map((assetKey) =>
