@@ -2151,7 +2151,9 @@ export default function Home() {
     const parentIndex = assetSubjectParentIndexRef.current;
     try {
       const folderName =
-        asset.type === "clothing"
+        asset.type === "character"
+          ? "角色"
+          : asset.type === "clothing"
           ? "服装"
           : asset.type === "prop"
             ? "道具"
@@ -2617,6 +2619,7 @@ export default function Home() {
           folderName,
         );
         for await (const [name, entry] of folder.entries()) {
+          if (type === "character" && entry.kind === "directory") continue;
           const assetType =
             type === "scene" && entry.kind === "directory" ? "scene" : type;
           assets.push({
@@ -5024,6 +5027,19 @@ export default function Home() {
     if (seedMode === "random") setSeed(submittedSeed);
   }
 
+  const pickerCharacters =
+    referencePickerTarget?.kind && referencePickerTarget.kind !== "image"
+      ? []
+      : projectCharacterNames;
+  const pickerAssets = projectAssets.filter((asset) => {
+    if (!referencePickerTarget)
+      return ["character", "scene", "clothing", "prop"].includes(asset.type);
+    if (referencePickerTarget.kind === "image")
+      return !["audio", "video"].includes(asset.type);
+    return asset.type === referencePickerTarget.kind;
+  });
+  const hasPickerAssets = pickerCharacters.length > 0 || pickerAssets.length > 0;
+
   if (!taskShot) {
     return (
       <main className="min-h-screen bg-background text-foreground">
@@ -5045,8 +5061,8 @@ export default function Home() {
                 选择角色、服装、道具或场景，绑定到当前片段主体。
               </p>
               <div className="mt-4 space-y-1.5">
-                {projectCharacterNames.length ? (
-                  projectCharacterNames.map((name) => (
+                {pickerCharacters.length ? (
+                  pickerCharacters.map((name) => (
                     <button
                       key={name}
                       type="button"
@@ -5070,12 +5086,8 @@ export default function Home() {
                       </span>
                     </button>
                   ))
-                ) : (
-                  <p className="py-3 text-center text-[10px] text-muted-foreground">
-                    暂无角色资产
-                  </p>
-                )}
-                {projectAssets.map((asset) => (
+                ) : null}
+                {pickerAssets.map((asset) => (
                   <button
                     key={`${asset.type}-${asset.name}`}
                     type="button"
@@ -5095,10 +5107,15 @@ export default function Home() {
                     </span>
                     <span className="truncate">{asset.name}</span>
                     <span className="ml-auto text-[9px] text-muted-foreground">
-                      {asset.type === "clothing" ? "服装" : asset.type === "scene" ? "场景" : asset.type === "prop" ? "道具" : asset.type === "audio" ? "音频" : asset.type === "video" ? "视频" : "自定义"}
+                      {assetLabel(asset)}
                     </span>
                   </button>
                 ))}
+                {!hasPickerAssets && (
+                  <p className="py-3 text-center text-[10px] text-muted-foreground">
+                    暂无可用资产
+                  </p>
+                )}
               </div>
               <div className="mt-4 flex justify-end">
                 <Button
@@ -5328,8 +5345,8 @@ export default function Home() {
               </label>
             )}
             <div className="mt-4 space-y-1.5">
-              {projectCharacterNames.length ? (
-                projectCharacterNames.map((name) => (
+              {pickerCharacters.length ? (
+                pickerCharacters.map((name) => (
                   <button
                     key={name}
                     type="button"
@@ -5356,12 +5373,8 @@ export default function Home() {
                     </span>
                   </button>
                 ))
-              ) : (
-                <p className="py-3 text-center text-[10px] text-muted-foreground">
-                  暂无角色资产
-                </p>
-              )}
-              {projectAssets.map((asset) => (
+              ) : null}
+              {pickerAssets.map((asset) => (
                 <button
                   key={`${asset.type}-${asset.name}`}
                   type="button"
@@ -5384,10 +5397,15 @@ export default function Home() {
                   </span>
                   <span className="truncate">{asset.name}</span>
                   <span className="ml-auto text-[9px] text-muted-foreground">
-                    {asset.type === "clothing" ? "服装" : asset.type === "scene" ? "场景" : asset.type === "prop" ? "道具" : asset.type === "audio" ? "音频" : asset.type === "video" ? "视频" : "自定义"}
+                    {assetLabel(asset)}
                   </span>
                 </button>
               ))}
+              {!hasPickerAssets && (
+                <p className="py-3 text-center text-[10px] text-muted-foreground">
+                  暂无可用资产
+                </p>
+              )}
             </div>
             <div className="mt-4 flex justify-end">
               <Button
