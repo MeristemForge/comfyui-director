@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  ArrowLeft,
   AudioLines,
   Box,
   CircleStop,
@@ -876,6 +877,12 @@ export default function Home() {
     ProjectTreeAsset | null
   >(null);
   const [assetSubjectPickerOpen, setAssetSubjectPickerOpen] = useState(false);
+  const [assetPickerView, setAssetPickerView] = useState<
+    "actions" | "categories" | "items"
+  >("actions");
+  const [assetPickerCategory, setAssetPickerCategory] = useState<
+    ProjectAssetType | null
+  >(null);
   const [referencePickerTarget, setReferencePickerTarget] = useState<{
     kind: ReferenceKind;
     index: number;
@@ -4138,6 +4145,8 @@ export default function Home() {
           if (!asset) {
             event.preventDefault();
             setReferencePickerTarget({ kind, index });
+            setAssetPickerView("actions");
+            setAssetPickerCategory(null);
             setAssetSubjectPickerOpen(true);
           }
         }}
@@ -4145,6 +4154,8 @@ export default function Home() {
           if (!asset) {
             event.preventDefault();
             setReferencePickerTarget({ kind, index });
+            setAssetPickerView("actions");
+            setAssetPickerCategory(null);
             setAssetSubjectPickerOpen(true);
           }
         }}
@@ -5039,6 +5050,68 @@ export default function Home() {
     return asset.type === referencePickerTarget.kind;
   });
   const hasPickerAssets = pickerCharacters.length > 0 || pickerAssets.length > 0;
+  const pickerCategoryOptions: Array<{
+    type: ProjectAssetType;
+    label: string;
+    icon: typeof UserRound;
+    count: number;
+  }> = [
+    {
+      type: "character",
+      label: "角色",
+      icon: UserRound,
+      count:
+        pickerCharacters.length +
+        pickerAssets.filter((asset) => asset.type === "character").length,
+    },
+    {
+      type: "scene",
+      label: "场景",
+      icon: MapPinned,
+      count: pickerAssets.filter((asset) => asset.type === "scene").length,
+    },
+    {
+      type: "clothing",
+      label: "服装",
+      icon: Shirt,
+      count: pickerAssets.filter((asset) => asset.type === "clothing").length,
+    },
+    {
+      type: "prop",
+      label: "道具",
+      icon: Package,
+      count: pickerAssets.filter((asset) => asset.type === "prop").length,
+    },
+    {
+      type: "video",
+      label: "视频",
+      icon: Video,
+      count: pickerAssets.filter((asset) => asset.type === "video").length,
+    },
+    {
+      type: "audio",
+      label: "音频",
+      icon: AudioLines,
+      count: pickerAssets.filter((asset) => asset.type === "audio").length,
+    },
+    {
+      type: "custom",
+      label: "自定义",
+      icon: Box,
+      count: pickerAssets.filter((asset) => asset.type === "custom").length,
+    },
+  ].filter((category) => category.count > 0);
+  const selectedPickerCharacters =
+    assetPickerCategory === "character" ? pickerCharacters : [];
+  const selectedPickerAssets = pickerAssets.filter(
+    (asset) => asset.type === assetPickerCategory,
+  );
+  function closeAssetPicker() {
+    setAssetSubjectPickerOpen(false);
+    setReferencePickerTarget(null);
+    setAssetPickerView("actions");
+    setAssetPickerCategory(null);
+  }
 
   if (!taskShot) {
     return (
@@ -5047,88 +5120,6 @@ export default function Home() {
         {renderAssetDeleteDialog()}
         {renderProjectDeleteDialog()}
         {renderEngineSettingsDialog()}
-        {assetSubjectPickerOpen && (
-          <div
-            className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-            onMouseDown={() => setAssetSubjectPickerOpen(false)}
-          >
-            <div
-              className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
-              onMouseDown={(event) => event.stopPropagation()}
-            >
-              <h2 className="text-sm font-semibold">从资产库绑定主体</h2>
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                选择角色、服装、道具或场景，绑定到当前片段主体。
-              </p>
-              <div className="mt-4 space-y-1.5">
-                {pickerCharacters.length ? (
-                  pickerCharacters.map((name) => (
-                    <button
-                      key={name}
-                      type="button"
-                      onClick={() => void bindCharacterAsset(name)}
-                      className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
-                    >
-                      <span className="grid size-8 place-items-center overflow-hidden rounded bg-muted">
-                        {projectCharacterThumbnails[name] ? (
-                          <img
-                            src={projectCharacterThumbnails[name]}
-                            alt=""
-                            className="size-full object-cover"
-                          />
-                        ) : (
-                          <UserRound className="size-3" />
-                        )}
-                      </span>
-                      <span className="truncate">{name}</span>
-                      <span className="ml-auto text-[9px] text-muted-foreground">
-                        角色
-                      </span>
-                    </button>
-                  ))
-                ) : null}
-                {pickerAssets.map((asset) => (
-                  <button
-                    key={`${asset.type}-${asset.name}`}
-                    type="button"
-                    onClick={() => void bindProjectAsset(asset)}
-                    className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
-                  >
-                    <span className="grid size-8 place-items-center overflow-hidden rounded bg-muted">
-                      {asset.thumbnail ? (
-                        <img
-                          src={asset.thumbnail}
-                          alt=""
-                          className="size-full object-cover"
-                        />
-                      ) : (
-                        <Package className="size-3" />
-                      )}
-                    </span>
-                    <span className="truncate">{asset.name}</span>
-                    <span className="ml-auto text-[9px] text-muted-foreground">
-                      {assetLabel(asset)}
-                    </span>
-                  </button>
-                ))}
-                {!hasPickerAssets && (
-                  <p className="py-3 text-center text-[10px] text-muted-foreground">
-                    暂无可用资产
-                  </p>
-                )}
-              </div>
-              <div className="mt-4 flex justify-end">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => setAssetSubjectPickerOpen(false)}
-                >
-                  取消
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
         <header className="flex h-14 items-center justify-between border-b border-border bg-card px-4">
           <div className="flex items-center gap-3">
             <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
@@ -5303,119 +5294,164 @@ export default function Home() {
       {assetSubjectPickerOpen && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onMouseDown={() => {
-            setAssetSubjectPickerOpen(false);
-            setReferencePickerTarget(null);
-          }}
+          onMouseDown={closeAssetPicker}
         >
           <div
             className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <h2 className="text-sm font-semibold">
-              {referencePickerTarget ? "添加当前镜头参考素材" : "从资产库绑定主体"}
-            </h2>
-            <p className="mt-1 text-[10px] text-muted-foreground">
-              {referencePickerTarget
-                ? "可以选择已有项目资产，也可以直接上传新素材。"
-                : "选择角色、服装、道具或场景，绑定到当前片段主体。"}
-            </p>
-            {referencePickerTarget && (
-              <label className="mt-3 flex cursor-pointer items-center justify-center rounded-md border border-dashed border-primary/40 px-3 py-2 text-xs text-primary hover:bg-primary/10">
-                <Plus className="mr-1.5 size-3.5" />
-                直接上传新素材
-                <input
-                  type="file"
-                  accept={
-                    referencePickerTarget.kind === "image"
-                      ? "image/*"
-                      : referencePickerTarget.kind === "video"
-                        ? "video/*"
-                        : "audio/*"
-                  }
-                  className="hidden"
-                  onChange={(event) => {
-                    const target = referencePickerTarget;
-                    if (!target) return;
-                    setAssetSubjectPickerOpen(false);
-                    setReferencePickerTarget(null);
-                    void uploadReference(event, target.kind, target.index);
+            <div className="flex items-center gap-2">
+              {assetPickerView !== "actions" && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => {
+                    setAssetPickerView(
+                      assetPickerView === "items" ? "categories" : "actions",
+                    );
+                    setAssetPickerCategory(
+                      assetPickerView === "items" ? assetPickerCategory : null,
+                    );
                   }}
-                />
-              </label>
+                  aria-label="返回"
+                  title="返回"
+                >
+                  <ArrowLeft className="size-4" />
+                </Button>
+              )}
+              <h2 className="text-sm font-semibold">
+                {assetPickerView === "items"
+                  ? pickerCategoryOptions.find(
+                      (category) => category.type === assetPickerCategory,
+                    )?.label
+                  : referencePickerTarget
+                    ? "添加当前镜头参考素材"
+                    : "从资产库绑定主体"}
+              </h2>
+            </div>
+            {assetPickerView === "actions" && (
+              <>
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  {referencePickerTarget
+                    ? "选择上传方式"
+                    : "从资产库选择角色、场景、服装或道具。"}
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  {referencePickerTarget && (
+                    <label className="flex min-h-24 cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-primary/40 px-3 py-3 text-center text-xs text-primary hover:bg-primary/10">
+                      <ImagePlus className="size-5" />
+                      直接上传
+                      <input
+                        type="file"
+                        accept={
+                          referencePickerTarget.kind === "image"
+                            ? "image/*"
+                            : referencePickerTarget.kind === "video"
+                              ? "video/*"
+                              : "audio/*"
+                        }
+                        className="hidden"
+                        onChange={(event) => {
+                          const target = referencePickerTarget;
+                          if (!target) return;
+                          closeAssetPicker();
+                          void uploadReference(event, target.kind, target.index);
+                        }}
+                      />
+                    </label>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAssetPickerView("categories")}
+                    className="flex min-h-24 flex-col items-center justify-center gap-2 rounded-lg border border-border px-3 py-3 text-center text-xs hover:border-primary/50 hover:bg-primary/5"
+                  >
+                    <FolderOpen className="size-5 text-primary" />
+                    资产库
+                    <span className="text-[9px] text-muted-foreground">
+                      {hasPickerAssets ? `${pickerAssets.length + pickerCharacters.length} 项` : "暂无资产"}
+                    </span>
+                  </button>
+                </div>
+              </>
             )}
-            <div className="mt-4 space-y-1.5">
-              {pickerCharacters.length ? (
-                pickerCharacters.map((name) => (
+            {assetPickerView === "categories" && (
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                {pickerCategoryOptions.length ? (
+                  pickerCategoryOptions.map(({ type, label, icon: Icon, count }) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => {
+                        setAssetPickerCategory(type);
+                        setAssetPickerView("items");
+                      }}
+                      className="flex min-h-20 items-center gap-3 rounded-lg border border-border px-3 py-3 text-left hover:border-primary/50 hover:bg-primary/5"
+                    >
+                      <Icon className="size-4 text-primary" />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-medium">{label}</span>
+                        <span className="text-[9px] text-muted-foreground">{count} 项</span>
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="col-span-2 py-6 text-center text-[10px] text-muted-foreground">
+                    暂无可用资产
+                  </p>
+                )}
+              </div>
+            )}
+            {assetPickerView === "items" && (
+              <div className="mt-4 max-h-72 space-y-1.5 overflow-y-auto">
+                {selectedPickerCharacters.map((name) => (
                   <button
                     key={name}
                     type="button"
-                    onClick={() => {
-                      setReferencePickerTarget(null);
-                      void bindCharacterAsset(name);
-                    }}
+                    onClick={() => void bindCharacterAsset(name)}
                     className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
                   >
                     <span className="grid size-8 place-items-center overflow-hidden rounded bg-muted">
                       {projectCharacterThumbnails[name] ? (
-                        <img
-                          src={projectCharacterThumbnails[name]}
-                          alt=""
-                          className="size-full object-cover"
-                        />
+                        <img src={projectCharacterThumbnails[name]} alt="" className="size-full object-cover" />
                       ) : (
                         <UserRound className="size-3" />
                       )}
                     </span>
                     <span className="truncate">{name}</span>
-                    <span className="ml-auto text-[9px] text-muted-foreground">
-                      角色
-                    </span>
+                    <span className="ml-auto text-[9px] text-muted-foreground">角色</span>
                   </button>
-                ))
-              ) : null}
-              {pickerAssets.map((asset) => (
-                <button
-                  key={`${asset.type}-${asset.name}`}
-                  type="button"
-                  onClick={() => {
-                    setReferencePickerTarget(null);
-                    void bindProjectAsset(asset);
-                  }}
-                  className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
-                >
-                  <span className="grid size-8 place-items-center overflow-hidden rounded bg-muted">
-                    {asset.thumbnail ? (
-                      <img
-                        src={asset.thumbnail}
-                        alt=""
-                        className="size-full object-cover"
-                      />
-                    ) : (
-                      <Package className="size-3" />
-                    )}
-                  </span>
-                  <span className="truncate">{asset.name}</span>
-                  <span className="ml-auto text-[9px] text-muted-foreground">
-                    {assetLabel(asset)}
-                  </span>
-                </button>
-              ))}
-              {!hasPickerAssets && (
-                <p className="py-3 text-center text-[10px] text-muted-foreground">
-                  暂无可用资产
-                </p>
-              )}
-            </div>
+                ))}
+                {selectedPickerAssets.map((asset) => (
+                  <button
+                    key={`${asset.type}-${asset.name}`}
+                    type="button"
+                    onClick={() => {
+                      closeAssetPicker();
+                      void bindProjectAsset(asset);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
+                  >
+                    <span className="grid size-8 place-items-center overflow-hidden rounded bg-muted">
+                      {asset.thumbnail ? (
+                        <img src={asset.thumbnail} alt="" className="size-full object-cover" />
+                      ) : (
+                        <Package className="size-3" />
+                      )}
+                    </span>
+                    <span className="truncate">{asset.name}</span>
+                    <span className="ml-auto text-[9px] text-muted-foreground">{assetLabel(asset)}</span>
+                  </button>
+                ))}
+                {!selectedPickerCharacters.length && !selectedPickerAssets.length && (
+                  <p className="py-6 text-center text-[10px] text-muted-foreground">
+                    暂无可用资产
+                  </p>
+                )}
+              </div>
+            )}
             <div className="mt-4 flex justify-end">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setAssetSubjectPickerOpen(false);
-                  setReferencePickerTarget(null);
-                }}
-              >
+              <Button type="button" variant="ghost" onClick={closeAssetPicker}>
                 取消
               </Button>
             </div>
