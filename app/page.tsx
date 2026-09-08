@@ -58,6 +58,15 @@ type ProjectShotRecord = Shot & {
 };
 type ProjectAssetType =
   "character" | "scene" | "clothing" | "prop" | "video" | "audio" | "custom";
+const assetUsageOptions: Record<ProjectAssetType, readonly string[]> = {
+  character: ["角色参考"],
+  scene: ["场景参考"],
+  clothing: ["服装参考"],
+  prop: ["道具参考"],
+  video: ["动作参考", "镜头参考", "表演参考"],
+  audio: ["声音参考", "环境音", "音乐参考"],
+  custom: [],
+};
 const initialShots: Shot[] = [];
 const shotPromptDefaults: Record<string, string> = {};
 const modelProfiles = {
@@ -806,6 +815,33 @@ function safeFileStem(title: string) {
   );
 }
 
+function assetNamePart(value: string) {
+  return value
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^[_ .]+|[_ .]+$/g, "")
+    .slice(0, 80);
+}
+
+function originalFileStem(fileName: string) {
+  return fileName.replace(/\.[^.]+$/, "");
+}
+
+function formatProjectAssetFileName(
+  name: string,
+  usage: string,
+  description: string,
+  originalName: string,
+) {
+  const parts = [name, usage, description]
+    .map(assetNamePart)
+    .filter(Boolean);
+  if (parts.length < 2) return null;
+  const extension = originalName.match(/\.[^.]+$/)?.[0] ?? "";
+  return `${parts.join("_")}${extension}`;
+}
+
 const projectAssetFolders = [
   "角色",
   "场景",
@@ -837,6 +873,31 @@ async function getProjectAssetFolder(
     // Legacy projects do not have an 资产 folder yet.
   }
   return project.getDirectoryHandle(folderName);
+}
+
+async function uniqueProjectAssetFileName(
+  folder: FileSystemDirectoryHandle,
+  requestedName: string,
+) {
+  const entries = (
+    folder as FileSystemDirectoryHandle & {
+      entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
+    }
+  ).entries();
+  const existingNames = new Set<string>();
+  for await (const [name] of entries) existingNames.add(name.toLowerCase());
+  if (!existingNames.has(requestedName.toLowerCase())) return requestedName;
+  const extension = requestedName.match(/\.[^.]+$/)?.[0] ?? "";
+  const stem = extension
+    ? requestedName.slice(0, -extension.length)
+    : requestedName;
+  let index = 2;
+  let candidate = `${stem}_${index}${extension}`;
+  while (existingNames.has(candidate.toLowerCase())) {
+    index += 1;
+    candidate = `${stem}_${index}${extension}`;
+  }
+  return candidate;
 }
 
 async function readAssetThumbnail(
@@ -1052,6 +1113,9 @@ export default function Home() {
   } | null>(null);
   const [assetDialog, setAssetDialog] = useState(false);
   const [assetType, setAssetType] = useState<ProjectAssetType | null>(null);
+  const [newAssetName, setNewAssetName] = useState("");
+  const [newAssetUsage, setNewAssetUsage] = useState("");
+  const [newAssetDescription, setNewAssetDescription] = useState("");
   const [newAssetFile, setNewAssetFile] = useState<File | null>(null);
   const [shotPrompts, setShotPrompts] =
     useState<Record<string, string>>(shotPromptDefaults);
@@ -3240,15 +3304,38 @@ export default function Home() {
   }
   function openAssetDialog() {
     setAssetType(null);
+    setNewAssetName("");
+    setNewAssetUsage("");
+    setNewAssetDescription("");
     setNewAssetFile(null);
     setAssetDialog(true);
+  }
+  function selectAssetType(type: ProjectAssetType) {
+    setAssetType(type);
+    setNewAssetName("");
+    setNewAssetUsage(assetUsageOptions[type][0] ?? "");
+    setNewAssetDescription("");
+    setNewAssetFile(null);
   }
   async function uploadProjectAsset(
     file: File,
     kind: ProjectAssetType,
+    name: string,
+    usage: string,
+    description: string,
   ) {
     if (!projectDirectory) return;
     try {
+      const requestedName = formatProjectAssetFileName(
+        name,
+        usage,
+        description,
+        file.name,
+      );
+      if (!requestedName) {
+        setGenerationStatus("请填写名称和用途");
+        return;
+      }
       const folderName =
         kind === "character"
           ? "角色"
@@ -3266,14 +3353,15 @@ export default function Home() {
       const folder = await getProjectAssetFolder(projectDirectory, folderName, {
         create: true,
       });
-      const target = await folder.getFileHandle(file.name, { create: true });
+      const targetName = await uniqueProjectAssetFileName(folder, requestedName);
+      const target = await folder.getFileHandle(targetName, { create: true });
       const writable = await target.createWritable();
       await writable.write(await file.arrayBuffer());
       await writable.close();
       setProjectAssets((current) =>
-        current.some((asset) => asset.type === kind && asset.name === file.name)
+        current.some((asset) => asset.type === kind && asset.name === targetName)
           ? current.map((asset) =>
-              asset.type === kind && asset.name === file.name
+              asset.type === kind && asset.name === targetName
                 ? {
                     ...asset,
                     thumbnail: file.type.startsWith("image/")
@@ -3285,7 +3373,7 @@ export default function Home() {
           : [
               ...current,
               {
-                name: file.name,
+                name: targetName,
                 type: kind,
                 thumbnail: file.type.startsWith("image/")
                   ? URL.createObjectURL(file)
@@ -3294,9 +3382,12 @@ export default function Home() {
             ],
       );
       setNewAssetFile(null);
+      setNewAssetName("");
+      setNewAssetUsage("");
+      setNewAssetDescription("");
       setAssetDialog(false);
       setAssetType(null);
-      setGenerationStatus(`${file.name} 已添加到资产/${folderName}`);
+      setGenerationStatus(`${targetName} 已添加到资产/${folderName}`);
     } catch {
       setGenerationStatus("添加资产失败，请检查项目目录权限");
     }
@@ -3381,9 +3472,7 @@ export default function Home() {
                 <button
                   key={type}
                   type="button"
-                  onClick={() =>
-                    setAssetType(type)
-                  }
+                  onClick={() => selectAssetType(type)}
                   className="flex min-h-20 items-start gap-3 rounded-lg border border-border bg-muted/15 p-3 text-left transition hover:border-primary/50 hover:bg-primary/5"
                 >
                   <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-primary">
@@ -3404,7 +3493,74 @@ export default function Home() {
             <div className="mt-4">
               {assetType && (
                 <>
-                  <label htmlFor="new-asset-file" className="field-label">
+                  <label htmlFor="new-asset-name" className="field-label">
+                    名称
+                  </label>
+                  <input
+                    id="new-asset-name"
+                    value={newAssetName}
+                    onChange={(event) => setNewAssetName(event.target.value)}
+                    placeholder={
+                      assetType === "character"
+                        ? "男主"
+                        : assetType === "scene"
+                          ? "麦当劳"
+                          : assetType === "clothing"
+                            ? "女主"
+                            : assetType === "prop"
+                              ? "手机"
+                              : assetType === "video"
+                                ? "男主"
+                                : assetType === "audio"
+                                  ? "男主或麦当劳"
+                                  : "汽车"
+                    }
+                    className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 text-xs outline-none focus:border-primary/60"
+                  />
+                  <label htmlFor="new-asset-usage" className="field-label mt-4 block">
+                    用途
+                  </label>
+                  {assetUsageOptions[assetType].length ? (
+                    <select
+                      id="new-asset-usage"
+                      value={newAssetUsage}
+                      onChange={(event) => setNewAssetUsage(event.target.value)}
+                      className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 text-xs outline-none focus:border-primary/60"
+                    >
+                      {assetUsageOptions[assetType].map((usage) => (
+                        <option key={usage} value={usage}>
+                          {usage}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      id="new-asset-usage"
+                      value={newAssetUsage}
+                      onChange={(event) => setNewAssetUsage(event.target.value)}
+                      placeholder="例如：外观参考、结构参考"
+                      className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 text-xs outline-none focus:border-primary/60"
+                    />
+                  )}
+                  <label htmlFor="new-asset-description" className="field-label mt-4 block">
+                    描述（可选）
+                  </label>
+                  <input
+                    id="new-asset-description"
+                    value={newAssetDescription}
+                    onChange={(event) => setNewAssetDescription(event.target.value)}
+                    placeholder={
+                      assetType === "character"
+                        ? "多视角"
+                        : assetType === "scene"
+                          ? "柜台区"
+                          : assetType === "video"
+                            ? "走向柜台"
+                            : ""
+                    }
+                    className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 text-xs outline-none focus:border-primary/60"
+                  />
+                  <label htmlFor="new-asset-file" className="field-label mt-4 block">
                     选择文件
                   </label>
                   <input
@@ -3412,7 +3568,7 @@ export default function Home() {
                     type="file"
                     accept={
                       assetType === "character"
-                        ? "image/*,audio/*"
+                        ? "image/*"
                         : assetType === "audio"
                         ? "audio/*"
                         : assetType === "video"
@@ -3421,9 +3577,12 @@ export default function Home() {
                             ? undefined
                             : "image/*"
                     }
-                    onChange={(event) =>
-                      setNewAssetFile(event.target.files?.[0] ?? null)
-                    }
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] ?? null;
+                      setNewAssetFile(file);
+                      if (file && !newAssetName.trim())
+                        setNewAssetName(originalFileStem(file.name));
+                    }}
                     className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
                   />
                   <div className="mt-5 flex justify-end">
@@ -3434,9 +3593,20 @@ export default function Home() {
                       className="ml-2"
                       onClick={() => {
                         if (!newAssetFile) return;
-                        void uploadProjectAsset(newAssetFile, assetType);
+                        void uploadProjectAsset(
+                          newAssetFile,
+                          assetType,
+                          newAssetName,
+                          newAssetUsage,
+                          newAssetDescription,
+                        );
                       }}
-                      disabled={!newAssetFile || !projectDirectory}
+                      disabled={
+                        !newAssetFile ||
+                        !projectDirectory ||
+                        !newAssetName.trim() ||
+                        !newAssetUsage.trim()
+                      }
                     >
                       上传到项目
                     </Button>
