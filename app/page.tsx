@@ -613,15 +613,6 @@ function safeFileStem(title: string) {
   );
 }
 
-function stableAssetId(type: string, name: string) {
-  const stem = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return `asset-${type}-${stem || Date.now()}`;
-}
-
 const projectAssetFolders = [
   "角色",
   "场景",
@@ -884,7 +875,6 @@ export default function Home() {
   const [assetDeleteCandidate, setAssetDeleteCandidate] = useState<
     ProjectTreeAsset | null
   >(null);
-  const [characterDialog, setCharacterDialog] = useState(false);
   const [assetSubjectPickerOpen, setAssetSubjectPickerOpen] = useState(false);
   const [referencePickerTarget, setReferencePickerTarget] = useState<{
     kind: ReferenceKind;
@@ -894,11 +884,6 @@ export default function Home() {
   const [assetDialog, setAssetDialog] = useState(false);
   const [assetType, setAssetType] = useState<ProjectAssetType | null>(null);
   const [newAssetFile, setNewAssetFile] = useState<File | null>(null);
-  const [newCharacterName, setNewCharacterName] = useState("");
-  const [newCharacterFullBodyFile, setNewCharacterFullBodyFile] =
-    useState<File | null>(null);
-  const [newCharacterVoiceFile, setNewCharacterVoiceFile] =
-    useState<File | null>(null);
   const [shotPrompts, setShotPrompts] =
     useState<Record<string, string>>(shotPromptDefaults);
   const [shotSettings, setShotSettings] = useState<
@@ -3551,115 +3536,6 @@ export default function Home() {
       </div>
     );
   }
-  async function createCharacter() {
-    const name = newCharacterName.trim();
-    if (!name) return;
-    const fullBodyFile = newCharacterFullBodyFile;
-    const voiceFile = newCharacterVoiceFile;
-    if (!fullBodyFile) {
-      setGenerationStatus("请先上传角色全身参考图");
-      return;
-    }
-    if (
-      !fullBodyFile.type.startsWith("image/")
-    ) {
-      setGenerationStatus("身份参考必须是图片文件");
-      return;
-    }
-    if (voiceFile && !voiceFile.type.startsWith("audio/")) {
-      setGenerationStatus("声音参考必须是音频文件");
-      return;
-    }
-    if (!projectDirectory) {
-      setGenerationStatus("请先选择项目目录");
-      return;
-    }
-    try {
-      const characters = await getProjectAssetFolder(projectDirectory, "角色", {
-        create: true,
-      });
-      const character = await characters.getDirectoryHandle(name, {
-        create: true,
-      });
-      const identity = await character.getDirectoryHandle("身份", {
-        create: true,
-      });
-      const voice = await character.getDirectoryHandle("声音", {
-        create: true,
-      });
-      const identityReferences = [{
-          role: "character",
-          view: "combined_full_body",
-          file: fullBodyFile.name,
-          mimeType: fullBodyFile.type,
-        }];
-      for (const identityReference of [{ file: fullBodyFile, category: "全身参考" }]) {
-        const target = await identity.getFileHandle(
-          identityReference.file.name,
-          { create: true },
-        );
-        const writable = await target.createWritable();
-        await writable.write(await identityReference.file.arrayBuffer());
-        await writable.close();
-      }
-      const voiceReference = voiceFile
-        ? { role: "voice", file: voiceFile.name, mimeType: voiceFile.type }
-        : null;
-      if (voiceFile) {
-        const voiceTarget = await voice.getFileHandle(voiceFile.name, {
-          create: true,
-        });
-        const voiceWritable = await voiceTarget.createWritable();
-        await voiceWritable.write(await voiceFile.arrayBuffer());
-        await voiceWritable.close();
-      }
-      const file = await character.getFileHandle("character.json", {
-        create: true,
-      });
-      const writable = await file.createWritable();
-      await writable.write(
-        JSON.stringify(
-          {
-            id: stableAssetId("character", name),
-            name,
-            type: "character",
-            createdAt: new Date().toISOString(),
-            references: [
-              ...identityReferences,
-              ...(voiceReference ? [voiceReference] : []),
-            ],
-          },
-          null,
-          2,
-        ),
-      );
-      await writable.close();
-      setProjectCharacterNames((current) =>
-        current.includes(name) ? current : [...current, name],
-      );
-      setProjectCharacterThumbnails((current) => ({
-        ...current,
-        [name]: URL.createObjectURL(fullBodyFile),
-      }));
-      const shotId = shots[activeShot]?.id;
-      if (shotId)
-        setPromptSubjects((current) => ({
-          ...current,
-          [shotId]: (current[shotId] ?? []).some(
-            (subject) => subject.name.trim() === name,
-          )
-            ? (current[shotId] ?? [])
-            : [...(current[shotId] ?? []), { name, assetKeys: [] }],
-        }));
-      setNewCharacterName("");
-      setNewCharacterFullBodyFile(null);
-      setNewCharacterVoiceFile(null);
-      setCharacterDialog(false);
-      setGenerationStatus(`角色“${name}”已创建`);
-    } catch {
-      setGenerationStatus("创建角色失败，请检查项目目录权限或角色名称");
-    }
-  }
   async function writeProjectManifest(shotList = shots) {
     if (!projectDirectory) return;
     const file = await projectDirectory.getFileHandle("script.json", {
@@ -5155,83 +5031,6 @@ export default function Home() {
         {renderAssetDeleteDialog()}
         {renderProjectDeleteDialog()}
         {renderEngineSettingsDialog()}
-        {characterDialog && (
-          <div
-            className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-            onMouseDown={() => setCharacterDialog(false)}
-          >
-            <div
-              className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
-              onMouseDown={(event) => event.stopPropagation()}
-            >
-              <h2 className="text-sm font-semibold">添加角色</h2>
-              <label
-                htmlFor="new-character-name-empty"
-                className="field-label mt-4"
-              >
-                角色名称
-              </label>
-              <input
-                id="new-character-name-empty"
-                value={newCharacterName}
-                onChange={(event) => setNewCharacterName(event.target.value)}
-                className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 text-xs outline-none"
-                autoFocus
-              />
-              <label
-                htmlFor="new-character-full-body-empty"
-                className="field-label mt-4"
-              >
-                全身角色参考图
-              </label>
-              <input
-                id="new-character-full-body-empty"
-                type="file"
-                accept="image/*"
-                onChange={(event) =>
-                  setNewCharacterFullBodyFile(event.target.files?.[0] ?? null)
-                }
-                className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
-              />
-              <label
-                htmlFor="new-character-voice-empty"
-                className="field-label mt-4"
-              >
-                声音参考（可选）
-              </label>
-              <input
-                id="new-character-voice-empty"
-                type="file"
-                accept="audio/*"
-                onChange={(event) =>
-                  setNewCharacterVoiceFile(event.target.files?.[0] ?? null)
-                }
-                className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
-              />
-              <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
-                一张全身角色参考图即可；声音参考可选。
-              </p>
-              <div className="mt-5 flex justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={() => setCharacterDialog(false)}
-                >
-                  取消
-                </Button>
-                <Button
-                  onClick={() => void createCharacter()}
-                  disabled={
-                    !newCharacterName.trim() ||
-                    !newCharacterFullBodyFile ||
-                    !projectDirectory
-                  }
-                >
-                  创建角色
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
         {assetSubjectPickerOpen && (
           <div
             className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
@@ -5484,74 +5283,6 @@ export default function Home() {
       {renderAssetDeleteDialog()}
       {renderProjectDeleteDialog()}
       {renderEngineSettingsDialog()}
-      {characterDialog && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onMouseDown={() => setCharacterDialog(false)}
-        >
-          <div
-            className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <h2 className="text-sm font-semibold">添加角色</h2>
-            <label htmlFor="new-character-name" className="field-label mt-4">
-              角色名称
-            </label>
-            <input
-              id="new-character-name"
-              value={newCharacterName}
-              onChange={(event) => setNewCharacterName(event.target.value)}
-              className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 text-xs outline-none"
-              autoFocus
-            />
-            <label
-              htmlFor="new-character-full-body"
-              className="field-label mt-4"
-            >
-              全身角色参考图
-            </label>
-            <input
-              id="new-character-full-body"
-              type="file"
-              accept="image/*"
-              onChange={(event) =>
-                setNewCharacterFullBodyFile(event.target.files?.[0] ?? null)
-              }
-              className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
-            />
-            <label htmlFor="new-character-voice" className="field-label mt-4">
-              声音参考（可选）
-            </label>
-            <input
-              id="new-character-voice"
-              type="file"
-              accept="audio/*"
-              onChange={(event) =>
-                setNewCharacterVoiceFile(event.target.files?.[0] ?? null)
-              }
-              className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
-            />
-            <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
-              一张全身角色参考图即可；声音参考可选。
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setCharacterDialog(false)}>
-                取消
-              </Button>
-              <Button
-                onClick={() => void createCharacter()}
-                disabled={
-                  !newCharacterName.trim() ||
-                  !newCharacterFullBodyFile ||
-                  !projectDirectory
-                }
-              >
-                创建角色
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
       {assetSubjectPickerOpen && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
