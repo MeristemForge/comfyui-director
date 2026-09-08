@@ -558,6 +558,8 @@ type H3ReferenceMapping = {
   subject: string;
   role: string;
   assetName: string;
+  usage?: string;
+  description?: string;
 };
 
 function normalizePromptSubjects(subjects: Record<string, PromptSubject[]>) {
@@ -818,14 +820,25 @@ function safeFileStem(title: string) {
 function assetNamePart(value: string) {
   return value
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
-    .replace(/\s+/g, "_")
-    .replace(/_+/g, "_")
+    .replace(/[\s_]+/g, "-")
     .replace(/^[_ .]+|[_ .]+$/g, "")
     .slice(0, 80);
 }
 
 function originalFileStem(fileName: string) {
   return fileName.replace(/\.[^.]+$/, "");
+}
+
+function parseProjectAssetName(fileName: string) {
+  const parts = originalFileStem(fileName)
+    .split("_")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return {
+    name: parts[0] || originalFileStem(fileName),
+    usage: parts[1],
+    description: parts.slice(2).join("_") || undefined,
+  };
 }
 
 function formatProjectAssetFileName(
@@ -2314,10 +2327,11 @@ export default function Home() {
         uploadedKeys.push(key);
         uploadedRoles.push(role);
       }
+      const parsedAsset = parseProjectAssetName(asset.name);
       setPromptSubjects((current) => {
         const subjects = [...(current[shotId] ?? [])];
         const child = {
-          name: asset.name,
+          name: parsedAsset.name,
           assetKeys: uploadedKeys,
           assetRoles: Object.fromEntries(
             uploadedKeys.map((key, index) => [key, uploadedRoles[index] ?? "composite"]),
@@ -2325,7 +2339,7 @@ export default function Home() {
         };
         const existingIndex = subjects.findIndex(
           (subject) =>
-            subject.name.trim().toLowerCase() === asset.name.trim().toLowerCase(),
+            subject.name.trim().toLowerCase() === parsedAsset.name.trim().toLowerCase(),
         );
         if (existingIndex >= 0) {
           const existing = subjects[existingIndex];
@@ -3580,8 +3594,6 @@ export default function Home() {
                     onChange={(event) => {
                       const file = event.target.files?.[0] ?? null;
                       setNewAssetFile(file);
-                      if (file && !newAssetName.trim())
-                        setNewAssetName(originalFileStem(file.name));
                     }}
                     className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
                   />
@@ -4462,11 +4474,16 @@ export default function Home() {
             if (!match || !asset) return [];
             const kind = match[1] as ReferenceKind;
             const label = kind === "image" ? "Picture" : kind === "video" ? "Video" : "Audio";
+            const parsedAsset = asset.sourcePath
+              ? parseProjectAssetName(asset.name)
+              : null;
             return [{
               picture: `<${label} ${Number(match[2]) + 1}>`,
-              subject: subject.name.trim(),
+              subject: parsedAsset?.name || subject.name.trim(),
               role: subject.assetRoles?.[assetKey] ?? "composite",
               assetName: asset.name,
+              usage: parsedAsset?.usage,
+              description: parsedAsset?.description,
             }];
           }),
       );
