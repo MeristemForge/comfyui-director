@@ -4432,7 +4432,15 @@ export default function Home() {
 
   function insertReferenceMention(option: ReferenceMentionOption) {
     if (!promptMention || !taskShot) return;
-    const token = `${option.token} `;
+    const asset = referenceAssets[option.assetKey];
+    const parsedAsset = asset?.sourcePath
+      ? parseProjectAssetName(asset.name)
+      : null;
+    const token = parsedAsset?.usage
+      ? `${option.token} 是${parsedAsset.name}${parsedAsset.usage}${
+          parsedAsset.description ? `（${parsedAsset.description}）` : ""
+        } `
+      : `${option.token} `;
     const nextPrompt = `${prompt.slice(0, promptMention.start)}${token}${prompt.slice(promptMention.end)}`;
     const nextCaret = promptMention.start + token.length;
     setPrompt(nextPrompt);
