@@ -646,26 +646,6 @@ async function getProjectAssetFolder(
   return project.getDirectoryHandle(folderName);
 }
 
-async function readCharacterThumbnail(
-  character: FileSystemDirectoryHandle,
-): Promise<string | undefined> {
-  try {
-    const manifest = await character.getFileHandle("character.json");
-    const data = JSON.parse(await (await manifest.getFile()).text()) as {
-      references?: Array<{ role?: string; file?: string }>;
-    };
-    const preferred = data.references?.find(
-      (reference) => reference.role === "character",
-    )?.file;
-    if (!preferred) return undefined;
-    const identity = await character.getDirectoryHandle("身份");
-    const file = await identity.getFileHandle(preferred);
-    return URL.createObjectURL(await file.getFile());
-  } catch {
-    return undefined;
-  }
-}
-
 async function readAssetThumbnail(
   asset: FileSystemDirectoryHandle,
 ): Promise<string | undefined> {
@@ -811,12 +791,6 @@ export default function Home() {
   >([]);
   const [projectDirectoryName, setProjectDirectoryName] =
     useState("未选择项目目录");
-  const [projectCharacterNames, setProjectCharacterNames] = useState<string[]>(
-    [],
-  );
-  const [projectCharacterThumbnails, setProjectCharacterThumbnails] = useState<
-    Record<string, string>
-  >({});
   const [projectAssets, setProjectAssets] = useState<ProjectTreeAsset[]>([]);
   const [projectOutputFiles, setProjectOutputFiles] = useState<string[] | null>(
     null,
@@ -870,9 +844,6 @@ export default function Home() {
   const [projectDeleteCandidate, setProjectDeleteCandidate] = useState<
     string | null
   >(null);
-  const [characterDeleteCandidate, setCharacterDeleteCandidate] = useState<
-    string | null
-  >(null);
   const [assetDeleteCandidate, setAssetDeleteCandidate] = useState<
     ProjectTreeAsset | null
   >(null);
@@ -887,7 +858,6 @@ export default function Home() {
     kind: ReferenceKind;
     index: number;
   } | null>(null);
-  const assetSubjectParentIndexRef = useRef<number | null>(null);
   const [assetDialog, setAssetDialog] = useState(false);
   const [assetType, setAssetType] = useState<ProjectAssetType | null>(null);
   const [newAssetFile, setNewAssetFile] = useState<File | null>(null);
@@ -1989,173 +1959,10 @@ export default function Home() {
       },
     ];
   }
-  async function bindCharacterAsset(name: string) {
-    const shotId = taskShot?.id;
-    if (!shotId || !projectDirectory) return;
-    ensureReferenceMode(shotId);
-    const parentIndex = assetSubjectParentIndexRef.current;
-    if (
-      parentIndex !== null &&
-      (promptSubjects[shotId]?.[parentIndex]?.children ?? []).some(
-        (child) => child.name.trim().toLowerCase() === name.trim().toLowerCase(),
-      )
-    ) {
-      setAssetSubjectPickerOpen(false);
-      assetSubjectParentIndexRef.current = null;
-      setGenerationStatus(`子主体“${name}”已经添加`);
-      return;
-    }
-    try {
-      const characters = await getProjectAssetFolder(projectDirectory, "角色");
-      const character = await characters.getDirectoryHandle(name);
-      const manifest = await character.getFileHandle("character.json");
-      const data = JSON.parse(await (await manifest.getFile()).text()) as {
-        references?: Array<{ role?: string; file?: string; mimeType?: string }>;
-      };
-      const uploadedKeys: string[] = [];
-      const uploadedRoles: string[] = [];
-      for (const reference of data.references ?? []) {
-        if (
-          !reference.file ||
-          !reference.role ||
-          !["identity", "full_body", "character", "voice"].includes(reference.role)
-        )
-          continue;
-        const folderName = reference.role === "voice" ? "声音" : "身份";
-        const source = await (
-          await character.getDirectoryHandle(folderName)
-        ).getFileHandle(reference.file);
-        const file = await source.getFile();
-        const kind: ReferenceKind =
-          reference.role === "voice" ? "audio" : "image";
-        const sourcePath = `资产/角色/${name}/${folderName}/${reference.file}`;
-        const existingReference = Object.entries(referenceAssets).find(
-          ([key, existing]) =>
-            key.startsWith(`${shotId}-${kind}-`) &&
-            (existing.sourcePath === sourcePath ||
-              (existing.kind === kind &&
-                existing.name.trim().toLowerCase() ===
-                  file.name.trim().toLowerCase())),
-        );
-        if (existingReference) {
-          uploadedKeys.push(existingReference[0]);
-          uploadedRoles.push(
-            reference.role === "full_body" ? "character" : reference.role,
-          );
-          continue;
-        }
-        const index = nextReferenceIndex(shotId, kind, uploadedKeys);
-        const key = referenceKey(shotId, kind, index);
-        const url = URL.createObjectURL(file);
-        const form = new FormData();
-        form.append("image", file, file.name);
-        form.append("kind", kind);
-        form.append("comfy_url", comfyUrl);
-        const response = await fetch("/api/upload", {
-          method: "POST",
-          body: form,
-        });
-        const uploaded = (await response.json().catch(() => ({}))) as {
-          name?: string;
-          subfolder?: string;
-          error?: string;
-        };
-        if (!response.ok || !uploaded.name)
-          throw new Error(uploaded.error ?? `上传${file.name}失败`);
-        setReferenceAssets((current) => ({
-          ...current,
-          [key]: {
-            name: file.name,
-            url,
-            comfyName: uploaded.name,
-            comfySubfolder: uploaded.subfolder || undefined,
-            kind,
-            sourcePath,
-          },
-        }));
-        uploadedKeys.push(key);
-        uploadedRoles.push(reference.role === "full_body" ? "character" : reference.role);
-      }
-      setPromptSubjects((current) => {
-        let subjects = [...(current[shotId] ?? [])];
-        if (parentIndex === null) {
-          subjects = subjects.map((subject) => ({
-            ...subject,
-            children: (subject.children ?? []).filter(
-              (child) =>
-                child.name.trim().toLowerCase() !== name.trim().toLowerCase(),
-            ),
-          }));
-        }
-        const child = {
-          name,
-          assetKeys: uploadedKeys,
-          assetRoles: Object.fromEntries(
-            uploadedKeys.map((key, index) => [key, uploadedRoles[index] ?? "composite"]),
-          ),
-        };
-        if (
-          parentIndex !== null &&
-          subjects[parentIndex]
-        ) {
-          const parent = subjects[parentIndex];
-          if (
-            (parent.children ?? []).some(
-              (item) =>
-                item.name.trim().toLowerCase() === name.trim().toLowerCase(),
-            )
-          ) {
-            subjects[parentIndex] = {
-              ...parent,
-              children: (parent.children ?? []).map((item) =>
-                item.name.trim().toLowerCase() === name.trim().toLowerCase()
-                  ? {
-                      ...item,
-                      assetKeys: [...new Set([...item.assetKeys, ...uploadedKeys])],
-                      assetRoles: { ...item.assetRoles, ...child.assetRoles },
-                    }
-                  : item,
-              ),
-            };
-            return { ...current, [shotId]: subjects };
-          }
-          subjects[parentIndex] = {
-            ...parent,
-            children: [...(parent.children ?? []), child],
-          };
-          return { ...current, [shotId]: subjects };
-        }
-        const existingIndex = subjects.findIndex(
-          (subject) =>
-            subject.name.trim().toLowerCase() === name.trim().toLowerCase(),
-        );
-        if (existingIndex >= 0) {
-          const existing = subjects[existingIndex];
-          subjects[existingIndex] = {
-            ...existing,
-            assetKeys: [...new Set([...existing.assetKeys, ...uploadedKeys])],
-            assetRoles: { ...existing.assetRoles, ...child.assetRoles },
-          };
-          return { ...current, [shotId]: subjects };
-        }
-        return { ...current, [shotId]: [...subjects, child] };
-      });
-      setAssetSubjectPickerOpen(false);
-      assetSubjectParentIndexRef.current = null;
-      setGenerationStatus(`已将角色“${name}”绑定到当前片段`);
-    } catch (error) {
-      setGenerationStatus(
-        error instanceof Error
-          ? `绑定角色失败：${error.message}`
-          : "绑定角色失败",
-      );
-    }
-  }
   async function bindProjectAsset(asset: ProjectTreeAsset) {
     const shotId = taskShot?.id;
     if (!shotId || !projectDirectory) return;
     ensureReferenceMode(shotId);
-    const parentIndex = assetSubjectParentIndexRef.current;
     try {
       const folderName =
         asset.type === "character"
@@ -2202,7 +2009,9 @@ export default function Home() {
         ? [{
             file: directFile,
             role:
-              asset.type === "clothing"
+              asset.type === "character"
+                ? "character"
+                : asset.type === "clothing"
                 ? "clothing"
                 : asset.type === "prop"
                   ? "object"
@@ -2218,7 +2027,9 @@ export default function Home() {
               ).getFile(),
               role:
                 reference.role ??
-                (asset.type === "clothing"
+                (asset.type === "character"
+                  ? "character"
+                  : asset.type === "clothing"
                   ? "clothing"
                   : asset.type === "prop"
                     ? "object"
@@ -2290,25 +2101,6 @@ export default function Home() {
             uploadedKeys.map((key, index) => [key, uploadedRoles[index] ?? "composite"]),
           ),
         };
-        if (
-          parentIndex !== null &&
-          subjects[parentIndex]
-        ) {
-          const parent = subjects[parentIndex];
-          if (
-            (parent.children ?? []).some(
-              (item) =>
-                item.name.trim().toLowerCase() ===
-                asset.name.trim().toLowerCase(),
-            )
-          )
-            return current;
-          subjects[parentIndex] = {
-            ...parent,
-            children: [...(parent.children ?? []), child],
-          };
-          return { ...current, [shotId]: subjects };
-        }
         const existingIndex = subjects.findIndex(
           (subject) =>
             subject.name.trim().toLowerCase() === asset.name.trim().toLowerCase(),
@@ -2325,7 +2117,6 @@ export default function Home() {
         return { ...current, [shotId]: [...subjects, child] };
       });
       setAssetSubjectPickerOpen(false);
-      assetSubjectParentIndexRef.current = null;
       setGenerationStatus(`已将资产“${asset.name}”绑定到当前片段`);
     } catch (error) {
       setGenerationStatus(
@@ -2543,23 +2334,6 @@ export default function Home() {
       setProjectDirectoryName(directory.name || "导入项目");
       void saveProjectDirectoryHandle(directory);
       try {
-        const characters = await getProjectAssetFolder(directory, "角色");
-        const names: string[] = [];
-        const thumbnails: Record<string, string> = {};
-        for await (const [entryName, entry] of characters.entries())
-          if (entry.kind === "directory") {
-            names.push(entryName);
-            const thumbnail = await readCharacterThumbnail(
-              await characters.getDirectoryHandle(entryName),
-            );
-            if (thumbnail) thumbnails[entryName] = thumbnail;
-          }
-        setProjectCharacterNames(names);
-        setProjectCharacterThumbnails(thumbnails);
-      } catch {
-        setProjectCharacterNames([]);
-      }
-      try {
         const loaded = await readProjectShots(directory);
         if (loaded) applyProjectShotRecords(loaded);
       } catch {
@@ -2580,22 +2354,6 @@ export default function Home() {
       setGenerationStatus("请先新建或导入项目");
       return;
     }
-    const names: string[] = [];
-    const thumbnails: Record<string, string> = {};
-    try {
-      const characters = await getProjectAssetFolder(projectDirectory, "角色");
-      for await (const [entryName, entry] of characters.entries())
-        if (entry.kind === "directory") {
-          names.push(entryName);
-          const character = await characters.getDirectoryHandle(entryName);
-          const thumbnail = await readCharacterThumbnail(character);
-          if (thumbnail) thumbnails[entryName] = thumbnail;
-        }
-    } catch {
-      /* Projects can be valid even when the character folder is empty or missing. */
-    }
-    setProjectCharacterNames(names);
-    setProjectCharacterThumbnails(thumbnails);
     const assets: ProjectTreeAsset[] = [];
     for (const type of [
       "character",
@@ -2635,15 +2393,11 @@ export default function Home() {
             thumbnail:
               entry.kind === "file"
                 ? await readAssetFileThumbnail(entry)
-                : assetType === "character"
-                  ? await readCharacterThumbnail(
+                : assetType === "clothing"
+                  ? await readAssetThumbnail(
                       await folder.getDirectoryHandle(name),
                     )
-                  : assetType === "clothing"
-                    ? await readAssetThumbnail(
-                        await folder.getDirectoryHandle(name),
-                      )
-                    : undefined,
+                  : undefined,
           });
         }
       } catch {
@@ -2660,7 +2414,7 @@ export default function Home() {
       /* Imported projects may not have an output folder yet. */
     }
     setProjectOutputFiles(outputFiles);
-    setGenerationStatus(`项目树已刷新，找到 ${names.length} 个角色`);
+    setGenerationStatus(`项目树已刷新，找到 ${assets.length} 个资产`);
   }
   function applyProjectShotRecords(records: ProjectShotRecord[]) {
     setShots(
@@ -2740,7 +2494,6 @@ export default function Home() {
         if (projectDirectory?.name === name) {
           setProjectDirectory(null);
           setProjectDirectoryName("未选择项目目录");
-          setProjectCharacterNames([]);
           setProjectAssets([]);
           setProjectOutputFiles(null);
           setShots([]);
@@ -2756,74 +2509,6 @@ export default function Home() {
       return;
     }
     setGenerationStatus(`已切换项目：${handle.name}`);
-  }
-  function removeCharacterReferences(name: string) {
-    setPromptSubjects((current) =>
-      Object.fromEntries(
-        Object.entries(current).map(([shotId, subjects]) => [
-          shotId,
-          subjects
-            .filter((subject) => subject.name.trim() !== name)
-            .map((subject) => ({
-              ...subject,
-              children: (subject.children ?? []).filter(
-                (child) => child.name.trim() !== name,
-              ),
-            })),
-        ]),
-      ),
-    );
-    setReferenceAssets((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(
-          ([, asset]) => !asset.sourcePath?.startsWith(`资产/角色/${name}/`),
-        ),
-      ),
-    );
-  }
-  async function removeProjectCharacter(name: string, permanent: boolean) {
-    if (!projectDirectory) return;
-    try {
-      if (!permanent) {
-        removeCharacterReferences(name);
-        setProjectCharacterNames((current) =>
-          current.filter((item) => item !== name),
-        );
-        setCharacterDeleteCandidate(null);
-        setGenerationStatus(`已从当前项目移除角色“${name}”，源文件已保留`);
-        return;
-      }
-      const writable = projectDirectory as WritableDirectoryHandle;
-      const currentPermission = writable.queryPermission
-        ? await writable.queryPermission({ mode: "readwrite" })
-        : "granted";
-      const permission =
-        currentPermission === "granted" || !writable.requestPermission
-          ? currentPermission
-          : await writable.requestPermission({ mode: "readwrite" });
-      if (permission !== "granted") {
-        window.alert("没有角色目录删除权限，请重新授权后再试");
-        return;
-      }
-      const characters = await getProjectAssetFolder(projectDirectory, "角色");
-      if (!characters.removeEntry) {
-        window.alert("当前浏览器不支持删除角色目录");
-        return;
-      }
-      await characters.removeEntry(name, { recursive: true });
-      removeCharacterReferences(name);
-      setProjectCharacterNames((current) =>
-        current.filter((item) => item !== name),
-      );
-      setGenerationStatus(`已删除角色“${name}”`);
-      setCharacterDeleteCandidate(null);
-    } catch (error) {
-      const message =
-        error instanceof Error && error.message
-          ? `删除角色“${name}”失败：${error.message}`
-          : `删除角色“${name}”失败，请检查项目目录权限`;
-      setGenerationStatus(message);
-    }
   }
   function assetFolderName(asset: ProjectTreeAsset) {
     return asset.type === "character"
@@ -3195,7 +2880,6 @@ export default function Home() {
           resetProjectEditorState();
           setProjectDirectory(null);
           setProjectDirectoryName("未选择项目目录");
-          setProjectCharacterNames([]);
           setProjectAssets([]);
           setProjectOutputFiles(null);
           setShots([]);
@@ -5038,10 +4722,6 @@ export default function Home() {
     if (seedMode === "random") setSeed(submittedSeed);
   }
 
-  const pickerCharacters =
-    referencePickerTarget?.kind && referencePickerTarget.kind !== "image"
-      ? []
-      : projectCharacterNames;
   const pickerAssets = projectAssets.filter((asset) => {
     if (!referencePickerTarget)
       return ["character", "scene", "clothing", "prop"].includes(asset.type);
@@ -5049,7 +4729,7 @@ export default function Home() {
       return !["audio", "video"].includes(asset.type);
     return asset.type === referencePickerTarget.kind;
   });
-  const hasPickerAssets = pickerCharacters.length > 0 || pickerAssets.length > 0;
+  const hasPickerAssets = pickerAssets.length > 0;
   const pickerCategoryOptions: Array<{
     type: ProjectAssetType;
     label: string;
@@ -5060,9 +4740,7 @@ export default function Home() {
       type: "character",
       label: "角色",
       icon: UserRound,
-      count:
-        pickerCharacters.length +
-        pickerAssets.filter((asset) => asset.type === "character").length,
+      count: pickerAssets.filter((asset) => asset.type === "character").length,
     },
     {
       type: "scene",
@@ -5101,8 +4779,6 @@ export default function Home() {
       count: pickerAssets.filter((asset) => asset.type === "custom").length,
     },
   ].filter((category) => category.count > 0);
-  const selectedPickerCharacters =
-    assetPickerCategory === "character" ? pickerCharacters : [];
   const selectedPickerAssets = pickerAssets.filter(
     (asset) => asset.type === assetPickerCategory,
   );
@@ -5369,7 +5045,7 @@ export default function Home() {
                     <FolderOpen className="size-5 text-primary" />
                     资产库
                     <span className="text-[9px] text-muted-foreground">
-                      {hasPickerAssets ? `${pickerAssets.length + pickerCharacters.length} 项` : "暂无资产"}
+                      {hasPickerAssets ? `${pickerAssets.length} 项` : "暂无资产"}
                     </span>
                   </button>
                 </div>
@@ -5404,24 +5080,6 @@ export default function Home() {
             )}
             {assetPickerView === "items" && (
               <div className="mt-4 max-h-72 space-y-1.5 overflow-y-auto">
-                {selectedPickerCharacters.map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => void bindCharacterAsset(name)}
-                    className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
-                  >
-                    <span className="grid size-8 place-items-center overflow-hidden rounded bg-muted">
-                      {projectCharacterThumbnails[name] ? (
-                        <img src={projectCharacterThumbnails[name]} alt="" className="size-full object-cover" />
-                      ) : (
-                        <UserRound className="size-3" />
-                      )}
-                    </span>
-                    <span className="truncate">{name}</span>
-                    <span className="ml-auto text-[9px] text-muted-foreground">角色</span>
-                  </button>
-                ))}
                 {selectedPickerAssets.map((asset) => (
                   <button
                     key={`${asset.type}-${asset.name}`}
@@ -5443,7 +5101,7 @@ export default function Home() {
                     <span className="ml-auto text-[9px] text-muted-foreground">{assetLabel(asset)}</span>
                   </button>
                 ))}
-                {!selectedPickerCharacters.length && !selectedPickerAssets.length && (
+                {!selectedPickerAssets.length && (
                   <p className="py-6 text-center text-[10px] text-muted-foreground">
                     暂无可用资产
                   </p>
@@ -6341,46 +5999,6 @@ export default function Home() {
               </Button>
               <Button variant="destructive" onClick={() => void confirmDeleteShot(true)}>
                 从磁盘删除
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-      {characterDeleteCandidate && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onMouseDown={() => setCharacterDeleteCandidate(null)}
-        >
-          <div
-            className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <h2 className="text-sm font-semibold">移除角色</h2>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              请选择对“{characterDeleteCandidate}”的处理方式。仅从当前项目移除会解除所有镜头引用并保留源文件；永久删除会删除角色文件夹中的身份图片、声音和配置。
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <Button
-                variant="ghost"
-                onClick={() => setCharacterDeleteCandidate(null)}
-              >
-                取消
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() =>
-                  void removeProjectCharacter(characterDeleteCandidate, false)
-                }
-              >
-                仅从当前项目移除
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() =>
-                  void removeProjectCharacter(characterDeleteCandidate, true)
-                }
-              >
-                永久删除
               </Button>
             </div>
           </div>
