@@ -50,9 +50,8 @@ type Shot = {
 };
 type ProjectShotRecord = Shot & {
   output?: string;
-  references?: { subjects?: PromptSubject[] };
+  references?: { subjects?: PersistedPromptSubject[] };
   generation?: { mode?: string; duration?: number; resolution?: string; aspect?: string; fps?: number; model?: keyof typeof modelProfiles; turbo?: boolean; seed?: string; seedMode?: "fixed" | "random"; keyframeMode?: string; steps?: number };
-  subjects?: PromptSubject[];
   prompt?: string | Partial<Ref2vaPromptManifest>;
   promptOriginal?: string;
   promptOptimized?: string;
@@ -140,6 +139,25 @@ type PromptSubject = {
     preserveFeatures?: string[];
     referenceScopes?: string[];
   }>;
+};
+type PersistedPromptReference = {
+  assetKey?: string;
+  role?: string;
+  name?: string;
+  kind?: ReferenceKind;
+  comfyName?: string;
+  comfySubfolder?: string;
+  sourcePath?: string;
+};
+type PersistedPromptSubject = {
+  subjectId?: string;
+  name?: string;
+  role?: string;
+  references?: PersistedPromptReference[];
+  relation?: { parentSubjectId?: string };
+  assetKeys?: string[];
+  assetRoles?: Record<string, string>;
+  children?: PersistedPromptSubject[];
 };
 type Ref2vaFields = {
   summary: string;
@@ -417,6 +435,7 @@ type PersistedReferenceAsset = {
   comfyName?: string;
   comfySubfolder?: string;
   kind: ReferenceKind;
+  sourcePath?: string;
 };
 type PersistedKeyframe = { name: string; comfyName?: string };
 type PersistedDirectorState = {
@@ -597,6 +616,103 @@ function compactPersistedReferences(
   ) as Record<string, PromptSubject[]>;
   return { references: compacted, subjects: compactedSubjects };
 }
+
+function normalizePersistedReferenceRole(role: string | undefined) {
+  return role === "wardrobe" ? "clothing" : role?.trim() || "composite";
+}
+
+function inferReferenceKind(
+  key: string,
+  kind: ReferenceKind | undefined,
+): ReferenceKind {
+  if (kind === "image" || kind === "video" || kind === "audio") return kind;
+  const inferred = key.match(/-(image|video|audio)-\d+$/)?.[1];
+  return inferred === "video" || inferred === "audio" ? inferred : "image";
+}
+
+function restoreProjectShotReferences(
+  persistedSubjects: PersistedPromptSubject[] | undefined,
+  comfyUrl: string,
+) {
+  const nodes: Array<{
+    id: string;
+    subject: PromptSubject;
+    parentId?: string;
+  }> = [];
+  const referenceAssets: Record<string, ReferenceAsset> = {};
+
+  const addReference = (
+    subject: PromptSubject,
+    reference: PersistedPromptReference,
+    fallbackRole?: string,
+  ) => {
+    const assetKey = reference.assetKey?.trim();
+    if (!assetKey) return;
+    const role = normalizePersistedReferenceRole(reference.role ?? fallbackRole);
+    if (!subject.assetKeys.includes(assetKey)) subject.assetKeys.push(assetKey);
+    subject.assetRoles = { ...subject.assetRoles, [assetKey]: role };
+    if (referenceAssets[assetKey]) return;
+    const kind = inferReferenceKind(assetKey, reference.kind);
+    const params = new URLSearchParams({
+      filename: reference.comfyName ?? "",
+      type: "input",
+      comfy_url: comfyUrl,
+    });
+    if (reference.comfySubfolder)
+      params.set("subfolder", reference.comfySubfolder);
+    referenceAssets[assetKey] = {
+      name: reference.name?.trim() || assetKey,
+      url: reference.comfyName ? `/api/video?${params.toString()}` : "",
+      kind,
+      ...(reference.comfyName ? { comfyName: reference.comfyName } : {}),
+      ...(reference.comfySubfolder
+        ? { comfySubfolder: reference.comfySubfolder }
+        : {}),
+      ...(reference.sourcePath ? { sourcePath: reference.sourcePath } : {}),
+    };
+  };
+
+  const collect = (
+    record: PersistedPromptSubject,
+    inheritedParentId?: string,
+  ) => {
+    const subject: PromptSubject = {
+      name: record.name?.trim() || "未命名主体",
+      assetKeys: [],
+      assetRoles: {},
+    };
+    (record.references ?? []).forEach((reference) =>
+      addReference(subject, reference, record.role),
+    );
+    (record.assetKeys ?? []).forEach((assetKey) =>
+      addReference(subject, {
+        assetKey,
+        role: record.assetRoles?.[assetKey] ?? record.role,
+      }),
+    );
+    nodes.push({
+      id: record.subjectId?.trim() || `restored-subject-${nodes.length}`,
+      subject,
+      parentId: record.relation?.parentSubjectId?.trim() || inheritedParentId,
+    });
+    const parentId = nodes[nodes.length - 1].id;
+    (record.children ?? []).forEach((child) => collect(child, parentId));
+  };
+  (persistedSubjects ?? []).forEach((subject) => collect(subject));
+
+  const subjects: PromptSubject[] = [];
+  const subjectsById = new Map(nodes.map((node) => [node.id, node.subject]));
+  nodes.forEach((node) => {
+    const parent = node.parentId ? subjectsById.get(node.parentId) : undefined;
+    if (parent && parent !== node.subject) {
+      parent.children = [...(parent.children ?? []), node.subject];
+    } else {
+      subjects.push(node.subject);
+    }
+  });
+  return { subjects, referenceAssets };
+}
+
 function formatElapsed(milliseconds: number) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -619,6 +735,7 @@ const projectAssetFolders = [
   "场景",
   "服装",
   "道具",
+  "视频",
   "音频",
   "自定义",
 ] as const;
@@ -694,7 +811,7 @@ async function readProjectShots(
         const data = JSON.parse(await (await file.getFile()).text()) as {
           generation?: ProjectShotRecord["generation"];
           output?: string;
-          references?: { subjects?: PromptSubject[] };
+          references?: { subjects?: PersistedPromptSubject[] };
           prompt?: string | Partial<Ref2vaPromptManifest> | ClipPromptRecord;
         };
         const generation = data.generation ?? {};
@@ -723,7 +840,6 @@ async function readProjectShots(
           state: output ? "已完成" : "草稿",
           output,
           generation,
-          subjects: data.references?.subjects,
           references: data.references,
           prompt: promptRecord
             ? normalizePrompt(promptRecord.original)
@@ -1188,31 +1304,6 @@ export default function Home() {
           // project's editor.
           resetProjectEditorState();
           if (projectShots) applyProjectShotRecords(projectShots);
-          if (saved.promptSubjects)
-            setPromptSubjects(compactedReferences.subjects);
-          if (saved.referenceAssets)
-            setReferenceAssets(
-              Object.fromEntries(
-                Object.entries(compactedReferences.references).map(([key, asset]) => {
-                  const params = new URLSearchParams({
-                    filename: asset.comfyName ?? "",
-                    type: "input",
-                    comfy_url: persistedComfyUrl,
-                  });
-                  if (asset.comfySubfolder)
-                    params.set("subfolder", asset.comfySubfolder);
-                  return [
-                    key,
-                    {
-                      ...asset,
-                      url: asset.comfyName
-                        ? `/api/video?${params.toString()}`
-                        : "",
-                    },
-                  ];
-                }),
-              ),
-            );
           setActiveShot(0);
         } catch {
           // Keep local state when the persisted directory handle is unavailable.
@@ -1236,6 +1327,7 @@ export default function Home() {
           comfyName: asset.comfyName,
           comfySubfolder: asset.comfySubfolder,
           kind: asset.kind,
+          sourcePath: asset.sourcePath,
         },
       ]),
     );
@@ -2458,15 +2550,18 @@ export default function Home() {
           .map((record) => [record.id, record.promptOptimized!.trim()]),
       ),
     );
-    const subjects = Object.fromEntries(
-      records
-        .filter((record) => record.subjects?.length)
-        .map((record) => [
-          record.id,
-          record.subjects!,
-        ]),
-    );
-    setPromptSubjects(subjects);
+    const restored: Record<string, PromptSubject[]> = {};
+    const restoredReferenceAssets: Record<string, ReferenceAsset> = {};
+    records.forEach((record) => {
+      const shotReferences = restoreProjectShotReferences(
+        record.references?.subjects,
+        comfyUrl,
+      );
+      restored[record.id] = shotReferences.subjects;
+      Object.assign(restoredReferenceAssets, shotReferences.referenceAssets);
+    });
+    setPromptSubjects(restored);
+    setReferenceAssets(restoredReferenceAssets);
   }
   async function selectProjectByName(name: string) {
     const handle = projectDirectories.find(
@@ -2781,7 +2876,6 @@ export default function Home() {
     if (!nextHandle) {
       setProjectDirectory(null);
       setProjectDirectoryName("未选择项目目录");
-      setProjectCharacterNames([]);
       setProjectAssets([]);
       setProjectOutputFiles(null);
       setShots([]);
@@ -3346,8 +3440,27 @@ export default function Home() {
       });
     const manifestMode =
       (overrides.generation as { mode?: string } | undefined)?.mode ?? "T2VA";
+    const subjectsById = new Map(
+      subjects.map((subject) => [subject.subjectId, subject]),
+    );
+    const referencedSubjectIds = new Set(
+      subjects
+        .filter(
+          (subject) =>
+            Array.isArray(subject.references) && subject.references.length > 0,
+        )
+        .map((subject) => subject.subjectId),
+    );
+    subjects.forEach((subject) => {
+      let parentSubjectId = subject.relation?.parentSubjectId;
+      while (parentSubjectId && !referencedSubjectIds.has(parentSubjectId)) {
+        referencedSubjectIds.add(parentSubjectId);
+        parentSubjectId = subjectsById.get(parentSubjectId)?.relation
+          ?.parentSubjectId;
+      }
+    });
     const referencedSubjects = subjects.filter((subject) =>
-      Array.isArray(subject.references) && subject.references.length > 0,
+      referencedSubjectIds.has(subject.subjectId),
     );
     const { promptOriginal, promptOptimized, prompt: fallbackPrompt, ...restOverrides } = overrides as Record<string, unknown> & {
       promptOriginal?: unknown;
