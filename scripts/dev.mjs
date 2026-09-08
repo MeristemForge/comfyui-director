@@ -62,6 +62,25 @@ function readRequestBody(request) {
   });
 }
 
+function optimizePrompt(body) {
+  return new Promise((resolve, reject) => {
+    const executable = String(body.executablePath || 'codex').trim() || 'codex';
+    const isCodex = /codex/i.test(path.basename(executable));
+    const args = isCodex
+      ? ['--ask-for-approval', 'never', 'exec', '-', '--ephemeral', '--sandbox', 'read-only', '--skip-git-repo-check', '--color', 'never']
+      : ['-p', String(body.prompt || ''), '--output-format', 'text'];
+    const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable);
+    const child = spawn(executable, args, { cwd: process.cwd(), windowsHide: true, shell: useShell, stdio: isCodex ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'] });
+    let stdout = ''; let stderr = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('本地 Agent 优化超时')); }, 120000);
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', (error) => { clearTimeout(timer); reject(new Error(`无法启动本地 Agent：${error.message}`)); });
+    child.on('close', (code) => { clearTimeout(timer); if (code !== 0) return reject(new Error(stderr.trim() || `Agent 退出码 ${code}`)); const result = stdout.trim(); if (!result) return reject(new Error('本地 Agent 未返回优化结果')); resolve({ prompt: result.replace(/^```(?:text)?\s*/i, '').replace(/\s*```$/, '').trim() }); });
+    if (isCodex) child.stdin.end(String(body.prompt || ''));
+  });
+}
+
 async function waitForFile(filePath, attempts = 60) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -128,12 +147,18 @@ const helper = createServer(async (request, response) => {
     response.end();
     return;
   }
-  if (request.method !== 'POST' || !['/open-output', '/finalize-output'].includes(request.url ?? '')) {
+  if (request.method !== 'POST' || !['/open-output', '/finalize-output', '/optimize-prompt'].includes(request.url ?? '')) {
     response.writeHead(404, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify({ error: 'Not found' }));
     return;
   }
   try {
+    if (request.url === '/optimize-prompt') {
+      const result = await optimizePrompt(JSON.parse(await readRequestBody(request)));
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(result));
+      return;
+    }
     if (request.url === '/finalize-output') {
       const body = JSON.parse(await readRequestBody(request));
       const result = await finalizeOutput(body);

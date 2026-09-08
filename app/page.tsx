@@ -34,38 +34,29 @@ import {
   type ProjectTreeAsset,
   type ProjectTreeCharacterFile,
 } from "@/components/project-tree";
-import { Blocking3D, type BlockingEntity } from "@/components/blocking-3d";
 
+type Ref2vaPromptManifest = {
+  subject_definitions: string;
+  summary: string;
+  retention_analysis: string;
+  detailed_description: string;
+  overall_soundscape: string;
+  non_diegetic_music: string;
+};
 type Shot = {
   id: string;
   title: string;
   detail: string;
   meta: string;
   state: string;
-  prompt?: {
-    integrated_multimodal_description?: string;
-    subject_definitions?: string;
-    summary?: string;
-    retention_analysis?: string;
-    detailed_description?: PromptSegment[];
-    overall_soundscape?: string;
-    non_diegetic_music?: string;
-  };
+  prompt?: string | Partial<Ref2vaPromptManifest>;
 };
 type ProjectShotRecord = Shot & {
   output?: string;
   references?: { subjects?: PromptSubject[] };
   generation?: { mode?: string; duration?: number; resolution?: string; aspect?: string; fps?: number; model?: keyof typeof modelProfiles; turbo?: boolean; seed?: string; seedMode?: "fixed" | "random"; keyframeMode?: string; steps?: number };
   subjects?: PromptSubject[];
-  prompt?: {
-    integrated_multimodal_description?: string;
-    subject_definitions?: string;
-    summary?: string;
-    retention_analysis?: string;
-    detailed_description?: PromptSegment[];
-    overall_soundscape?: string;
-    non_diegetic_music?: string;
-  };
+  prompt?: string | Partial<Ref2vaPromptManifest>;
 };
 type ProjectAssetType =
   "character" | "scene" | "clothing" | "prop" | "video" | "audio" | "custom";
@@ -129,6 +120,12 @@ type PromptBuilderSettings = {
   lens: string;
 };
 type PromptBuilderSettingsInput = Partial<PromptBuilderSettings>;
+const promptBuilderDefaults: PromptBuilderSettings = {
+  style: "realistic_cinematic",
+  framing: "",
+  camera: "",
+  lens: "",
+};
 type PromptSubject = {
   name: string;
   assetKeys: string[];
@@ -145,236 +142,6 @@ type PromptSubject = {
     referenceScopes?: string[];
   }>;
 };
-function referenceLabel(assetKey: string) {
-  const match = assetKey.match(/-(image|video|audio)-(\d+)$/);
-  if (!match) return null;
-  const label = match[1] === "image" ? "Picture" : match[1] === "video" ? "Video" : "Audio";
-  return `<${label} ${Number(match[2]) + 1}>`;
-}
-function referenceRoleText(role: string) {
-  return ({
-    identity: "facial identity and frontal appearance reference",
-    full_body: "full-body multi-view reference",
-    composite: "combined facial and full-body reference",
-    character: "single character reference",
-    clothing: "authoritative wardrobe reference",
-    pose: "pose and body-language reference",
-    voice: "vocal identity and performance reference",
-    environment: "environment reference",
-    object: "object-design reference",
-    style: "visual-style reference",
-    motion: "motion and action reference",
-    custom: "custom reference",
-  } as Record<string, string>)[role] ?? "visual reference";
-}
-function buildSubjectDefinitions(subjects: PromptSubject[]) {
-  const filtered = subjects.filter((subject) => subject.name.trim());
-  let childNumber = filtered.length;
-  return filtered.map((subject, index) => {
-    const own = subject.assetKeys.map((key) => {
-      const label = referenceLabel(key);
-      const role = subject.assetRoles?.[key] ?? "composite";
-      if (!label) return "";
-      if (role === "identity") return `${label} defines the facial identity`;
-      if (role === "full_body") return `${label} defines body proportions and physical build`;
-      if (role === "composite" || role === "character") return `${label} defines the subject's facial identity, facial features, hairstyle, body proportions, and physical build`;
-      return `${label} provides the ${referenceRoleText(role)}`;
-    }).filter(Boolean);
-    const children = (subject.children ?? []).map((child) => {
-      const existingIndex = filtered.findIndex((candidate) =>
-        candidate.name.trim() === child.name.trim() ||
-        child.assetKeys.some((key) => candidate.assetKeys.includes(key)),
-      );
-      const refs = child.assetKeys.map((key) => referenceLabel(key)).filter(Boolean);
-      const role = child.assetRoles?.[child.assetKeys[0]] ?? "composite";
-      const noun = role === "clothing" ? "wardrobe reference" : role === "object" ? "prop reference" : role === "environment" ? "environment reference" : "associated reference";
-      const sourceText = refs.length
-        ? role === "clothing"
-          ? ` from ${refs.join(", ")}`
-          : ` from ${refs.join(", ")}, which provides the ${referenceRoleText(role)}`
-        : "";
-      const childId = existingIndex >= 0 ? existingIndex + 1 : ++childNumber;
-      if (existingIndex >= 0) return "";
-      return role === "clothing"
-        ? `<Subject ${childId}> is the wardrobe-only reference "${child.name.trim()}"${sourceText}, to be worn by <Subject ${index + 1}>. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference. <Subject ${childId}> must not appear as a separate visible person or independent subject in the target video.`
-        : `<Subject ${childId}> is the ${noun} "${child.name.trim()}"${sourceText}.`;
-    }).filter(Boolean).join("\n");
-    const roles = subject.assetKeys.map((key) => subject.assetRoles?.[key] ?? "composite");
-    const isVocalCharacter = roles.length === 0 || roles.some((role) => ["identity", "full_body", "composite", "character", "pose"].includes(role));
-    const vocalLine = isVocalCharacter ? `\nThe associated vocal source is (S${index + 1}).` : "";
-    const wardrobeRefs = subject.assetKeys.filter((key) => subject.assetRoles?.[key] === "clothing").map((key) => referenceLabel(key)).filter(Boolean);
-    const definition = roles.length > 0 && roles.every((role) => role === "clothing")
-      ? `<Subject ${index + 1}> is the wardrobe-only reference "${subject.name.trim()}"${wardrobeRefs.length ? ` from ${wardrobeRefs.join(", ")}` : ""}. Only the clothing, accessories, garment design, colors, materials, and details are referenced. Ignore any mannequin, body, head, face, skin, pose, and background shown in the reference. <Subject ${index + 1}> must not appear as a separate visible person or independent subject in the target video.`
-      : `<Subject ${index + 1}> is the subject named "${subject.name.trim()}"${own.length ? `. ${own.join(". ")}.` : "."} Do not preserve clothing from the character reference image.`;
-    const identityGuard = "";
-    return `${definition}${identityGuard}${vocalLine}${children ? `\n${children}` : ""}`;
-  }).join("\n");
-}
-function buildRetentionAnalysis(subjects: PromptSubject[]) {
-  const filtered = subjects.filter((subject) => subject.name.trim());
-  let childNumber = filtered.length;
-  return filtered.flatMap((subject, index) => {
-    const childIds = new Map<string, number>();
-    const childRules = (subject.children ?? []).map((child) => {
-      const existingIndex = filtered.findIndex((candidate) =>
-        candidate.name.trim() === child.name.trim() ||
-        child.assetKeys.some((key) => candidate.assetKeys.includes(key)),
-      );
-      const role = child.assetRoles?.[child.assetKeys[0]] ?? "composite";
-      const refs = child.assetKeys.map((key) => referenceLabel(key)).filter(Boolean).join(", ");
-      const action = role === "clothing" ? "attribute_transfer - transfer only the referenced wardrobe, accessories, garment design, colors, materials, and details; do not transfer any mannequin, body, head, face, skin, or pose characteristics" : role === "pose" ? "attribute_transfer - transfer the pose and body-language reference" : role === "object" ? "attribute_transfer - preserve and apply the prop reference" : "attribute_transfer - transfer the associated reference";
-      const childId = existingIndex >= 0 ? existingIndex + 1 : ++childNumber;
-      child.assetKeys.forEach((key) => childIds.set(key, childId));
-      const alreadyConfigured = child.assetKeys.some((key) => Boolean(subject.referenceRetentions?.[key]?.visual));
-      if (alreadyConfigured) return "";
-      const transferRule = `<Subject ${childId}> (appears on <Subject ${index + 1}> throughout the target video): ${action}${refs ? ` from ${refs}` : ""} onto <Subject ${index + 1}>.`;
-      if (role === "clothing") return `<Subject ${childId}>: attribute_transfer - transfer the referenced wardrobe, accessories, garment details, colors, and materials onto <Subject ${index + 1}>, replacing any clothing visible in the character reference image and preserving these wardrobe characteristics throughout the target video.`;
-      return transferRule;
-    }).filter(Boolean);
-    const roles = subject.assetKeys.map((key) => subject.assetRoles?.[key] ?? "composite");
-    const ownOnlyWardrobe = roles.length > 0 && roles.every((role) => role === "clothing");
-    if (ownOnlyWardrobe) return childRules;
-    const retentionMode = subject.visualRetention ?? "fully_preserved";
-    const retentionTarget = subject.retentionTargetId ? `<Subject ${subject.retentionTargetId}>` : `<Subject ${index + 1}>`;
-    const retentionText = retentionMode === "attribute_transfer"
-      ? `transfer the referenced attributes onto ${retentionTarget}.`
-      : retentionMode === "partially_preserved"
-      ? `preserve ${subject.name.trim()}'s key identity and body features while allowing selected visual attributes to change.`
-      : retentionMode === "weak_reference"
-        ? `retain only the general visual characteristics and category of ${subject.name.trim()}.`
-        : `preserve ${subject.name.trim()}'s identity, facial features, and body proportions throughout the target video.`;
-    const audioRule = subject.audioRetention
-      ? `<Subject ${index + 1}> audio reference: ${subject.audioRetention}.`
-      : "";
-    const aggregateEntries = subject.assetKeys.map((assetKey) => {
-      const role = subject.assetRoles?.[assetKey] ?? "composite";
-      const scope = role === "identity" ? "facial identity and facial features" : role === "full_body" ? "body proportions, physical build, and full-body structure" : role === "composite" || role === "character" ? "facial identity, facial features, hairstyle, body proportions, and physical build" : role === "pose" ? "pose and body language" : role === "motion" ? "motion and action patterns" : role === "voice" ? "vocal identity and performance characteristics" : "";
-      return scope ? { mode: subject.referenceRetentions?.[assetKey]?.visual ?? "fully_preserved", scope } : null;
-    }).filter(Boolean) as Array<{ mode: string; scope: string }>;
-    const aggregateModes = Array.from(new Set(aggregateEntries.map((entry) => entry.mode)));
-    const aggregateRule = aggregateModes.map((mode) => {
-      const scopes = Array.from(new Set(aggregateEntries.filter((entry) => entry.mode === mode).map((entry) => entry.scope))).join(", ");
-      return mode === "partially_preserved" ? `partially preserve the key aspects of ${scopes}` : mode === "weak_reference" ? `use only the general characteristics of ${scopes}` : mode === "attribute_transfer" ? `transfer the referenced ${scopes}` : `fully preserve the referenced ${scopes}`;
-    }).join("; ");
-    const aggregateMode = aggregateModes.length === 1 ? aggregateModes[0] : "partially_preserved";
-    const aggregateLine = aggregateRule ? `<Subject ${index + 1}>: ${aggregateMode} - ${aggregateRule} throughout the target video.` : "";
-    const retentionAssetKeys = [...subject.assetKeys, ...(subject.children ?? []).flatMap((child) => child.assetKeys)];
-    const assetRules = retentionAssetKeys.map((assetKey) => {
-      const config = subject.referenceRetentions?.[assetKey] ?? {};
-      if (childIds.has(assetKey) && !config.visual) return "";
-      const label = referenceLabel(assetKey) ?? assetKey;
-      const mode = config.visual ?? "fully_preserved";
-      const target = `<Subject ${index + 1}>`;
-      const role = subject.assetRoles?.[assetKey] ?? subject.children?.map((child) => child.assetRoles?.[assetKey]).find(Boolean) ?? "composite";
-      if (["identity", "full_body", "character", "composite", "pose", "motion", "voice"].includes(role)) return "";
-      const ruleSubject = childIds.has(assetKey) ? `<Subject ${childIds.get(assetKey)}>` : `<Subject ${index + 1}>`;
-      const preservedScope = role === "identity"
-        ? "facial identity, facial features, and frontal appearance"
-        : role === "full_body"
-          ? "body proportions, physical build, and full-body structure"
-          : role === "composite"
-            ? "facial identity, facial features, body proportions, and physical build"
-            : role === "clothing"
-              ? "wardrobe, accessories, garment details, colors, and materials"
-              : role === "pose"
-                ? "pose and body language"
-                : role === "motion"
-                  ? "motion, action pattern, and movement dynamics"
-                  : role === "voice"
-                    ? "vocal identity and performance characteristics"
-                    : role === "object"
-                      ? "object design, visible details, and placement"
-                      : role === "environment"
-                        ? "environment layout, composition, and lighting atmosphere"
-                        : role === "style"
-                          ? "visual style, color language, and rendering characteristics"
-                          : "the reference's assigned visual characteristics";
-      const relationText = mode === "fully_preserved"
-        ? `preserve the referenced ${preservedScope} throughout the target video`
-        : mode === "partially_preserved"
-          ? `preserve the key aspects of the referenced ${preservedScope} while allowing selected visual changes`
-          : mode === "attribute_transfer"
-            ? `transfer the referenced ${preservedScope} onto ${target}`
-            : `use the referenced ${preservedScope} only as a weak visual guide`;
-      if (childIds.has(assetKey) && role === "clothing" && mode === "attribute_transfer") return `${ruleSubject}: attribute_transfer - transfer the referenced wardrobe, accessories, garment details, colors, and materials onto ${target}, replacing any clothing visible in the character reference image and preserving these wardrobe characteristics throughout the target video.`;
-      return `${ruleSubject}: ${mode} - ${relationText}.`;
-    }).filter(Boolean);
-    return [...(aggregateLine ? [aggregateLine] : []), ...assetRules, ...(aggregateLine || assetRules.length ? [] : [`<Subject ${index + 1}> (appears throughout the target video): ${retentionMode} - ${retentionText}`]), ...(audioRule ? [audioRule] : []), ...childRules];
-  }).join("\n");
-}
-type PromptSegment = {
-  id: string;
-  description: string;
-  settings: PromptBuilderSettings;
-  layoutEntities?: Array<{ id: string; type: "camera" | "subject" | "object"; name: string; x: number; y: number; height?: number; relationRole?: string }>;
-  cameraDirection?: string;
-  cameraDirectionCustom?: string;
-  cameraTarget?: string;
-  cameraTargetCustom?: string;
-  shotSize?: string;
-  cameraMove?: string;
-  start?: number;
-  end?: number;
-};
-function buildLayoutDescription(entities: PromptSegment["layoutEntities"]) {
-  if (!entities?.length) return "";
-  const describePosition = (entity: NonNullable<PromptSegment["layoutEntities"]>[number]) => ({
-    horizontal: entity.x < 0.34 ? "left" : entity.x > 0.66 ? "right" : "center",
-    depth: entity.y < 0.34 ? "far side" : entity.y > 0.66 ? "near side" : "middle area",
-  });
-  const camera = entities.find((entity) => entity.type === "camera");
-  const subjects = entities.filter((entity) => entity.type === "subject");
-  const objects = entities.filter((entity) => entity.type === "object");
-  const describeFacing = (entity: NonNullable<PromptSegment["layoutEntities"]>[number]) => {
-    if (entity.type !== "subject" || !entity.relationRole) return "";
-    const angle = Number(entity.relationRole);
-    if (!Number.isFinite(angle)) return "";
-    if (camera) {
-      const targetAngle = Math.atan2(camera.x - entity.x, entity.y - camera.y);
-      let delta = Math.atan2(Math.sin(angle - targetAngle), Math.cos(angle - targetAngle));
-      if (Math.abs(delta) < Math.PI / 4) return " facing the camera";
-      if (Math.abs(Math.abs(delta) - Math.PI) < Math.PI / 4) return " facing away from the camera";
-    }
-    return ` facing ${angle >= 0 ? "toward the right side of the scene" : "toward the left side of the scene"}`;
-  };
-  const lines = subjects.concat(objects).map((entity) => {
-    const { horizontal, depth } = describePosition(entity);
-    return `${entity.type === "subject" ? `<Subject ${subjects.indexOf(entity) + 1}> (${entity.name})` : `The object named "${entity.name}"`} is in the ${horizontal}, ${depth}.${describeFacing(entity)}`;
-  });
-  const named = (entity: NonNullable<PromptSegment["layoutEntities"]>[number]) => entity.type === "subject" ? `<Subject ${subjects.indexOf(entity) + 1}>` : entity.type === "camera" ? "the camera" : `the object named "${entity.name}"`;
-  const depthOrder = [camera, ...subjects, ...objects].filter(Boolean) as NonNullable<PromptSegment["layoutEntities"]>[number][];
-  depthOrder.sort((a, b) => b.y - a.y);
-  for (let index = 0; index < depthOrder.length - 1; index += 1) {
-    const front = depthOrder[index];
-    const back = depthOrder[index + 1];
-    if (Math.abs(front.y - back.y) > 0.08) lines.push(`${named(front)} is positioned in front of ${named(back)}.`);
-  }
-  for (const subject of subjects) {
-    const angle = Number(subject.relationRole);
-    if (!Number.isFinite(angle)) continue;
-    const other = subjects.filter((candidate) => candidate !== subject).sort((a, b) => Math.hypot(a.x - subject.x, a.y - subject.y) - Math.hypot(b.x - subject.x, b.y - subject.y))[0];
-    if (other) {
-      const targetAngle = Math.atan2(other.x - subject.x, subject.y - other.y);
-      const delta = Math.atan2(Math.sin(angle - targetAngle), Math.cos(angle - targetAngle));
-      if (Math.abs(delta) < Math.PI / 4) lines.push(`${named(subject)} faces ${named(other)}.`);
-    }
-  }
-  if (camera) {
-    const { horizontal, depth } = describePosition(camera);
-    lines.unshift(`Camera position: the camera is on the ${horizontal} side of the scene, on the ${depth}, observing the scene from this fixed position.`);
-  }
-  for (const object of objects) {
-    const between = subjects.filter((subject) => {
-      const minX = Math.min(subject.x, camera?.x ?? subject.x);
-      const maxX = Math.max(subject.x, camera?.x ?? subject.x);
-      const minY = Math.min(subject.y, camera?.y ?? subject.y);
-      const maxY = Math.max(subject.y, camera?.y ?? subject.y);
-      return object.x >= minX && object.x <= maxX && object.y >= minY && object.y <= maxY;
-    });
-    if (between.length >= 2) lines.push(`The object named "${object.name}" remains between ${between.map((subject) => `<Subject ${subjects.indexOf(subject) + 1}>`).join(" and ")}.`);
-  }
-  return lines.length ? `Spatial blocking:\n${lines.join("\n")}\nMaintain these screen positions throughout the shot and do not swap subject sides unless explicitly instructed.` : "";
-}
 type Ref2vaFields = {
   summary: string;
   taskType: "reference generation" | "video editing" | "video continuation";
@@ -388,15 +155,8 @@ const ref2vaDefaults: Ref2vaFields = {
   taskType: "reference generation",
   audioProcessing: [],
   retentionAnalysis: "",
-  soundscape:
-    "Use natural diegetic ambience and synchronized physical sound effects based on the visible environment and actions. Keep the sound realistic and grounded in the scene. Do not add unrelated sounds or invent additional dialogue. Spoken dialogue is defined only in detailed_description.",
+  soundscape: "",
   music: "N/A",
-};
-const promptBuilderDefaults: PromptBuilderSettings = {
-  style: "realistic_cinematic",
-  framing: "",
-  camera: "",
-  lens: "",
 };
 function normalizePromptBuilderSettings(
   settings?: PromptBuilderSettingsInput,
@@ -846,7 +606,70 @@ type PersistedDirectorState = {
   keyframes?: Record<string, PersistedKeyframe>;
   referenceAssets?: Record<string, PersistedReferenceAsset>;
 };
-type PromptMention = { start: number; end: number; query: string };
+type PromptMention = { start: number; end: number; query: string; selected: number };
+function normalizePrompt(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  const prompt = value as Partial<Ref2vaPromptManifest>;
+  return [
+    ["subject_definitions", prompt.subject_definitions],
+    ["summary", prompt.summary],
+    ["retention_analysis", prompt.retention_analysis],
+    ["detailed_description", prompt.detailed_description],
+    ["overall_soundscape", prompt.overall_soundscape],
+    ["non_diegetic_music", prompt.non_diegetic_music],
+  ]
+    .filter(([, section]) => typeof section === "string" && section.trim())
+    .map(([name, section]) => `${name}:\n${section}`)
+    .join("\n\n");
+}
+function toRef2vaPromptManifest(value: unknown): Ref2vaPromptManifest {
+  const text = normalizePrompt(value);
+  const names = [
+    "subject_definitions",
+    "summary",
+    "retention_analysis",
+    "detailed_description",
+    "overall_soundscape",
+    "non_diegetic_music",
+  ] as const;
+  const sections = Object.fromEntries(
+    names.map((name, index) => {
+      const start = new RegExp(`(?:^|\\n)${name}\\s*:\\s*`, "i").exec(text);
+      if (!start) return [name, ""];
+      const contentStart = start.index + start[0].length;
+      const next = names
+        .slice(index + 1)
+        .map((nextName) => new RegExp(`(?:^|\\n)${nextName}\\s*:\\s*`, "i").exec(text))
+        .find((match) => match && match.index >= contentStart);
+      return [name, text.slice(contentStart, next?.index ?? text.length).trim()];
+    }),
+  ) as Record<(typeof names)[number], string>;
+  const legacyIntegrated = new RegExp(
+    `(?:^|\\n)integrated_multimodal_description\\s*:\\s*([\\s\\S]*?)(?=\\n(?:overall_soundscape|non_diegetic_music)\\s*:|$)`,
+    "i",
+  ).exec(text);
+  if (!sections.detailed_description && legacyIntegrated) {
+    sections.detailed_description = legacyIntegrated[1].trim();
+  }
+  for (const name of ["overall_soundscape", "non_diegetic_music"] as const) {
+    if (sections[name]) continue;
+    const legacy = new RegExp(
+      `(?:^|\\n)${name}\\s*:\\s*([\\s\\S]*?)(?=\\n(?:overall_soundscape|non_diegetic_music)\\s*:|$)`,
+      "i",
+    ).exec(text);
+    if (legacy) sections[name] = legacy[1].trim();
+  }
+  if (!names.some((name) => sections[name])) sections.detailed_description = text;
+  return {
+    subject_definitions: sections.subject_definitions,
+    summary: sections.summary,
+    retention_analysis: sections.retention_analysis,
+    detailed_description: sections.detailed_description,
+    overall_soundscape: sections.overall_soundscape,
+    non_diegetic_music: sections.non_diegetic_music,
+  };
+}
 type ReferenceMentionOption = {
   kind: ReferenceKind;
   index: number;
@@ -1047,133 +870,6 @@ function normalizeActionDescription(description: string) {
   return normalized;
 }
 
-const promptFieldNames = [
-  "subject_definitions",
-  "reference_mapping",
-  "summary",
-  "retention_analysis",
-  "detailed_description",
-  "overall_soundscape",
-  "non_diegetic_music",
-];
-
-function readPromptField(promptText: string, fieldName: string) {
-  const fields = promptFieldNames
-    .filter((field) => field !== fieldName)
-    .map((field) => field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|");
-  const match = promptText.match(
-    new RegExp(
-      `(?:^|\\n)\\s*${fieldName}\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*(?:${fields})\\s*:|$)`,
-      "i",
-    ),
-  );
-  return match?.[1]?.trim() ?? "";
-}
-
-function promptHasField(promptText: string, fieldName: string) {
-  return new RegExp(`(?:^|\\n)\\s*${fieldName}\\s*:`, "i").test(promptText);
-}
-
-function readPromptSubjects(promptText: string) {
-  const definitions = readPromptField(
-    promptText,
-    "subject_definitions",
-  ).replace(/\\(?=<)/g, "");
-  return [
-    ...definitions.matchAll(
-      /<Subject\s+(\d+)>\s+is\s+the\s+subject\s+named\s+["“]([^"”]+)["”]([\s\S]*?)(?=\n|$)/gi,
-    ),
-  ].map((match) => ({
-    index: Number(match[1]),
-    name: match[2].trim(),
-    tokens: [...match[3].matchAll(/<(?:Picture|Video|Audio)\s+\d+>/gi)].map(
-      (token) => token[0],
-    ),
-  }));
-}
-
-type ParsedPromptShot = {
-  number: number;
-  action: string;
-  camera: string;
-  start?: number;
-};
-
-function readPromptShots(
-  promptText: string,
-  totalSeconds: number,
-): ParsedPromptShot[] {
-  const normalized = promptText.replace(/\r\n/g, "\n");
-  const headingPattern =
-    /(?:\bSHOT\s+(\d+)(?:\s+\(starts\s+at\s+(\d+):([\d.]+)\))?|\[Shot\s+(\d+)\](?:\s+At\s+(\d+):([\d.]+),?)?)\s*(?=\n?\s*Action\s*:)/gi;
-  const headings = [...normalized.matchAll(headingPattern)];
-  return headings.map((heading, index) => {
-    const startOffset = (heading.index ?? 0) + heading[0].length;
-    const endOffset =
-      index + 1 < headings.length
-        ? (headings[index + 1].index ?? normalized.length)
-        : normalized.length;
-    const body = normalized.slice(startOffset, endOffset);
-    const actionText =
-      body
-        .match(
-          /(?:^|\n)\s*Action\s*:\s*([\s\S]*?)(?=\n\s*(?:Camera|Wardrobe|Continuity)\s*:|$)/i,
-        )?.[1]
-        ?.trim() ?? "";
-    const action = actionText
-      .replace(
-        /\s*No spoken dialogue or vocalization occurs in this shot\.\s*$/i,
-        "",
-      )
-      .trim();
-    const camera =
-      body
-        .match(
-          /(?:^|\n)\s*Camera\s*:\s*([\s\S]*?)(?=\n\s*(?:Wardrobe|Continuity)\s*:|$)/i,
-        )?.[1]
-        ?.trim() ?? "";
-    const minuteText = heading[2] ?? heading[5];
-    const secondText = heading[3] ?? heading[6];
-    const minutes = minuteText !== undefined ? Number(minuteText) : 0;
-    const seconds = secondText !== undefined ? Number(secondText) : 0;
-    const parsedStart =
-      minuteText !== undefined || secondText !== undefined
-        ? minutes * 60 + seconds
-        : undefined;
-    return {
-      number: Number(heading[1] ?? heading[4]),
-      action:
-        action === "No specific action or dialogue is provided for this shot."
-          ? ""
-          : action,
-      camera,
-      start:
-        parsedStart === undefined
-          ? undefined
-          : Math.max(0, Math.min(totalSeconds, parsedStart)),
-    };
-  });
-}
-
-function inferPromptCameraSettings(
-  cameraText: string,
-  existing?: PromptBuilderSettingsInput,
-) {
-  const normalized = normalizePromptBuilderSettings(existing);
-  if (!cameraText || /No specific camera language is set/i.test(cameraText))
-    return { ...normalized, framing: "", camera: "", lens: "" };
-  (["framing", "camera", "lens"] as const).forEach((key) => {
-    const option = promptBuilderOptions[key].find(([value]) =>
-      cameraText
-        .toLowerCase()
-        .includes(promptBuilderPhrases[key][value].toLowerCase()),
-    );
-    if (option) normalized[key] = option[0];
-  });
-  return normalized;
-}
-
 function safeFileStem(title: string) {
   return (
     title
@@ -1231,11 +927,10 @@ async function readCharacterThumbnail(
   try {
     const manifest = await character.getFileHandle("character.json");
     const data = JSON.parse(await (await manifest.getFile()).text()) as {
-      references?: Array<{ role?: string; category?: string; file?: string }>;
+      references?: Array<{ role?: string; file?: string }>;
     };
     const preferred = data.references?.find(
-      (reference) =>
-        reference.role === "full_body" || reference.role === "identity" || reference.category === "全身参考" || reference.category === "半身正脸",
+      (reference) => reference.role === "character",
     )?.file;
     if (!preferred) return undefined;
     const identity = await character.getDirectoryHandle("身份");
@@ -1284,14 +979,7 @@ async function readProjectShots(
           generation?: ProjectShotRecord["generation"];
           output?: string;
           references?: { subjects?: PromptSubject[] };
-          prompt?: {
-            subject_definitions?: string;
-            summary?: string;
-            retention_analysis?: string;
-            detailed_description?: PromptSegment[];
-            overall_soundscape?: string;
-            non_diegetic_music?: string;
-          };
+          prompt?: string | Partial<Ref2vaPromptManifest>;
         };
         const generation = data.generation ?? {};
         const durationText = `${generation.duration ?? 6}s`;
@@ -1314,7 +1002,7 @@ async function readProjectShots(
           generation,
           subjects: data.references?.subjects,
           references: data.references,
-          prompt: data.prompt,
+          prompt: normalizePrompt(data.prompt),
         };
       } catch {
         return {
@@ -1396,9 +1084,9 @@ export default function Home() {
   const [resolution, setResolution] = useState("864 × 480");
   const [aspect, setAspect] = useState("16:9");
   const [layoutSelectedEntity, setLayoutSelectedEntity] = useState(0);
-  const [objectDialogOpen, setObjectDialogOpen] = useState(false);
-  const [objectDialogName, setObjectDialogName] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [promptOptimizing, setPromptOptimizing] = useState(false);
+  const [llmExecutablePath, setLlmExecutablePath] = useState("");
   const [promptBuilderSettings, setPromptBuilderSettings] = useState<
     Record<string, PromptBuilderSettings>
   >({});
@@ -1420,6 +1108,7 @@ export default function Home() {
   >(null);
   const [promptViewerOpen, setPromptViewerOpen] = useState(false);
   const [promptDraft, setPromptDraft] = useState("");
+  const [optimizedPrompts, setOptimizedPrompts] = useState<Record<string, string>>({});
   const [promptNotice, setPromptNotice] = useState<{
     type: "success" | "error";
     text: string;
@@ -1445,8 +1134,18 @@ export default function Home() {
   const [projectDeleteCandidate, setProjectDeleteCandidate] = useState<
     string | null
   >(null);
+  const [characterDeleteCandidate, setCharacterDeleteCandidate] = useState<
+    string | null
+  >(null);
+  const [assetDeleteCandidate, setAssetDeleteCandidate] = useState<
+    ProjectTreeAsset | null
+  >(null);
   const [characterDialog, setCharacterDialog] = useState(false);
   const [assetSubjectPickerOpen, setAssetSubjectPickerOpen] = useState(false);
+  const [referencePickerTarget, setReferencePickerTarget] = useState<{
+    kind: ReferenceKind;
+    index: number;
+  } | null>(null);
   const [assetSubjectParentIndex, setAssetSubjectParentIndex] = useState<
     number | null
   >(null);
@@ -1531,27 +1230,12 @@ export default function Home() {
   const settingsSegment =
     settingsSegmentIndex !== null ? activeSegments[settingsSegmentIndex] : null;
   useEffect(() => {
-    if (!storageReady || !taskShot) return;
-    const subjects = promptSubjects[taskShot.id] ?? [];
-    setPromptSegments((current) => {
-      const segments = current[taskShot.id]?.length ? current[taskShot.id] : getPromptSegments(taskShot.id);
-      const next = segments.map((segment) => {
-        const existing = segment.layoutEntities ?? [];
-        const required = [{ id: "camera", type: "camera" as const, name: "摄像机", x: 0.5, y: 0.92 }, ...subjects.map((subject, index) => ({ id: `subject-${index + 1}`, type: "subject" as const, name: subject.name || `<Subject ${index + 1}>`, x: (index + 1) / (subjects.length + 1), y: 0.5 }))];
-        const merged = required.map((entity) => existing.find((item) => item.id === entity.id) ?? entity);
-        const customObjects = existing.filter((item) => item.type === "object");
-        const nextEntities = [...merged, ...customObjects];
-        return JSON.stringify(nextEntities) === JSON.stringify(existing) ? segment : { ...segment, layoutEntities: nextEntities };
-      });
-      return next === segments ? current : { ...current, [taskShot.id]: next };
-    });
-  }, [storageReady, taskShot, promptSubjects]);
-  useEffect(() => {
     const savedComfyUrl = window.localStorage.getItem("comfyui-url");
     if (savedComfyUrl) {
       setComfyUrl(savedComfyUrl);
       setComfyUrlDraft(savedComfyUrl);
     }
+    setLlmExecutablePath(window.localStorage.getItem("llm-executable-path") ?? "");
   }, []);
 
   useEffect(() => {
@@ -1737,7 +1421,16 @@ export default function Home() {
         setShots(saved.shots);
         setActiveShot((current) => Math.min(current, saved.shots!.length - 1));
       }
-      if (saved.shotPrompts) setShotPrompts(saved.shotPrompts);
+      if (saved.shotPrompts) {
+        setShotPrompts(
+          Object.fromEntries(
+            Object.entries(saved.shotPrompts).map(([id, value]) => [
+              id,
+              normalizePrompt(value),
+            ]),
+          ),
+        );
+      }
       if (saved.promptBuilderSettings)
         setPromptBuilderSettings(saved.promptBuilderSettings);
       if (saved.promptSubjects) setPromptSubjects(compactedReferences.subjects);
@@ -1922,37 +1615,10 @@ export default function Home() {
             ? " using the provided audio as a reference."
             : "";
         const generatedSummary = `[${fields.taskType}${fields.audioProcessing.length ? ` + ${fields.audioProcessing.join(" + ")}` : ""}] ${taskSummary[fields.taskType]}${audioSummary || "."}`;
-        const detailedDescription = promptSegments[shot.id] ?? [];
-        const integratedDescription = detailedDescription
-          .map((segment, index) => `[Shot ${index + 1}]\n${segment.description.trim()}`)
-          .filter(Boolean)
-          .join("\n\n");
-        const i2vaAlignment = settings.mode === "I2VA" && shot.id === taskShot?.id
-          ? keyframeMode === "first_last"
-            ? "How the reference pictures align with the target video — Picture 1 aligns with the 0.00-second mark of the target video; Picture 2 aligns with the final timestamp of the target video."
-            : keyframeMode === "last"
-              ? "How the reference pictures align with the target video — <Picture 1> aligns with the final timestamp of the target video."
-              : "For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
-          : "";
-        const promptData = settings.mode === "R2VA"
-          ? {
-              subject_definitions: buildSubjectDefinitions(promptSubjects[shot.id] ?? []),
-              summary: generatedSummary,
-              retention_analysis: buildRetentionAnalysis(promptSubjects[shot.id] ?? []) || fields.retentionAnalysis,
-              detailed_description: detailedDescription.map((segment, index) => ({
-                ...segment,
-                settings: normalizePromptBuilderSettings(segment.settings),
-              })),
-              overall_soundscape: fields.soundscape,
-              non_diegetic_music: fields.music,
-            }
-          : {
-              integrated_multimodal_description: [i2vaAlignment, integratedDescription]
-                .filter(Boolean)
-                .join("\n\n"),
-              overall_soundscape: fields.soundscape,
-              non_diegetic_music: fields.music,
-            };
+        const promptData =
+          optimizedPrompts[shot.id] ??
+          shotPrompts[shot.id] ??
+          (shot.id === taskShot?.id ? prompt : "");
         await writeClipManifest(shot, {
           generation: {
             mode: settings.mode,
@@ -1987,6 +1653,7 @@ export default function Home() {
     ref2vaFields,
     promptSegments,
     shotPrompts,
+    optimizedPrompts,
     shotVideos,
     shotFileNames,
     keyframeMode,
@@ -2005,7 +1672,7 @@ export default function Home() {
   useEffect(() => {
     if (!storageReady || !taskShot) return;
     const settings = shotSettings[taskShot.id] ?? shotSettingDefaults;
-    setPrompt(shotPrompts[taskShot.id] ?? "");
+    setPrompt(normalizePrompt(shotPrompts[taskShot.id]));
     setPromptNotice(null);
     setSettingsSegmentIndex(null);
     setActivePromptSegment((current) => ({
@@ -2212,7 +1879,7 @@ export default function Home() {
       settings?.resolution ?? nextShot.meta.split("·")[0].trim();
     setActiveShot(index);
     activeShotIdRef.current = nextShot.id;
-    setPrompt(shotPrompts[nextShot.id] ?? "");
+    setPrompt(normalizePrompt(shotPrompts[nextShot.id]));
     const savedVideo = shotVideos[nextShot.id];
     setVideoUrl(savedVideo ?? null);
     void loadArchivedShotVideo(nextShot).then((url) => {
@@ -2268,11 +1935,7 @@ export default function Home() {
     try {
       await writeClipManifest(shot, {
         generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
-        prompt: {
-          integrated_multimodal_description: "",
-          overall_soundscape: ref2vaDefaults.soundscape,
-          non_diegetic_music: ref2vaDefaults.music,
-        },
+        prompt: "",
       });
     } catch {
       setGenerationStatus(
@@ -2467,7 +2130,7 @@ export default function Home() {
     const nextShot = next[nextIndex];
     if (nextShot) {
       const settings = shotSettings[nextShot.id] ?? shotSettingDefaults;
-      setPrompt(shotPrompts[nextShot.id] ?? "");
+      setPrompt(normalizePrompt(shotPrompts[nextShot.id]));
       setVideoUrl(shotVideos[nextShot.id] ?? null);
       setDuration(settings.duration);
       setResolution(settings.resolution);
@@ -2615,29 +2278,7 @@ export default function Home() {
     setPromptSegments((current) => {
       const segments = [...getPromptSegments(shotId)];
       if (!segments[index]) return current;
-      const nextPatch = { ...patch };
-      if (nextPatch.layoutEntities) {
-        nextPatch.layoutEntities = nextPatch.layoutEntities.map((entity) => { const clean = { ...entity } as Record<string, unknown>; delete clean.facing; return clean as typeof entity; });
-      }
-      if (patch.cameraDirection && segments[index].layoutEntities) {
-        const preset = patch.cameraDirection;
-        const subjects = segments[index].layoutEntities.filter((entity) => entity.type === "subject");
-        const centerX = subjects.length ? subjects.reduce((sum, entity) => sum + entity.x, 0) / subjects.length : 0.5;
-        const centerY = subjects.length ? subjects.reduce((sum, entity) => sum + entity.y, 0) / subjects.length : 0.5;
-        const layoutEntities = segments[index].layoutEntities.map((entity) => {
-          if (entity.type !== "camera") return entity;
-          const camera = { ...entity };
-          if (preset === "正面") { camera.x = centerX; camera.y = Math.min(0.9, centerY + 0.35); camera.height = 1.8; }
-          if (preset === "侧面") { camera.x = Math.min(0.9, centerX + 0.35); camera.y = centerY; camera.height = 1.8; }
-          if (preset === "高机位" || preset === "俯视") { camera.y = Math.min(0.9, centerY + 0.25); camera.height = preset === "高机位" ? 5 : 3.5; }
-          if (preset === "低机位" || preset === "仰视") { camera.y = Math.max(0.1, centerY - 0.25); camera.height = preset === "低机位" ? 0.35 : 0.6; }
-          const dx = centerX - camera.x; const dz = -(centerY - camera.y);
-          camera.relationRole = String(Math.atan2(dx, dz));
-          return camera;
-        });
-        nextPatch.layoutEntities = layoutEntities;
-      }
-      segments[index] = { ...segments[index], ...nextPatch };
+      segments[index] = { ...segments[index], ...patch };
       return { ...current, [shotId]: segments };
     });
   }
@@ -3097,43 +2738,13 @@ export default function Home() {
     if (
       parentIndex !== null &&
       (promptSubjects[shotId]?.[parentIndex]?.children ?? []).some(
-        (child) => child.name.trim().toLowerCase() === asset.name.trim().toLowerCase(),
+        (child) => child.name.trim().toLowerCase() === name.trim().toLowerCase(),
       )
     ) {
       setAssetSubjectPickerOpen(false);
       setAssetSubjectParentIndex(null);
       assetSubjectParentIndexRef.current = null;
-      setGenerationStatus(`子主体“${asset.name}”已经添加`);
-      return;
-    }
-    if (
-      parentIndex === null &&
-      (promptSubjects[shotId] ?? []).some(
-        (subject) =>
-          subject.name.trim().toLowerCase() === name.trim().toLowerCase(),
-      )
-    ) {
-      if (parentIndex === null) {
-        setPromptSubjects((current) => {
-          const existing = current[shotId] ?? [];
-          const cleaned = existing.map((subject) => {
-            const children = (subject.children ?? []).filter(
-              (child) =>
-                child.name.trim().toLowerCase() !== name.trim().toLowerCase(),
-            );
-            return children.length === (subject.children ?? []).length
-              ? subject
-              : { ...subject, children };
-          });
-          return cleaned.some((subject, index) => subject !== existing[index])
-            ? { ...current, [shotId]: cleaned }
-            : current;
-        });
-      }
-      setAssetSubjectPickerOpen(false);
-      assetSubjectParentIndexRef.current = null;
-      setAssetSubjectParentIndex(null);
-      setGenerationStatus(`主体“${name}”已经添加到当前片段`);
+      setGenerationStatus(`子主体“${name}”已经添加`);
       return;
     }
     try {
@@ -3159,6 +2770,22 @@ export default function Home() {
         const file = await source.getFile();
         const kind: ReferenceKind =
           reference.role === "voice" ? "audio" : "image";
+        const sourcePath = `资产/角色/${name}/${folderName}/${reference.file}`;
+        const existingReference = Object.entries(referenceAssets).find(
+          ([key, existing]) =>
+            key.startsWith(`${shotId}-${kind}-`) &&
+            (existing.sourcePath === sourcePath ||
+              (existing.kind === kind &&
+                existing.name.trim().toLowerCase() ===
+                  file.name.trim().toLowerCase())),
+        );
+        if (existingReference) {
+          uploadedKeys.push(existingReference[0]);
+          uploadedRoles.push(
+            reference.role === "full_body" ? "character" : reference.role,
+          );
+          continue;
+        }
         const index = nextReferenceIndex(shotId, kind, uploadedKeys);
         const key = referenceKey(shotId, kind, index);
         const url = URL.createObjectURL(file);
@@ -3185,7 +2812,7 @@ export default function Home() {
             comfyName: uploaded.name,
             comfySubfolder: uploaded.subfolder || undefined,
             kind,
-            sourcePath: `资产/角色/${name}/${folderName}/${reference.file}`,
+            sourcePath,
           },
         }));
         uploadedKeys.push(key);
@@ -3219,21 +2846,40 @@ export default function Home() {
               (item) =>
                 item.name.trim().toLowerCase() === name.trim().toLowerCase(),
             )
-          )
-            return current;
+          ) {
+            subjects[parentIndex] = {
+              ...parent,
+              children: (parent.children ?? []).map((item) =>
+                item.name.trim().toLowerCase() === name.trim().toLowerCase()
+                  ? {
+                      ...item,
+                      assetKeys: [...new Set([...item.assetKeys, ...uploadedKeys])],
+                      assetRoles: { ...item.assetRoles, ...child.assetRoles },
+                    }
+                  : item,
+              ),
+            };
+            return { ...current, [shotId]: subjects };
+          }
           subjects[parentIndex] = {
             ...parent,
             children: [...(parent.children ?? []), child],
           };
           return { ...current, [shotId]: subjects };
         }
-        if (
-          subjects.some(
-            (subject) =>
-              subject.name.trim().toLowerCase() === name.trim().toLowerCase(),
-          )
-        )
-          return current;
+        const existingIndex = subjects.findIndex(
+          (subject) =>
+            subject.name.trim().toLowerCase() === name.trim().toLowerCase(),
+        );
+        if (existingIndex >= 0) {
+          const existing = subjects[existingIndex];
+          subjects[existingIndex] = {
+            ...existing,
+            assetKeys: [...new Set([...existing.assetKeys, ...uploadedKeys])],
+            assetRoles: { ...existing.assetRoles, ...child.assetRoles },
+          };
+          return { ...current, [shotId]: subjects };
+        }
         return { ...current, [shotId]: [...subjects, child] };
       });
       setAssetSubjectPickerOpen(false);
@@ -3254,17 +2900,6 @@ export default function Home() {
     if (!shotId || !projectDirectory) return;
     ensureReferenceMode(shotId);
     const parentIndex = assetSubjectParentIndexRef.current;
-    if (
-      parentIndex === null &&
-      (promptSubjects[shotId] ?? []).some(
-        (subject) =>
-          subject.name.trim().toLowerCase() === asset.name.trim().toLowerCase(),
-      )
-    ) {
-      setAssetSubjectPickerOpen(false);
-      setGenerationStatus(`主体“${asset.name}”已经添加到当前片段`);
-      return;
-    }
     try {
       const folderName =
         asset.type === "clothing"
@@ -3382,14 +3017,19 @@ export default function Home() {
           };
           return { ...current, [shotId]: subjects };
         }
-        if (
-          subjects.some(
-            (subject) =>
-              subject.name.trim().toLowerCase() ===
-              asset.name.trim().toLowerCase(),
-          )
-        )
-          return current;
+        const existingIndex = subjects.findIndex(
+          (subject) =>
+            subject.name.trim().toLowerCase() === asset.name.trim().toLowerCase(),
+        );
+        if (existingIndex >= 0) {
+          const existing = subjects[existingIndex];
+          subjects[existingIndex] = {
+            ...existing,
+            assetKeys: [...new Set([...existing.assetKeys, ...uploadedKeys])],
+            assetRoles: { ...existing.assetRoles, ...child.assetRoles },
+          };
+          return { ...current, [shotId]: subjects };
+        }
         return { ...current, [shotId]: [...subjects, child] };
       });
       setAssetSubjectPickerOpen(false);
@@ -3440,6 +3080,7 @@ export default function Home() {
       return { ...current, [shotId]: subjects };
     });
   }
+
   function updateChildAssetRole(
     subjectIndex: number,
     childIndex: number,
@@ -3462,503 +3103,46 @@ export default function Home() {
       return { ...current, [shotId]: subjects };
     });
   }
-  function generateH3Prompt(promptMode = activeMode) {
-    if (!taskShot) return;
-    const durationSeconds = Number.parseFloat(duration) || 6;
-    const segments = getPromptSegments(taskShot.id);
-    const rawPrompt = prompt.trim();
-    const plainPrompt =
-      rawPrompt &&
-      !/^(?:For the target video|How the reference pictures align|(?:subject_definitions|integrated_multimodal_description):)/i.test(
-        rawPrompt,
-      )
-        ? rawPrompt
-        : "";
-    const frameMode = promptMode === "I2VA" ? keyframeMode : null;
-    const frameAnchor =
-      frameMode === "first_last"
-        ? "The opening composition follows <Picture 1>, and the action develops continuously toward the final composition established by <Picture 2>."
-        : frameMode === "last"
-          ? "The action develops continuously toward the final composition established by <Picture 1>."
-          : frameMode === "first"
-            ? "The opening composition, subjects, clothing, lighting, and spatial relationships remain consistent with <Picture 1> as the action develops forward."
-            : "";
-    const speakerIds = new Map<string, number>();
-    const subjects = promptSubjects[taskShot.id] ?? [];
-    const refFields = {
-      ...ref2vaDefaults,
-      ...(ref2vaFields[taskShot.id] ?? {}),
-    };
-    const childReferenceBindings = (subject: PromptSubject) =>
-      (subject.children ?? []).flatMap((child) =>
-        child.assetKeys
-          .map((assetKey) => {
-            const reference = referenceMentionOptions().find(
-              (item) => item.assetKey === assetKey,
-            );
-            return reference
-              ? {
-                  child,
-                  reference,
-                  role: child.assetRoles?.[assetKey] ?? "composite",
-                }
-              : null;
-          })
-          .filter(
-            (
-              binding,
-            ): binding is {
-              child: PromptSubject;
-              reference: ReferenceMentionOption;
-              role: string;
-            } => Boolean(binding),
-          ),
-      );
-    const promptSegmentsText = segments
-      .map((segment, index) => {
-        const settings = { ...promptBuilderDefaults, ...segment.settings };
-        const description =
-          segment.description.trim() || (index === 0 ? plainPrompt : "");
-        // Do not invent story actions when the user leaves a scene description blank.
-        // The generated prompt should make the missing input explicit instead.
-        const segmentDescription = formatPromptDescription(
-          normalizeActionDescription(
-            description ||
-              "No specific action or dialogue is provided for this shot.",
-          ),
-          speakerIds,
-          subjects,
-        );
-        const dialogueGuard = /<d>[^<]*<\/d>/i.test(segmentDescription)
-          ? ""
-          : " No spoken dialogue or vocalization occurs in this shot.";
-        const start = Math.max(
-          0,
-          Math.min(
-            durationSeconds,
-            segment.start ?? (durationSeconds * index) / segments.length,
-          ),
-        );
-        const timing =
-          index === 0
-            ? ""
-            : ` At ${Math.floor(start / 60)
-                .toString()
-                .padStart(
-                  2,
-                  "0",
-                )}:${(start % 60).toFixed(3).padStart(6, "0")},`;
-        const cameraParts = [
-          settings.framing && promptBuilderPhrases.framing[settings.framing],
-          settings.camera && promptBuilderPhrases.camera[settings.camera],
-          settings.lens && promptBuilderPhrases.lens[settings.lens],
-        ].filter(Boolean);
-        const selectedDirection = segment.cameraDirection === "自定义" ? segment.cameraDirectionCustom?.trim() : segment.cameraDirection;
-        const cameraLayout = [selectedDirection && `The camera uses a ${selectedDirection} viewing direction.`, segment.cameraTarget && `The camera is aimed at ${segment.cameraTarget}.`, segment.shotSize && `Shot size: ${segment.shotSize}.`, segment.cameraMove && `Camera movement: ${segment.cameraMove}.`].filter(Boolean).join(" ");
-        const integratedDescription = [buildLayoutDescription(segment.layoutEntities), cameraLayout, segmentDescription, cameraParts.join(". ")].filter(Boolean).join("\n\n");
-        return `[Shot ${index + 1}]${timing}\n${integratedDescription}${dialogueGuard}`;
-      })
-      .join("\n\n");
-    const globalSettings = normalizePromptBuilderSettings(
-      segments[0]?.settings ?? promptBuilderSettings[taskShot.id],
-    );
-    const styleOpening =
-      promptBuilderPhrases.style[globalSettings.style] ??
-      promptBuilderPhrases.style.realistic_cinematic;
-    const sound = ref2vaDefaults.soundscape;
-    const customSoundscape = refFields.soundscape.trim();
-    const soundscape = customSoundscape || sound;
-    const music = promptBuilderPhrases.music.none;
-    const refs = promptMode === "R2VA" ? referenceMentionOptions() : [];
-    const subjectDefinitions = subjects
-      .filter((subject) => subject.name.trim())
-      .map((subject, index) => {
-        const subjectRefs = subject.assetKeys
-          .map((assetKey) =>
-            refs.find((reference) => reference.assetKey === assetKey),
-          )
-          .filter((reference): reference is ReferenceMentionOption =>
-            Boolean(reference),
-          );
-        const roles = subjectRefs.map(
-          (reference) =>
-            subject.assetRoles?.[reference.assetKey] ?? "composite",
-        );
-        const subjectKind = roles.includes("clothing")
-          ? "clothing asset"
-          : roles.includes("object")
-            ? "prop asset"
-            : roles.includes("environment")
-              ? "environment asset"
-              : roles.includes("voice")
-                ? "audio-linked subject"
-                : "subject";
-        const sourceText = subjectRefs.length
-          ? `, with ${subjectRefs
-              .map((reference) => {
-                const role =
-                  subject.assetRoles?.[reference.assetKey] ?? "composite";
-                const roleText =
-                    role === "identity"
-                      ? "facial identity reference"
-                      : role === "full_body"
-                        ? "full-body character reference showing the frontal view and left and right three-quarter views"
-                        : role === "composite"
-                          ? "combined facial and full-body character reference"
-                          : role === "clothing"
-                            ? "wardrobe reference"
-                            : role === "voice"
-                              ? "vocal identity and performance reference"
-                              : role === "motion"
-                                ? "motion and action reference"
-                                : role === "custom"
-                                  ? "custom reference"
-                            : role === "pose"
-                          ? "pose reference"
-                          : role === "environment"
-                            ? "environment reference"
-                            : role === "object"
-                              ? "object reference"
-                              : role === "style"
-                                ? "visual-style reference"
-                                : "visual reference";
-                return role === "clothing"
-                  ? `${roleText} ${reference.token} (the sole authority for this subject's clothing and accessories throughout the target video; preserve all visible garment details consistently)`
-                  : `${roleText} ${reference.token}`;
-              })
-              .join(", and ")}`
-          : "";
-        const childBindings = childReferenceBindings(subject);
-        const childText = childBindings.length
-          ? ` ${Array.from(
-              new Map(
-                childBindings.map(({ child, reference, role }) => [
-                  child.name.trim().toLowerCase(),
-                  { child, reference, role },
-                ]),
-              ).values(),
-            )
-              .map(({ child, role }) => {
-                const references = childBindings
-                  .filter(
-                    (binding) =>
-                      binding.child.name.trim().toLowerCase() ===
-                      child.name.trim().toLowerCase(),
-                  )
-                  .map((binding) => binding.reference.token)
-                  .join(", ");
-                if (role === "clothing")
-                  return `The subject wears the wardrobe asset named "${child.name.trim()}" shown in ${references}; this wardrobe reference is authoritative for the subject's clothing and accessories.`;
-                if (role === "object")
-                  return `The subject is associated with the prop asset named "${child.name.trim()}" shown in ${references}; preserve its visible design and placement when handled or shown.`;
-                if (role === "environment")
-                  return `The subject is situated in the environment asset named "${child.name.trim()}" shown in ${references}; preserve the environment's visible layout.`;
-                return `The subject is accompanied by the asset named "${child.name.trim()}" shown in ${references}; preserve their visual relationship.`;
-              })
-              .join(" ")}`
-          : "";
-        return `<Subject ${index + 1}> is the ${subjectKind} named "${subject.name.trim()}"${sourceText}.${childText}`;
-      })
-      .join("\n");
-    const referenceSummary = refs.length
-      ? ` Use ${refs.map((reference) => reference.token).join(", ")} according to the subject, role, and temporal position assigned above.`
-      : "";
-    const visualBody = `${styleOpening} ${frameAnchor ? `${frameAnchor} ` : ""}Exactly two human protagonists appear in the scene: <Subject 1> and <Subject 2>. Any wardrobe reference is applied only to its assigned subject and must not generate a separate person, mannequin, employee, or character.\\n\\n${promptSegmentsText}\n\nContinuity:\nMaintain subject identity, facial features, hairstyle, body proportions, clothing, object positions, and spatial relationships throughout the target video. Maintain each subject's world-space position, screen-side relationship, facing direction, relative distance, and interaction geometry across shot changes. Unless the Action explicitly changes them, a cut may change framing or viewpoint but must not relocate, swap, or re-stage the subjects. Follow the assigned references consistently. A wardrobe reference is authoritative for its assigned subject; unless the Action explicitly changes the wardrobe, preserve it unchanged across every shot and do not replace, redesign, simplify, or borrow clothing or accessories from another reference. Dialogue and vocal audio follow only explicit <d> lines; speak lines in written order, one speaker at a time, without overlap, repetition, extension, or invention. Avoid unintended cuts, subtitles, and logos.${referenceSummary}`;
-    let nextPrompt: string;
-    if (promptMode === "R2VA") {
-      const definitions =
-        subjectDefinitions ||
-        "<Subject 1> is the main subject described in the shot and should remain visually consistent throughout the target video.";
-      const subjectRetention = subjects
-        .filter((subject) => subject.name.trim())
-        .map((subject, index) => {
-          return `<Subject ${index + 1}> (appears throughout the target video): fully_preserved - preserve ${subject.name.trim()}'s identity, facial features, hairstyle, and body proportions throughout the target video.`;
-        });
-      const referenceRetention = refs
-        .filter((reference) => reference.kind !== "image")
-        .map((reference) =>
-          reference.kind === "audio"
-            ? `<${reference.token.slice(1, -1)}> (used throughout the target video): reference - use the referenced audio characteristics without copying an unrelated source signal.`
-            : `<${reference.token.slice(1, -1)}> (used throughout the target video): weak_reference - use only the assigned source structure or motion relationship.`,
-        );
-      const taskSummary: Record<Ref2vaFields["taskType"], string> = {
-        "reference generation": "The target video is generated based on the provided references",
-        "video editing": "The target video is an edited version of the provided source video",
-        "video continuation": "The target video continues from the provided source video",
-      };
-      const audioSummary = refFields.audioProcessing.includes("audio reuse")
-        ? " while reusing the provided audio."
-        : refFields.audioProcessing.includes("audio reference")
-          ? " using the provided audio as a reference."
-          : "";
-      const summaryPrefix = `[${refFields.taskType}${refFields.audioProcessing.length ? ` + ${refFields.audioProcessing.join(" + ")}` : ""}] ${taskSummary[refFields.taskType]}${audioSummary || "."}`;
-      const customSummary = refFields.summary
-        .trim()
-        .replace(
-          /^\[[^\]]+\]\s*.*?\s*/i,
-          "",
-        )
-        .trim();
-      const summary = customSummary
-        ? `${summaryPrefix} ${customSummary}`
-        : summaryPrefix;
-      const retentionAnalysis = refFields.retentionAnalysis
-        .trim()
-        .replace(
-          /\(appears in \[Shot 1\]\)/gi,
-          "(appears throughout the target video)",
-        )
-        .replace(/throughout the shot/gi, "throughout the target video");
-      const wardrobeSubjects = subjects.filter((subject) =>
-        subject.assetKeys.some(
-          (assetKey) =>
-            (subject.assetRoles?.[assetKey] ?? "composite") === "clothing",
-        ) || childReferenceBindings(subject).some((binding) => binding.role === "clothing"),
-      );
-      const wardrobeContinuity =
-        wardrobeSubjects.length &&
-        !/exact wardrobe reference|wardrobe.*unchanged|garment or accessory/i.test(
-          retentionAnalysis,
-        )
-          ? `\n${wardrobeSubjects.map((subject) => `The wardrobe reference assigned to "${subject.name.trim()}" is authoritative: preserve the exact clothing, colors, materials, accessories, and wearing state throughout the target video unless an explicit action changes them.`).join("\n")}`
-          : "";
-      nextPrompt = `subject_definitions:\n${definitions}\n\nsummary:\n${summary}\n\nretention_analysis:\n${retentionAnalysis || [...subjectRetention, ...referenceRetention].join("\n") || "<Subject 1> remains consistent throughout the target video."}${wardrobeContinuity}\n\ndetailed_description:\n${visualBody}\n\noverall_soundscape:\n${soundscape}\n\nnon_diegetic_music:\n${refFields.music.trim() || music}`;
-    } else {
-      const alignment =
-        frameMode === "first_last"
-          ? `How the reference pictures align with the target video — Picture 1 aligns with the 0.00-second mark of the target video; Picture 2 aligns with the ${durationSeconds.toFixed(2)}-second mark of the target video.`
-          : frameMode === "last"
-            ? `How the reference pictures align with the target video — <Picture 1> aligns with the ${durationSeconds.toFixed(2)}-second mark of the target video.`
-            : frameMode === "first"
-              ? "For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
-              : "";
-      const field =
-        promptMode === "T2VA"
-          ? "integrated_multimodal_description"
-          : "integrated_multimodal_description";
-      nextPrompt = `${alignment ? `${alignment}\n\n` : ""}${field}:\n${visualBody}\n\noverall_soundscape:\n${soundscape}\n\nnon_diegetic_music:\n${music}`;
-    }
-    setPrompt(nextPrompt);
-    setShotPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
-    return nextPrompt;
-  }
   function changeGenerationMode(nextMode: string) {
     setMode(nextMode);
     updateSetting("mode", nextMode);
-    generateH3Prompt(nextMode);
-  }
-  function detectPromptTemplateMode(value: string) {
-    const normalized = value.trim();
-    if (!normalized) return null;
-    if (/^subject_definitions:/i.test(normalized)) return "R2VA";
-    if (
-      /^(?:For the target video|How the reference pictures align)/i.test(
-        normalized,
-      )
-    )
-      return "I2VA";
-    if (/^integrated_multimodal_description:/i.test(normalized)) return "T2VA";
-    return null;
-  }
-  async function openPromptViewer() {
-    let storedPrompt = taskShot?.prompt;
-    if (projectDirectory && taskShot) {
-      try {
-        const clips = await projectDirectory.getDirectoryHandle("片段");
-        const directory = await clips.getDirectoryHandle(
-          `${taskShot.id}-${safeFileStem(taskShot.title)}`,
-        );
-        const file = await directory.getFileHandle("clip.json");
-        const data = JSON.parse(await (await file.getFile()).text()) as {
-          prompt?: ProjectShotRecord["prompt"];
-        };
-        storedPrompt = data.prompt ?? storedPrompt;
-      } catch {
-        // Fall back to the loaded in-memory prompt when the manifest is unavailable.
-      }
+    const shot = shots[activeShot];
+    if (shot) {
+      const settings = {
+        ...shotSettingDefaults,
+        ...(shotSettings[shot.id] ?? {}),
+        mode: nextMode,
+      };
+      void writeClipManifest(shot, {
+        generation: {
+          mode: settings.mode,
+          duration: Number.parseFloat(settings.duration) || 6,
+          resolution: settings.resolution,
+          aspect: settings.aspect,
+          fps: Number.parseInt(settings.fps, 10) || 24,
+          model: settings.model,
+          turbo: settings.turbo,
+        },
+        prompt:
+          optimizedPrompts[shot.id] ??
+          shotPrompts[shot.id] ??
+          (shot.id === taskShot?.id ? prompt : ""),
+      });
     }
-    const storedDescription = storedPrompt?.detailed_description
-      ?.map((segment, index) => {
-        const shotNumber = segment.id.match(/segment-(\d+)$/i)?.[1] ?? `${index + 1}`;
-        const settings = normalizePromptBuilderSettings(segment.settings);
-        const cameraParts = [
-          settings.framing && promptBuilderPhrases.framing[settings.framing],
-          settings.camera && promptBuilderPhrases.camera[settings.camera],
-          settings.lens && promptBuilderPhrases.lens[settings.lens],
-        ].filter(Boolean);
-        const selectedDirection = segment.cameraDirection === "自定义" ? segment.cameraDirectionCustom?.trim() : segment.cameraDirection;
-        const cameraLayout = [selectedDirection && `The camera uses a ${selectedDirection} viewing direction.`, segment.cameraTarget && `The camera is aimed at ${segment.cameraTarget}.`, segment.shotSize && `Shot size: ${segment.shotSize}.`, segment.cameraMove && `Camera movement: ${segment.cameraMove}.`].filter(Boolean).join(" ");
-        const integratedDescription = [buildLayoutDescription(segment.layoutEntities), cameraLayout, segment.description.trim(), cameraParts.join(". ")].filter(Boolean).join("\n\n");
-        return `[Shot ${shotNumber}]\n${integratedDescription}`;
-      })
-      .filter(Boolean)
-      .join("\n\n");
-    const nextPrompt = storedPrompt
-      ? activeMode === "R2VA"
-        ? `subject_definitions:\n${storedPrompt.subject_definitions ?? ""}\n\nsummary:\n${storedPrompt.summary ?? ""}\n\nretention_analysis:\n${storedPrompt.retention_analysis ?? ""}\n\ndetailed_description:\n${storedDescription ?? ""}\n\noverall_soundscape:\n${storedPrompt.overall_soundscape ?? ""}\n\nnon_diegetic_music:\n${storedPrompt.non_diegetic_music ?? ""}`
-        : `integrated_multimodal_description:\n${storedPrompt.integrated_multimodal_description ?? ""}\n\noverall_soundscape:\n${storedPrompt.overall_soundscape ?? ""}\n\nnon_diegetic_music:\n${storedPrompt.non_diegetic_music ?? ""}`
-      : generateH3Prompt(activeMode);
-    setPromptDraft(nextPrompt ?? "");
-    setPromptViewerOpen(true);
   }
-  function getMentionOptions(query: string, category: "root" | "subject" | "camera" | "lens" | "framing" | "cameraMove" = "root") {
-    const normalized = query.toLowerCase();
-    if (category === "root") return [
-      { type: "category" as const, name: "主体", category: "subject" as const },
-      { type: "category" as const, name: "镜头", category: "camera" as const },
-    ].filter((option) => option.name.includes(normalized));
-    const subjects = getMentionSubjects().flatMap((subject, index) => [
-      { type: "subject" as const, name: subject.name, index },
-      ...(subject.assetRoles && Object.values(subject.assetRoles).some((role) => ["character", "identity", "full_body", "composite"].includes(role))
-        ? [{ type: "subjectVoice" as const, name: `${subject.name} 说`, index }]
-        : []),
-    ]);
-    if (category === "camera") return [
-      { type: "category" as const, name: "机位", category: "lens" as const },
-      { type: "category" as const, name: "景别", category: "framing" as const },
-      { type: "category" as const, name: "运镜", category: "cameraMove" as const },
-    ].filter((option) => option.name.includes(normalized));
-    const key = category === "cameraMove" ? "camera" : category;
-    const cameras = key === "lens" || key === "framing" || key === "camera" ? promptBuilderOptions[key].map(([value, label]) => ({ type: "camera" as const, key, value, name: label })) : [];
-    return [...(category === "subject" ? subjects : []), ...cameras].filter((option) => option.name.toLowerCase().includes(normalized));
+  function openPromptViewer() {
+    setPromptDraft(
+      taskShot ? optimizedPrompts[taskShot.id] ?? prompt : prompt,
+    );
+    setPromptViewerOpen(true);
   }
   function savePromptDraft() {
     if (!taskShot) return;
     const nextPrompt = promptDraft.trim();
-    setPrompt(nextPrompt);
-    setShotPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
-    const total = Number.parseFloat(duration) || 6;
-    const parsedShots = readPromptShots(nextPrompt, total);
-    let syncedFields = false;
-    if (parsedShots.length) {
-      const existing = getPromptSegments(taskShot.id);
-      const parsed = parsedShots.map((shot, index) => {
-        const fallbackStart =
-          index === 0
-            ? 0
-            : (existing[index]?.start ?? (total * index) / parsedShots.length);
-        const start = shot.start ?? fallbackStart;
-        return {
-          ...(existing[index] ?? {
-            settings: { ...promptBuilderDefaults },
-          }),
-          id: `${taskShot.id}-segment-${index + 1}`,
-          description: shot.action,
-          settings: inferPromptCameraSettings(
-            shot.camera,
-            existing[index]?.settings,
-          ),
-          start: Math.max(0, Math.min(total, start)),
-          end: total,
-        };
-      });
-      parsed.forEach((segment, index) => {
-        const nextStart = parsed[index + 1]?.start;
-        parsed[index] = {
-          ...segment,
-          end:
-            nextStart === undefined
-              ? total
-              : Math.max(segment.start ?? 0, nextStart),
-        };
-      });
-      setPromptSegments((current) => ({ ...current, [taskShot.id]: parsed }));
-      setActivePromptSegment((current) => ({
-        ...current,
-        [taskShot.id]: Math.min(current[taskShot.id] ?? 0, parsed.length - 1),
-      }));
-      syncedFields = true;
-    }
-    if (promptHasField(nextPrompt, "subject_definitions")) {
-      const summary = readPromptField(nextPrompt, "summary");
-      const retentionAnalysis = readPromptField(
-        nextPrompt,
-        "retention_analysis",
-      );
-      const soundscape = readPromptField(nextPrompt, "overall_soundscape");
-      const music = readPromptField(nextPrompt, "non_diegetic_music");
-      const parsedSubjects = readPromptSubjects(nextPrompt);
-      const editableSummary = summary
-        .replace(
-          /^\[reference generation\]\s*The target video is generated based on the provided references\.?\s*/i,
-          "",
-        )
-        .trim();
-      if (parsedSubjects.length) {
-        const options = referenceMentionOptions();
-        setPromptSubjects((current) => {
-          const existing = current[taskShot.id] ?? [];
-          const subjects = parsedSubjects.map((parsedSubject, index) => {
-            const previous = existing[index];
-            const referencedKeys = parsedSubject.tokens
-              .map((token) =>
-                options.find(
-                  (option) =>
-                    option.token.toLowerCase() === token.toLowerCase(),
-                ),
-              )
-              .filter((option): option is ReferenceMentionOption =>
-                Boolean(option),
-              )
-              .filter(
-                (option, optionIndex, allOptions) =>
-                  allOptions.findIndex((candidate) => {
-                    const candidateAsset = referenceAssets[candidate.assetKey];
-                    const optionAsset = referenceAssets[option.assetKey];
-                    if (candidateAsset && optionAsset) {
-                      const candidateIdentity = candidateAsset.comfyName
-                        ? `${candidateAsset.comfySubfolder ?? ""}/${candidateAsset.comfyName}`
-                        : candidateAsset.name;
-                      const optionIdentity = optionAsset.comfyName
-                        ? `${optionAsset.comfySubfolder ?? ""}/${optionAsset.comfyName}`
-                        : optionAsset.name;
-                      return candidateIdentity === optionIdentity;
-                    }
-                    return candidate.assetKey === option.assetKey;
-                  }) === optionIndex,
-              )
-              .map((option) => option.assetKey);
-            return {
-              ...(previous ?? { assetKeys: referencedKeys }),
-              name: parsedSubject.name,
-              assetKeys: referencedKeys.length
-                ? referencedKeys
-                : (previous?.assetKeys ?? []),
-            };
-          });
-          return { ...current, [taskShot.id]: subjects };
-        });
-      }
-      setRef2vaFields((current) => ({
-        ...current,
-        [taskShot.id]: {
-          ...ref2vaDefaults,
-          ...(current[taskShot.id] ?? {}),
-          ...(promptHasField(nextPrompt, "summary")
-            ? { summary: editableSummary }
-            : {}),
-          ...(promptHasField(nextPrompt, "retention_analysis")
-            ? { retentionAnalysis }
-            : {}),
-          ...(promptHasField(nextPrompt, "overall_soundscape")
-            ? { soundscape }
-            : {}),
-          ...(promptHasField(nextPrompt, "non_diegetic_music")
-            ? { music }
-            : {}),
-        },
-      }));
-      syncedFields = true;
-    }
+    setOptimizedPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
     setPromptViewerOpen(false);
-    setPromptNotice({
-      type: "success",
-      text: syncedFields
-        ? "完整提示词已保存，并同步到 H3 提示词模块"
-        : "完整提示词已保存（未检测到可回写的结构化片段）",
-    });
-  }
-  function shotElapsed(shotId: string) {
+    setPromptNotice({ type: "success", text: "优化提示词已保存" });
+  }  function shotElapsed(shotId: string) {
     const task = shotTasks[shotId];
     return task ? elapsedNow - task.startedAt : generationDurations[shotId];
   }
@@ -4295,29 +3479,13 @@ export default function Home() {
         ]),
     );
     setShotSettings(settings);
-    setShotPrompts({});
-    const segments = Object.fromEntries(
-      records
-        .filter((record) => record.prompt?.detailed_description?.length)
-        .map((record) => [record.id, record.prompt!.detailed_description!]),
+    setShotPrompts(
+      Object.fromEntries(
+        records
+          .filter((record) => record.prompt)
+          .map((record) => [record.id, normalizePrompt(record.prompt)]),
+      ),
     );
-    setPromptSegments(segments);
-    const fields = Object.fromEntries(
-      records
-        .filter((record) => record.prompt)
-        .map((record) => [
-          record.id,
-          {
-            ...ref2vaDefaults,
-            summary: record.prompt?.summary ?? "",
-            retentionAnalysis: record.prompt?.retention_analysis ?? "",
-            soundscape:
-              record.prompt?.overall_soundscape ?? ref2vaDefaults.soundscape,
-            music: record.prompt?.non_diegetic_music ?? ref2vaDefaults.music,
-          },
-        ]),
-    );
-    setRef2vaFields(fields);
     const subjects = Object.fromEntries(
       records
         .filter((record) => record.subjects?.length)
@@ -4372,15 +3540,47 @@ export default function Home() {
     }
     setGenerationStatus(`已切换项目：${handle.name}`);
   }
-  async function removeProjectCharacter(name: string) {
-    if (
-      !projectDirectory ||
-      !window.confirm(
-        `确定删除角色“${name}”吗？\n\n这会删除该角色的身份参考图、声音文件和角色配置。`,
-      )
-    )
-      return;
+  function removeCharacterReferences(name: string) {
+    setPromptSubjects((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([shotId, subjects]) => [
+          shotId,
+          subjects
+            .filter((subject) => subject.name.trim() !== name)
+            .map((subject) => ({
+              ...subject,
+              children: (subject.children ?? []).filter(
+                (child) => child.name.trim() !== name,
+              ),
+            })),
+        ]),
+      ),
+    );
+    setReferenceAssets((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(
+          ([, asset]) => !asset.sourcePath?.startsWith(`资产/角色/${name}/`),
+        ),
+      ),
+    );
+  }
+  async function removeProjectCharacter(name: string, permanent: boolean) {
+    if (!projectDirectory) return;
     try {
+      if (!permanent) {
+        removeCharacterReferences(name);
+        setProjectCharacterNames((current) =>
+          current.filter((item) => item !== name),
+        );
+        setProjectCharacterFiles((current) => {
+          const next = { ...current };
+          delete next[name];
+          return next;
+        });
+        setCharacterDeleteCandidate(null);
+        setGenerationStatus(`已从当前项目移除角色“${name}”，源文件已保留`);
+        return;
+      }
       const writable = projectDirectory as WritableDirectoryHandle;
       const currentPermission = writable.queryPermission
         ? await writable.queryPermission({ mode: "readwrite" })
@@ -4399,6 +3599,7 @@ export default function Home() {
         return;
       }
       await characters.removeEntry(name, { recursive: true });
+      removeCharacterReferences(name);
       setProjectCharacterNames((current) =>
         current.filter((item) => item !== name),
       );
@@ -4408,31 +3609,96 @@ export default function Home() {
         return next;
       });
       setGenerationStatus(`已删除角色“${name}”`);
+      setCharacterDeleteCandidate(null);
     } catch (error) {
       const message =
         error instanceof Error && error.message
           ? `删除角色“${name}”失败：${error.message}`
           : `删除角色“${name}”失败，请检查项目目录权限`;
       setGenerationStatus(message);
-      window.alert(message);
     }
   }
-  async function removeProjectAsset(asset: ProjectTreeAsset) {
+  function requestProjectCharacterDeletion(name: string) {
+    setCharacterDeleteCandidate(name);
+  }
+  function assetFolderName(asset: ProjectTreeAsset) {
+    return asset.type === "scene"
+      ? "场景"
+      : asset.type === "clothing"
+        ? "服装"
+        : asset.type === "prop"
+          ? "道具"
+          : asset.type === "video"
+            ? "视频"
+            : asset.type === "audio"
+              ? "音频"
+              : "自定义";
+  }
+  function assetLabel(asset: ProjectTreeAsset) {
+    return asset.type === "scene"
+      ? "场景"
+      : asset.type === "clothing"
+        ? "服装"
+        : asset.type === "prop"
+          ? "道具"
+          : asset.type === "video"
+            ? "视频"
+            : asset.type === "audio"
+              ? "音频"
+              : "自定义资产";
+  }
+  function removeAssetReferences(asset: ProjectTreeAsset) {
+    const prefix = `资产/${assetFolderName(asset)}/${asset.name}/`;
+    setReferenceAssets((current) => {
+      const removedKeys = new Set(
+        Object.entries(current)
+          .filter(([, entry]) => entry.sourcePath?.startsWith(prefix))
+          .map(([key]) => key),
+      );
+      if (!removedKeys.size) return current;
+      return Object.fromEntries(
+        Object.entries(current).filter(([key]) => !removedKeys.has(key)),
+      );
+    });
+    setPromptSubjects((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([shotId, subjects]) => [
+          shotId,
+          subjects
+            .map((subject) => ({
+              ...subject,
+              assetKeys: subject.assetKeys.filter(
+                (key) => !referenceAssets[key]?.sourcePath?.startsWith(prefix),
+              ),
+              children: (subject.children ?? []).map((child) => ({
+                ...child,
+                assetKeys: child.assetKeys.filter(
+                  (key) => !referenceAssets[key]?.sourcePath?.startsWith(prefix),
+                ),
+              })),
+            }))
+            .filter(
+              (subject) =>
+                subject.assetKeys.length > 0 ||
+                (subject.children ?? []).some((child) => child.assetKeys.length > 0),
+            ),
+        ]),
+      ),
+    );
+  }
+  async function removeProjectAsset(asset: ProjectTreeAsset, permanent: boolean) {
     if (!projectDirectory) return;
-    const label =
-      asset.type === "scene"
-        ? "场景"
-        : asset.type === "clothing"
-          ? "服装"
-          : asset.type === "prop"
-            ? "道具"
-            : asset.type === "video"
-              ? "视频"
-              : asset.type === "audio"
-                ? "音频"
-                : "自定义资产";
-    if (!window.confirm(`确定删除${label}“${asset.name}”吗？`)) return;
+    const label = assetLabel(asset);
     try {
+      if (!permanent) {
+        removeAssetReferences(asset);
+        setProjectAssets((current) =>
+          current.filter((item) => !(item.type === asset.type && item.name === asset.name)),
+        );
+        setAssetDeleteCandidate(null);
+        setGenerationStatus(`已从当前项目移除${label}“${asset.name}”，源文件已保留`);
+        return;
+      }
       const writable = projectDirectory as WritableDirectoryHandle;
       const currentPermission = writable.queryPermission
         ? await writable.queryPermission({ mode: "readwrite" })
@@ -4445,38 +3711,31 @@ export default function Home() {
         window.alert(`没有${label}删除权限，请重新授权后再试`);
         return;
       }
-      const folderName =
-        asset.type === "scene"
-          ? "场景"
-          : asset.type === "clothing"
-            ? "服装"
-            : asset.type === "prop"
-              ? "道具"
-              : asset.type === "video"
-                ? "视频"
-                : asset.type === "audio"
-                  ? "音频"
-                  : "自定义";
+      const folderName = assetFolderName(asset);
       const folder = await getProjectAssetFolder(projectDirectory, folderName);
       if (!folder.removeEntry) {
         window.alert("当前浏览器不支持删除资产");
         return;
       }
       await folder.removeEntry(asset.name, { recursive: true });
+      removeAssetReferences(asset);
       setProjectAssets((current) =>
         current.filter(
           (item) => !(item.type === asset.type && item.name === asset.name),
         ),
       );
       setGenerationStatus(`已删除${label}“${asset.name}”`);
+      setAssetDeleteCandidate(null);
     } catch (error) {
       const message =
         error instanceof Error && error.message
           ? `删除${label}“${asset.name}”失败：${error.message}`
           : `删除${label}“${asset.name}”失败，请检查项目目录权限`;
       setGenerationStatus(message);
-      window.alert(message);
     }
+  }
+  function requestProjectAssetDeletion(asset: ProjectTreeAsset) {
+    setAssetDeleteCandidate(asset);
   }
   function openEngineSettings() {
     setComfyUrlDraft(comfyUrl);
@@ -4491,12 +3750,11 @@ export default function Home() {
       const normalized = parsed.toString().replace(/\/+$/, "");
       setComfyUrl(normalized);
       window.localStorage.setItem("comfyui-url", normalized);
+      window.localStorage.setItem("llm-executable-path", llmExecutablePath.trim());
       setEngineSettingsOpen(false);
       setGenerationStatus(`ComfyUI 地址已更新：${normalized}`);
     } catch {
-      setGenerationStatus(
-        "请输入有效的 ComfyUI 地址，例如 http://127.0.0.1:8188",
-      );
+      setGenerationStatus("请输入有效的 ComfyUI 地址");
     }
   }
   function renderEngineSettingsDialog() {
@@ -4507,21 +3765,21 @@ export default function Home() {
         onMouseDown={() => setEngineSettingsOpen(false)}
       >
         <div
-          className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-2xl"
+          className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-border bg-card p-5 shadow-2xl"
           onMouseDown={(event) => event.stopPropagation()}
         >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold">ComfyUI 连接设置</h2>
+              <h2 className="text-sm font-semibold">导演台设置</h2>
               <p className="mt-1 text-[10px] text-muted-foreground">
-                生成、状态查询和参考素材上传都会使用这个地址。
+                配置 ComfyUI 连接和提示词优化服务。
               </p>
             </div>
             <button
               type="button"
               onClick={() => setEngineSettingsOpen(false)}
               className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-              aria-label="关闭 ComfyUI 连接设置"
+              aria-label="关闭导演台设置"
             >
               <X className="size-4" />
             </button>
@@ -4547,6 +3805,16 @@ export default function Home() {
           <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
             示例：http://127.0.0.1:8188 或局域网地址 http://192.168.1.20:8188。
           </p>
+          <div className="mt-5 border-t border-border pt-4">
+            <span className="field-label">本地 Agent CLI</span>
+            <p className="mt-1 text-[9px] leading-4 text-muted-foreground">
+              填写用于优化 H3 提示词的本地命令行 Agent，系统会根据可执行文件名自动识别。
+            </p>
+            <div className="mt-3 space-y-3">
+              <label className="block"><span className="field-label">Agent 可执行程序路径</span><input value={llmExecutablePath} onChange={(event) => setLlmExecutablePath(event.target.value)} placeholder="留空使用 PATH 中的 codex" className="mt-1 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60" /></label>
+              <p className="text-[9px] leading-4 text-muted-foreground">支持 Codex、Claude Code 和 Gemini CLI。请填写具体可执行文件，而不是其所在文件夹；留空时默认使用系统 PATH 中的 codex。</p>
+            </div>
+          </div>
           <div className="mt-5 flex justify-end gap-2">
             <Button
               type="button"
@@ -5399,13 +4667,22 @@ export default function Home() {
       });
     const manifestMode =
       (overrides.generation as { mode?: string } | undefined)?.mode ?? "T2VA";
+    const referencedSubjects = subjects.filter((subject) =>
+      Array.isArray(subject.references) && subject.references.length > 0,
+    );
+    const manifestOverrides =
+      manifestMode === "R2VA" && "prompt" in overrides
+        ? { ...overrides, prompt: toRef2vaPromptManifest(overrides.prompt) }
+        : overrides;
     await writable.write(
       JSON.stringify(
         {
           id: shot.id,
           title: shot.title,
-          ...(manifestMode === "R2VA" ? { references: { subjects } } : {}),
-          ...overrides,
+          ...(manifestMode === "R2VA" && referencedSubjects.length
+            ? { references: { subjects: referencedSubjects } }
+            : {}),
+          ...manifestOverrides,
         },
         null,
         2,
@@ -5889,6 +5166,20 @@ export default function Home() {
     return (
       <label
         key={key}
+        onPointerDown={(event) => {
+          if (!asset) {
+            event.preventDefault();
+            setReferencePickerTarget({ kind, index });
+            setAssetSubjectPickerOpen(true);
+          }
+        }}
+        onClick={(event) => {
+          if (!asset) {
+            event.preventDefault();
+            setReferencePickerTarget({ kind, index });
+            setAssetSubjectPickerOpen(true);
+          }
+        }}
         draggable={Boolean(asset)}
         onDragStart={(event) => {
           if (!asset) return;
@@ -6024,7 +5315,27 @@ export default function Home() {
       };
     });
     const counters: Record<ReferenceKind, number> = { image: 0, video: 0, audio: 0 };
-    return options
+    const libraryOptions: ReferenceMentionOption[] = [
+      ...projectCharacterNames.map((name) => ({
+        kind: "image" as const,
+        index: -1,
+        token: "",
+        name,
+        url: projectCharacterThumbnails[name] ?? "",
+        ready: true,
+        assetKey: `project-character:${name}`,
+      })),
+      ...projectAssets.map((asset) => ({
+        kind: asset.type === "audio" ? ("audio" as const) : asset.type === "video" ? ("video" as const) : ("image" as const),
+        index: -1,
+        token: "",
+        name: asset.name,
+        url: asset.thumbnail ?? "",
+        ready: true,
+        assetKey: `project-asset:${asset.type}:${asset.name}`,
+      })),
+    ];
+    const uploadedOptions = [...options
       .filter((option): option is ReferenceMentionOption => option !== null)
       .sort(
         (left, right) =>
@@ -6035,7 +5346,28 @@ export default function Home() {
         const index = counters[option.kind]++;
         const label = kindLabels[option.kind];
         return { ...option, index, token: `<${label} ${index + 1}>` };
-      });
+      })];
+    const candidates = libraryOptions.length ? libraryOptions : uploadedOptions;
+    const seenNames = new Set<string>();
+    const labelCounters: Record<ReferenceKind, number> = {
+      image: 0,
+      video: 0,
+      audio: 0,
+    };
+    const labels: Record<ReferenceKind, string> = {
+      image: "Picture",
+      video: "Video",
+      audio: "Audio",
+    };
+    return candidates.filter((option) => {
+      const name = option.name.trim().toLowerCase();
+      if (seenNames.has(name)) return false;
+      seenNames.add(name);
+      return true;
+    }).map((option) => ({
+      ...option,
+      token: `<${labels[option.kind]} ${++labelCounters[option.kind]}>`,
+    }));
   }
 
   function updatePromptMention(value: string, caret: number | null) {
@@ -6055,7 +5387,11 @@ export default function Home() {
       setPromptMention(null);
       return;
     }
-    setPromptMention({ start: atIndex, end: caret, query });
+    setPromptMention((current) =>
+      current && current.start === atIndex && current.query === query
+        ? { ...current, end: caret }
+        : { start: atIndex, end: caret, query, selected: 0 },
+    );
     const textarea = promptRef.current;
     if (!textarea) return;
     const style = window.getComputedStyle(textarea);
@@ -6082,22 +5418,32 @@ export default function Home() {
     document.body.appendChild(mirror);
     const markerRect = marker.getBoundingClientRect();
     const popupWidth = 256;
-    const popupHeight = 224;
-    const rightSideLeft = markerRect.right + 6;
+    const popupHeight = Math.min(192, window.innerHeight - 16);
     const left =
-      rightSideLeft + popupWidth <= window.innerWidth - 8
-        ? rightSideLeft
-        : Math.max(8, markerRect.left - popupWidth - 6);
+      markerRect.left + popupWidth <= window.innerWidth - 8
+        ? markerRect.left
+        : Math.max(8, markerRect.right - popupWidth);
     const belowTop = markerRect.bottom + 4;
-    const top = belowTop + popupHeight <= window.innerHeight - 8
-      ? belowTop
-      : Math.max(8, markerRect.top - popupHeight - 4);
+    const top = Math.max(
+      8,
+      Math.min(belowTop, window.innerHeight - popupHeight - 8),
+    );
     setMentionPosition({ left, top });
     mirror.remove();
   }
 
   function insertReferenceMention(option: ReferenceMentionOption) {
     if (!promptMention || !taskShot) return;
+    if (option.assetKey.startsWith("project-character:")) {
+      const name = option.assetKey.slice("project-character:".length);
+      void bindCharacterAsset(name);
+    } else if (option.assetKey.startsWith("project-asset:")) {
+      const [, type, name] = option.assetKey.split(":");
+      const asset = projectAssets.find(
+        (item) => item.type === type && item.name === name,
+      );
+      if (asset) void bindProjectAsset(asset);
+    }
     const token = `${option.token} `;
     const nextPrompt = `${prompt.slice(0, promptMention.start)}${token}${prompt.slice(promptMention.end)}`;
     const nextCaret = promptMention.start + token.length;
@@ -6110,6 +5456,43 @@ export default function Home() {
       textarea.focus();
       textarea.setSelectionRange(nextCaret, nextCaret);
     });
+  }
+
+  async function optimizeH3Prompt() {
+    if (!taskShot || !prompt.trim() || promptOptimizing) return;
+    if (!llmExecutablePath.trim()) {
+      const message = "请先在导演台设置中配置本地 Agent 的可执行程序路径";
+      setGenerationStatus(message);
+      window.alert(message);
+      setEngineSettingsOpen(true);
+      return;
+    }
+    setPromptOptimizing(true);
+    setGenerationStatus("正在使用本地 Agent CLI 优化提示词…");
+    try {
+      const response = await fetch("/api/optimize-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          mode: activeMode,
+          duration: Number.parseFloat(duration) || 6,
+          executablePath: llmExecutablePath.trim() || undefined,
+        }),
+      });
+      const result = (await response.json().catch(() => ({}))) as { prompt?: string; error?: string };
+      if (!response.ok || typeof result.prompt !== "string" || !result.prompt.trim())
+        throw new Error(result.error || "提示词优化失败");
+      setOptimizedPrompts((current) => ({
+        ...current,
+        [taskShot.id]: result.prompt!,
+      }));
+      setGenerationStatus("提示词优化完成");
+    } catch (error) {
+      setGenerationStatus(error instanceof Error ? error.message : "提示词优化失败");
+    } finally {
+      setPromptOptimizing(false);
+    }
   }
 
   async function captureFrameForNextShot() {
@@ -6530,6 +5913,7 @@ export default function Home() {
     if (activeSubmitting) return;
     const firstFrame = keyframes[`${shotId}-首帧`];
     const firstFrameName = firstFrame?.comfyName;
+    const segments = getPromptSegments(shotId);
     const submittedSeed =
       seedMode === "random"
         ? String(
@@ -6554,11 +5938,13 @@ export default function Home() {
     const references =
       activeMode === "R2VA"
         ? {
-            images: Array.from({ length: profile.images }, (_, index) =>
+            images: [
+              ...Array.from({ length: profile.images }, (_, index) =>
               referenceComfyFile(
                 referenceAssets[referenceKey(shotId, "image", index)],
               ),
-            ).filter((name): name is string => Boolean(name)),
+              ).filter((name): name is string => Boolean(name)),
+            ].slice(0, profile.images),
             videos: Array.from({ length: profile.videos }, (_, index) =>
               referenceComfyFile(
                 referenceAssets[referenceKey(shotId, "video", index)],
@@ -6624,7 +6010,11 @@ export default function Home() {
         return;
       }
     }
-    const generationPrompt = generateH3Prompt(activeMode) ?? prompt;
+    const generationPrompt =
+      optimizedPrompts[shotId] ??
+      (shotId === taskShot?.id && prompt.trim()
+        ? prompt.trim()
+        : (shotPrompts[shotId] ?? prompt));
     setVideoUrl(null);
     setSubmittingShots((current) => ({ ...current, [shotId]: true }));
     void fetch("/api/generate", {
@@ -6994,8 +6384,8 @@ export default function Home() {
                 activeProjectName={projectDirectoryName}
                 onSelectProject={selectProjectByName}
                 onRemoveProject={requestProjectDeletion}
-                onDeleteCharacter={removeProjectCharacter}
-                onDeleteAsset={removeProjectAsset}
+                onDeleteCharacter={requestProjectCharacterDeletion}
+                onDeleteAsset={requestProjectAssetDeletion}
                 characterFiles={projectCharacterFiles}
                 assets={projectAssets}
                 outputFiles={projectOutputFiles}
@@ -7187,23 +6577,57 @@ export default function Home() {
       {assetSubjectPickerOpen && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onMouseDown={() => setAssetSubjectPickerOpen(false)}
+          onMouseDown={() => {
+            setAssetSubjectPickerOpen(false);
+            setReferencePickerTarget(null);
+          }}
         >
           <div
             className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <h2 className="text-sm font-semibold">从资产库绑定主体</h2>
+            <h2 className="text-sm font-semibold">
+              {referencePickerTarget ? "添加当前镜头参考素材" : "从资产库绑定主体"}
+            </h2>
             <p className="mt-1 text-[10px] text-muted-foreground">
-              选择角色、服装、道具或场景，绑定到当前片段主体。
+              {referencePickerTarget
+                ? "可以选择已有项目资产，也可以直接上传新素材。"
+                : "选择角色、服装、道具或场景，绑定到当前片段主体。"}
             </p>
+            {referencePickerTarget && (
+              <label className="mt-3 flex cursor-pointer items-center justify-center rounded-md border border-dashed border-primary/40 px-3 py-2 text-xs text-primary hover:bg-primary/10">
+                <Plus className="mr-1.5 size-3.5" />
+                直接上传新素材
+                <input
+                  type="file"
+                  accept={
+                    referencePickerTarget.kind === "image"
+                      ? "image/*"
+                      : referencePickerTarget.kind === "video"
+                        ? "video/*"
+                        : "audio/*"
+                  }
+                  className="hidden"
+                  onChange={(event) => {
+                    const target = referencePickerTarget;
+                    if (!target) return;
+                    setAssetSubjectPickerOpen(false);
+                    setReferencePickerTarget(null);
+                    void uploadReference(event, target.kind, target.index);
+                  }}
+                />
+              </label>
+            )}
             <div className="mt-4 space-y-1.5">
               {projectCharacterNames.length ? (
                 projectCharacterNames.map((name) => (
                   <button
                     key={name}
                     type="button"
-                    onClick={() => void bindCharacterAsset(name)}
+                    onClick={() => {
+                      setReferencePickerTarget(null);
+                      void bindCharacterAsset(name);
+                    }}
                     className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
                   >
                     <span className="grid size-8 place-items-center overflow-hidden rounded bg-muted">
@@ -7232,7 +6656,10 @@ export default function Home() {
                 <button
                   key={`${asset.type}-${asset.name}`}
                   type="button"
-                  onClick={() => void bindProjectAsset(asset)}
+                  onClick={() => {
+                    setReferencePickerTarget(null);
+                    void bindProjectAsset(asset);
+                  }}
                   className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
                 >
                   <span className="grid size-8 place-items-center overflow-hidden rounded bg-muted">
@@ -7257,21 +6684,14 @@ export default function Home() {
               <Button
                 type="button"
                 variant="ghost"
-                onClick={() => setAssetSubjectPickerOpen(false)}
+                onClick={() => {
+                  setAssetSubjectPickerOpen(false);
+                  setReferencePickerTarget(null);
+                }}
               >
                 取消
               </Button>
             </div>
-          </div>
-        </div>
-      )}
-      {objectDialogOpen && (
-        <div className="fixed inset-0 z-[100] grid place-items-center bg-black/60 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setObjectDialogOpen(false); }}>
-          <div className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between"><span className="text-sm font-semibold">添加场景物体</span><button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setObjectDialogOpen(false)} aria-label="关闭">×</button></div>
-            <label className="field-label">物体名称</label>
-            <input autoFocus value={objectDialogName} onChange={(event) => setObjectDialogName(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setObjectDialogOpen(false); if (event.key === "Enter" && objectDialogName.trim()) { const segment = activeSegments[activeSegmentIndex]; if (segment) updatePromptSegment(activeSegmentIndex, { layoutEntities: [...(segment.layoutEntities ?? []), { id: `object-${Date.now()}`, type: "object", name: objectDialogName.trim(), x: 0.5, y: 0.5 }] }); setObjectDialogOpen(false); } }} placeholder="例如：桌子、门、汽车" className="mt-1 h-9 w-full rounded border border-border bg-muted/25 px-2 text-sm outline-none focus:border-primary" />
-            <div className="mt-4 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setObjectDialogOpen(false)}>取消</Button><Button type="button" disabled={!objectDialogName.trim()} onClick={() => { const segment = activeSegments[activeSegmentIndex]; if (segment) updatePromptSegment(activeSegmentIndex, { layoutEntities: [...(segment.layoutEntities ?? []), { id: `object-${Date.now()}`, type: "object", name: objectDialogName.trim(), x: 0.5, y: 0.5 }] }); setObjectDialogOpen(false); }}>添加物体</Button></div>
           </div>
         </div>
       )}
@@ -7353,8 +6773,8 @@ export default function Home() {
               activeProjectName={projectDirectoryName}
               onSelectProject={selectProjectByName}
               onRemoveProject={requestProjectDeletion}
-              onDeleteCharacter={removeProjectCharacter}
-              onDeleteAsset={removeProjectAsset}
+              onDeleteCharacter={requestProjectCharacterDeletion}
+              onDeleteAsset={requestProjectAssetDeletion}
               characterFiles={projectCharacterFiles}
               assets={projectAssets}
               outputFiles={projectOutputFiles}
@@ -7491,610 +6911,126 @@ export default function Home() {
             </div>
             <div className="flex items-center justify-between px-4 pt-3">
               <span className="field-label">H3 提示词模块</span>
-              <span className="text-[10px] text-zinc-500">{activeMode}</span>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 px-2 text-[10px]"
+                  disabled={!prompt.trim() || promptOptimizing}
+                  onClick={() => void optimizeH3Prompt()}
+                >
+                  {promptOptimizing ? "优化中…" : "优化提示词"}
+                </Button>
+                <span className="text-[10px] text-zinc-500">{activeMode}</span>
+              </div>
             </div>
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 pt-2">
-              {activeMode === "R2VA" && (
-                <div className="rounded-lg border border-border bg-muted/20 p-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="field-label">
-                      参考主体（subject_definitions）
-                    </span>
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        assetSubjectParentIndexRef.current = null;
-                        setAssetSubjectParentIndex(null);
-                        setAssetSubjectPickerOpen(true);
-                      }}
-                      variant="outline"
-                      size="sm"
-                      className="h-7 gap-1 px-2 text-[10px]"
-                      aria-label="添加主体"
-                      title="从资产库添加主体"
-                    >
-                      <Plus className="size-3" />
-                      添加主体
-                    </Button>
-                  </div>
-                  {projectSubjectLibrary().filter((subject) =>
-                    (promptSubjects[taskShot.id] ?? []).some(
-                      (item) => item.name.trim().toLowerCase() === subject.name.trim().toLowerCase(),
-                    ),
-                  ).length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {projectSubjectLibrary().filter((subject) =>
-                        (promptSubjects[taskShot.id] ?? []).some(
-                          (item) => item.name.trim().toLowerCase() === subject.name.trim().toLowerCase(),
-                        ),
-                      ).map((subject) => {
-                        const used = (promptSubjects[taskShot.id] ?? []).some(
-                          (item) =>
-                            item.name.trim().toLowerCase() ===
-                            subject.name.trim().toLowerCase(),
-                        );
-                        return (
-                          <button
-                            key={subject?.name ?? ""}
-                            type="button"
-                            disabled={used}
-                            onClick={() => useProjectSubject(subject)}
-                            className={`rounded border px-2 py-1 text-[9px] ${used ? "border-primary/30 bg-primary/10 text-primary/60" : "border-border bg-muted/20 hover:border-primary/50"}`}
-                          >
-                            {used ? "已使用 · " : "使用 · "}
-                            {subject?.name ?? ""}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div className="mt-2 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-1.5">
-                    {(promptSubjects[taskShot.id] ?? []).map(
-                      (subject, subjectIndex) => (
-                        <div
-                          key={`subject-${subjectIndex}`}
-                          className="flex min-w-0 flex-col gap-1.5 rounded-md border border-primary/35 bg-primary/5 p-1.5"
-                        >
-                          <div className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded bg-muted">
-                              {projectCharacterThumbnails[subject?.name ?? ""] ? <img src={projectCharacterThumbnails[subject.name]} alt="" className="size-full object-cover" /> : <UserRound className="size-3 text-muted-foreground" />}
-                            </span>
-                            <input
-                              value={subject?.name ?? ""}
-                              onChange={(event) =>
-                                subject.assetKeys[0]
-                                  ? setReferenceSubjectName(
-                                      subject.assetKeys[0],
-                                      event.target.value,
-                                    )
-                                  : updatePromptSubject(subjectIndex, {
-                                      name: event.target.value,
-                                    })
-                              }
-                              placeholder="主体名称，如：男主"
-                              aria-label={`主体 ${subjectIndex + 1} 名称`}
-                              className="h-7 min-w-0 flex-1 basis-32 rounded border border-border/70 bg-black/10 px-1.5 text-[10px] outline-none placeholder:text-muted-foreground"
-                            />
-                            <div className="order-3 flex min-w-0 basis-full flex-wrap gap-1.5">
-                              {subject.assetKeys.map((assetKey) => {
-                                const option = referenceMentionOptions().find(
-                                  (item) => item.assetKey === assetKey,
-                                );
-                                return option ? (
-                                  <div key={assetKey} className="w-36 shrink-0">
-                                    <div
-                                      className="flex w-full items-center gap-1 rounded border border-primary/30 bg-primary/10 p-1 text-left"
-                                    >
-                                      <span className="grid size-7 shrink-0 place-items-center overflow-hidden rounded bg-black/20">
-                                        {option.kind === "image" ? (
-                                          <img
-                                            src={option.url}
-                                            alt=""
-                                            className="size-full object-contain"
-                                          />
-                                        ) : option.kind === "video" ? (
-                                          <video
-                                            src={option.url}
-                                            muted
-                                            className="size-full object-contain"
-                                          />
-                                        ) : (
-                                          <FileAudio className="size-3 text-muted-foreground" />
-                                        )}
-                                      </span>
-                                      <span className="min-w-0 truncate text-[9px]">
-                                        {option.token}
-                                        <br />
-                                        <span className="text-muted-foreground">
-                                          {option.name}
-                                        </span>
-                                      </span>
-                                    </div>
-                                    <select
-                                      value={subject.assetRoles?.[assetKey] ?? "composite"}
-                                      onChange={(event) => updateSubjectAssetRole(subjectIndex, assetKey, event.target.value)}
-                                      className="reference-role-select mt-1 h-6 w-full rounded border border-border/70 bg-black/10 px-1 text-[9px] text-foreground"
-                                      aria-label={`${option.token} 参考类型`}
-                                    >
-                                      <option value="character">角色参考</option>
-                                      <option value="clothing">服装参考</option>
-                                      <option value="pose">姿态参考</option>
-                                      <option value="motion">动作/运动参考</option>
-                                      <option value="voice">声音/表演参考</option>
-                                      <option value="object">道具参考</option>
-                                      <option value="environment">场景/环境参考</option>
-                                      <option value="style">视觉风格参考</option>
-                                      <option value="custom">自定义参考</option>
-                                    </select>
-                                  </div>
-                                ) : null;
-                              })}
-                              {subject.children?.map((child, childIndex) =>
-                                child.assetKeys.map((assetKey) => {
-                                  const option = referenceMentionOptions().find(
-                                    (item) => item.assetKey === assetKey,
-                                  );
-                                  return option ? (
-                                    <div
-                                      key={`child-${childIndex}-${assetKey}`}
-                                      className="flex w-36 shrink-0 flex-col gap-1 rounded border border-primary/20 bg-primary/5 p-1"
-                                      title={`${child.name}（子主体）`}
-                                    >
-                                      <div className="flex items-center gap-1">
-                                        <span className="grid size-7 shrink-0 place-items-center overflow-hidden rounded bg-black/20">
-                                          {option.kind === "image" ? <img src={option.url} alt="" className="size-full object-contain" /> : option.kind === "video" ? <video src={option.url} muted className="size-full object-contain" /> : <FileAudio className="size-3" />}
-                                        </span>
-                                        <span className="min-w-0 truncate text-[9px]">{option.token}<br /><span className="text-muted-foreground">{child.name}</span></span>
-                                      </div>
-                                      <select
-                                        value={child.assetRoles?.[assetKey] ?? "composite"}
-                                        onChange={(event) => updateChildAssetRole(subjectIndex, childIndex, assetKey, event.target.value)}
-                                        className="reference-role-select h-6 w-full rounded border border-border/70 bg-black/10 px-1 text-[9px] text-foreground"
-                                        aria-label={`${option.token} 参考类型`}
-                                      >
-                                        <option value="identity">面部参考</option>
-                                        <option value="character">角色参考</option>
-                                        <option value="composite">面部与全身</option>
-                                        <option value="clothing">服装参考</option>
-                                        <option value="pose">姿态参考</option>
-                                        <option value="motion">动作/运动参考</option>
-                                        <option value="voice">声音/表演参考</option>
-                                        <option value="object">道具参考</option>
-                                        <option value="environment">场景/环境参考</option>
-                                        <option value="style">视觉风格参考</option>
-                                        <option value="custom">自定义参考</option>
-                                      </select>
-                                    </div>
-                                  ) : null;
-                                }),
-                              )}
-                            </div>
-                            <div className="order-2 flex shrink-0 items-center gap-0.5">
-                              <Button
-                                type="button"
-                                onClick={() => {
-                                  assetSubjectParentIndexRef.current = subjectIndex;
-                                  setAssetSubjectParentIndex(subjectIndex);
-                                  setAssetSubjectPickerOpen(true);
-                                }}
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 gap-1 px-2 text-[10px] text-zinc-500 hover:bg-primary/10 hover:text-primary"
-                                aria-label="添加关联参考"
-                                title="添加关联参考"
-                              >
-                                <Plus className="size-3" />
-                                添加关联参考
-                              </Button>
-                              <Button
-                                type="button"
-                                onClick={() =>
-                                  removePromptSubject(subjectIndex)
-                                }
-                                variant="ghost"
-                                size="icon-sm"
-                                className="size-7 text-zinc-500 hover:bg-red-500/10 hover:text-red-300"
-                                aria-label={`删除主体 ${subjectIndex + 1}`}
-                                title="删除主体"
-                              >
-                                <X className="size-3" />
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
-                      ),
-                    )}
-                  </div>
-                </div>
-              )}
-              {activeMode === "R2VA" && (
-                <>
-                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-border bg-muted/20 p-2">
-                  <div className="basis-full">
-                    <span className="field-label">任务摘要（summary）</span>
-                  </div>
-                  <div className="flex basis-full flex-wrap items-center gap-x-3 gap-y-1">
-                    <span className="field-label">视频</span>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
-                      {(["reference generation", "video editing", "video continuation"] as const).map((taskType) => (
-                        <label key={taskType} className="flex items-center gap-1.5">
-                          <input type="radio" name={`r2va-task-${taskShot.id}`} checked={(ref2vaFields[taskShot.id]?.taskType ?? ref2vaDefaults.taskType) === taskType} onChange={() => setRef2vaFields((current) => ({ ...current, [taskShot.id]: { ...ref2vaDefaults, ...(current[taskShot.id] ?? {}), taskType } }))} />
-                          {taskType === "reference generation" ? "参考生成" : taskType === "video editing" ? "视频编辑" : "视频续写"}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex basis-full flex-wrap items-center gap-x-3 gap-y-1">
-                    <span className="field-label">音频</span>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
-                      {(["", "audio reuse", "audio reference"] as const).map((audioType) => {
-                        const selected = audioType === ""
-                          ? (ref2vaFields[taskShot.id]?.audioProcessing ?? []).length === 0
-                          : (ref2vaFields[taskShot.id]?.audioProcessing ?? [])[0] === audioType;
-                        return <label key={audioType || "none"} className="flex items-center gap-1.5"><input type="radio" name={`r2va-audio-${taskShot.id}`} checked={selected} onChange={() => setRef2vaFields((current) => { const fields = { ...ref2vaDefaults, ...(current[taskShot.id] ?? {}) }; return { ...current, [taskShot.id]: { ...fields, audioProcessing: audioType ? [audioType] : [] } }; })} />{audioType === "" ? "不处理" : audioType === "audio reuse" ? "复用原音频" : "音频仅作参考"}</label>;
-                      })}
-                    </div>
-                  </div>
-                </div>
-                <div className="rounded-lg border border-border bg-muted/20 p-2">
-                  <label>
-                    <span className="field-label">保留分析（retention_analysis）</span>
-                    <div className="mt-2 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-1.5">
-                      {(promptSubjects[taskShot.id] ?? []).map((subject, subjectIndex) => (
-                        <div key={subjectIndex} className="flex min-w-0 flex-wrap items-center gap-1.5 rounded border border-border/60 bg-black/10 p-1.5">
-                          {(() => { const thumb = subject.assetKeys.map((key) => referenceMentionOptions().find((item) => item.assetKey === key)).find((item) => item?.kind === "image"); return <span className="grid size-7 shrink-0 place-items-center overflow-hidden rounded bg-muted">{thumb ? <img src={thumb.url} alt="" className="size-full object-cover" /> : <UserRound className="size-3 text-muted-foreground" />}</span>; })()}
-                          <span className="w-28 truncate text-[9px] text-zinc-300">&lt;Subject {subjectIndex + 1}&gt; {subject.name}</span>
-                          <div className="basis-full grid gap-1 border-t border-border/40 pt-1">
-                            {[...subject.assetKeys, ...(subject.children ?? []).flatMap((child) => child.assetKeys)].map((assetKey) => { const ref = referenceMentionOptions().find((item) => item.assetKey === assetKey); const config = subject.referenceRetentions?.[assetKey] ?? {}; const role = subject.assetRoles?.[assetKey] ?? "composite"; const scope = role === "identity" ? "身份、面部特征、正面外观" : role === "full_body" ? "体型比例、身体结构" : role === "clothing" ? "服装轮廓、颜色、材质" : role === "environment" ? "空间布局、构图关系、光影氛围" : "整体外观与关键特征"; return <div key={assetKey} className="flex flex-wrap items-center gap-1 text-[9px] text-muted-foreground"><span className="grid size-6 shrink-0 place-items-center overflow-hidden rounded bg-muted">{ref?.kind === "image" ? <img src={ref.url} alt="" className="size-full object-cover" /> : ref?.kind === "video" ? <video src={ref.url} muted className="size-full object-cover" /> : <FileAudio className="size-3" />}</span><span className="w-20 truncate">{ref?.token ?? assetKey}</span><span className="max-w-44 truncate text-[8px] text-zinc-500">{scope}</span><select value={config.visual ?? "fully_preserved"} onChange={(event) => setPromptSubjects((current) => ({ ...current, [taskShot.id]: (current[taskShot.id] ?? []).map((item, i) => i === subjectIndex ? { ...item, referenceRetentions: { ...(item.referenceRetentions ?? {}), [assetKey]: { ...((item.referenceRetentions ?? {})[assetKey] ?? {}), visual: event.target.value as PromptSubject["visualRetention"] } } } : item) }))} className="h-6 rounded border border-border/70 bg-black/10 px-1 text-[9px]" aria-label="参考视觉关系"><option value="fully_preserved">完整保留</option><option value="partially_preserved">部分保留</option><option value="attribute_transfer">属性迁移</option><option value="weak_reference">弱参考</option></select>{config.visual === "attribute_transfer" && <select value={config.targetSubjectId ?? ""} onChange={(event) => setPromptSubjects((current) => ({ ...current, [taskShot.id]: (current[taskShot.id] ?? []).map((item, i) => i === subjectIndex ? { ...item, referenceRetentions: { ...(item.referenceRetentions ?? {}), [assetKey]: { ...((item.referenceRetentions ?? {})[assetKey] ?? {}), targetSubjectId: event.target.value } } } : item) }))} className="h-6 rounded border border-border/70 bg-black/10 px-1 text-[9px]" aria-label="迁移目标"><option value="">迁移到...</option>{(promptSubjects[taskShot.id] ?? []).map((target, targetIndex) => <option key={targetIndex} value={String(targetIndex + 1)}>{`<Subject ${targetIndex + 1}> ${target.name || "未命名主体"}`}</option>)}</select>}</div>; })}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </label>
-                </div>
-                </>
-              )}
-              <div className="rounded-lg border border-border bg-muted/20 p-2">
-                <div className="flex items-center justify-between">
-                  <span className="field-label">
-                    {activeMode === "R2VA"
-                      ? "详细描述（detailed_description）"
-                      : "综合多模态描述（integrated_multimodal_description）"}
-                  </span>
-                </div>
-                <div className="mt-1.5 space-y-1.5">
-                  {activeSegments.map((segment, index) => (
-                    <div
-                      key={"row-" + segment.id}
-                      className="relative rounded-md border border-border/70 bg-muted/15 p-1.5"
-                    >
-                      <div className="flex min-w-0 items-end gap-1.5">
-                        <span className="field-label mb-2 w-10 shrink-0">
-                          画面 {index + 1}
-                        </span>
-                        <label className="shrink-0">
-                          <span className="field-label mb-1">开始</span>
-                          <input
-                            type="number"
-                            min="0"
-                            max={durationSeconds}
-                            step="0.1"
-                            value={segment.start ?? 0}
-                            onChange={(event) =>
-                              updatePromptSegment(index, {
-                                start: Number(event.target.value) || 0,
-                              })
-                            }
-                            className="h-8 w-14 rounded border border-border bg-muted/25 px-1.5 text-[10px] outline-none"
-                          />
-                        </label>
-                        <label className="shrink-0">
-                          <span className="field-label mb-1">结束</span>
-                          <input
-                            type="number"
-                            min="0"
-                            max={durationSeconds}
-                            step="0.1"
-                            value={segment.end ?? durationSeconds}
-                            onChange={(event) =>
-                              updatePromptSegment(index, {
-                                end: Number(event.target.value) || 0,
-                              })
-                            }
-                            className="h-8 w-14 rounded border border-border bg-muted/25 px-1.5 text-[10px] outline-none"
-                          />
-                        </label>
-                        <div className="relative min-w-0 flex-1">
-                          <div className="relative grid gap-1.5 md:grid-cols-[256px_minmax(0,1fr)_220px] md:before:pointer-events-none md:before:absolute md:before:left-0 md:before:top-0 md:before:h-full md:before:w-[420px] md:before:rounded-md md:before:border md:before:border-border/70 md:before:content-['']">
-                            <div className="rounded border border-border/60 bg-black/10 p-1.5 md:col-start-1 md:row-start-1 md:w-64">
-                              <div className="mb-1 flex items-center justify-between text-[9px] text-muted-foreground"><span>场面调度（点击设置位置）</span><span>{aspect}</span></div>
-                              <Blocking3D
-                                className="mb-2 w-full overflow-hidden rounded border border-border/70"
-                                style={{ aspectRatio: aspect.replace(" × ", " /").replace(":", " /") }}
-                                entities={(segment.layoutEntities ?? []).map((entity) => ({
-                                  id: entity.id,
-                                  name: entity.name,
-                                  type: entity.type,
-                                  position: [((entity.x - 0.5) * 8), entity.height ?? 0.25, ((0.5 - entity.y) * 8)],
-                                  rotation: entity.relationRole && Number.isFinite(Number(entity.relationRole)) ? Number(entity.relationRole) : 0,
-                                  pitch: entity.type === "camera" ? (segment.cameraDirection === "俯视" ? -0.55 : segment.cameraDirection === "仰视" ? 0.55 : 0) : 0,
-                                }))}
-                                onSelect={(id) => { const selectedIndex = (segment.layoutEntities ?? []).findIndex((entity) => entity.id === id); if (selectedIndex >= 0) setLayoutSelectedEntity(selectedIndex); }}
-                                focusId={(segment.layoutEntities ?? [])[layoutSelectedEntity]?.id ?? null}
-                                onChange={(next: BlockingEntity[]) => updatePromptSegment(index, { cameraTarget: next.some((entity) => entity.type === "camera" && Number.isFinite(entity.rotation)) ? "" : segment.cameraTarget, layoutEntities: next.map((entity) => ({
-                                  ...(segment.layoutEntities ?? []).find((item) => item.id === entity.id)!,
-                                  x: entity.position[0] / 8 + 0.5,
-                                  y: 0.5 - entity.position[2] / 8,
-                                  ...(entity.type === "camera" ? { height: entity.position[1] } : {}),
-                                  ...((entity.type === "camera" || entity.type === "subject") && Number.isFinite(entity.rotation) ? { relationRole: String(entity.rotation) } : {}),
-                                })) })}
-                              />
-                            <div className="mb-1 flex max-h-48 flex-col justify-center gap-1 overflow-y-auto md:absolute md:left-[264px] md:top-1/2 md:w-36 md:-translate-y-1/2">
-                              <div className="mb-1 flex w-full gap-1">
-                                <button type="button" className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded border border-primary/40 bg-primary/10 px-1 text-[8px] text-primary" onClick={() => { setObjectDialogName(""); setObjectDialogOpen(true); }}><Plus className="size-2.5" />添加物体</button>
-                                <button type="button" className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded border border-red-400/40 bg-red-400/10 px-1 text-[8px] text-red-300 disabled:opacity-40" disabled={segment.layoutEntities?.[layoutSelectedEntity]?.type !== "object"} onClick={() => { const entities = [...(segment.layoutEntities ?? [])]; if (entities[layoutSelectedEntity]?.type !== "object") return; entities.splice(layoutSelectedEntity, 1); setLayoutSelectedEntity(0); updatePromptSegment(index, { layoutEntities: entities }); }}><TrashIcon className="size-2.5" />删除物体</button>
-                              </div>
-                              {(segment.layoutEntities ?? []).slice().sort((a, b) => {
-                                const order = { camera: 0, subject: 1, object: 2 };
-                                return order[a.type] - order[b.type];
-                              }).map((entity) => {
-                                const entityIndex = (segment.layoutEntities ?? []).findIndex((item) => item.id === entity.id);
-                                const compact = (segment.layoutEntities?.length ?? 0) > 5;
-                                return <button key={entity.id} type="button" onClick={() => setLayoutSelectedEntity(entityIndex)} className={`flex w-full items-center justify-center rounded px-2 ${compact ? "min-h-4 text-[8px]" : "min-h-6 text-[9px]"} ${layoutSelectedEntity === entityIndex ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/80"}`}>{entity.type === "camera" ? "摄像机" : entity.type === "subject" ? entity.name.replace(/^<Subject \d+>\s*/, "") : `◆ ${entity.name}`}</button>;
-                              })}
-                            </div>
-                            <div className="hidden">
-                              {(promptSubjects[taskShot.id] ?? []).map((subject, subjectIndex) => {
-                                const entityIndex = (segment.layoutEntities ?? []).findIndex((entity) => entity.id === `subject-${subjectIndex + 1}`);
-                                const facing = entityIndex >= 0 ? segment.layoutEntities?.[entityIndex]?.facing ?? "" : "";
-                                const standardFacing = ["", "面向镜头", "背对镜头", "左侧面", "右侧面"].includes(facing) ? facing : "自定义";
-                                return <label key={subjectIndex} className="flex flex-wrap items-center gap-1 text-[8px] text-muted-foreground"><span className="w-16 truncate">{subject.name || `主体 ${subjectIndex + 1}`}朝向</span><select value={standardFacing} onChange={(event) => { const entities = [...(segment.layoutEntities ?? [])]; const entity = { id: `subject-${subjectIndex + 1}`, type: "subject" as const, name: subject.name || `<Subject ${subjectIndex + 1}>`, x: 0.5, y: 0.5 }; const targetIndex = entityIndex >= 0 ? entityIndex : entities.push(entity) - 1; entities[targetIndex] = { ...entities[targetIndex], facing: event.target.value === "自定义" ? "自定义" : event.target.value }; updatePromptSegment(index, { layoutEntities: entities }); }} className="h-6 min-w-0 flex-1 rounded border border-zinc-400 bg-white px-1 text-[8px] text-black"><option value="">未指定</option><option value="面向镜头">面向镜头</option><option value="背对镜头">背对镜头</option><option value="左侧面">左侧面</option><option value="右侧面">右侧面</option><option value="自定义">自定义</option></select>{standardFacing === "自定义" && <input value={facing} onChange={(event) => { const entities = [...(segment.layoutEntities ?? [])]; const targetIndex = entityIndex >= 0 ? entityIndex : entities.findIndex((item) => item.id === `subject-${subjectIndex + 1}`); if (targetIndex < 0) return; entities[targetIndex] = { ...entities[targetIndex], facing: event.target.value }; updatePromptSegment(index, { layoutEntities: entities }); }} placeholder="如：背对取餐台" className="h-6 w-full rounded border border-zinc-400 bg-white px-1 text-[8px] text-black placeholder:text-zinc-500" />}</label>;
-                              })}
-                            </div>
-                            <div className="hidden">
-                              <button type="button" className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded border border-primary/40 bg-primary/10 px-1.5 text-[8px] text-primary hover:bg-primary/20" onClick={() => { setObjectDialogName(""); setObjectDialogOpen(true); }}><Plus className="size-2.5" />添加物体</button>
-                              <button type="button" aria-label="删除当前物体" title="删除当前物体" className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded border border-red-400/40 bg-red-400/10 px-1.5 text-[8px] text-red-300 hover:bg-red-400/20 disabled:opacity-40" disabled={segment.layoutEntities?.[layoutSelectedEntity]?.type !== "object"} onClick={() => { const entities = [...(segment.layoutEntities ?? [])]; if (entities[layoutSelectedEntity]?.type !== "object") return; entities.splice(layoutSelectedEntity, 1); setLayoutSelectedEntity(0); updatePromptSegment(index, { layoutEntities: entities }); }}><TrashIcon className="size-2.5" />删除物体</button>
-                            </div>
-                            <div className="rounded-md border border-border/70 bg-black/10 p-1.5 shadow-sm md:absolute md:left-[432px] md:top-1/2 md:w-[220px] md:-translate-y-1/2">
-                              <div className="mb-1 text-[9px] text-muted-foreground">摄像机调度</div>
-<div className="camera-settings-grid grid gap-1.5 sm:grid-cols-2">
-                                <label className="min-w-0"><span className="field-label mb-1">拍摄方向</span><select value={segment.cameraDirection ?? ""} onChange={(event) => updatePromptSegment(index, { cameraDirection: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="正面">正面</option><option value="侧面">侧面</option><option value="俯视">俯视</option><option value="仰视">仰视</option><option value="自定义">自定义</option></select>{segment.cameraDirection === "自定义" && <input value={segment.cameraDirectionCustom ?? ""} onChange={(event) => updatePromptSegment(index, { cameraDirectionCustom: event.target.value })} placeholder="输入拍摄方向" className="mt-1 h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black placeholder:text-zinc-500" />}</label>
-                                <label className="min-w-0"><span className="field-label mb-1">拍摄目标</span><select value={segment.cameraTarget ?? ""} onChange={(event) => {
-                                  const target = event.target.value;
-                                  const entities = [...(segment.layoutEntities ?? [])];
-                                  const cameraIndex = entities.findIndex((entity) => entity.type === "camera");
-                                  const camera = cameraIndex >= 0 ? entities[cameraIndex] : undefined;
-                                  if (camera && target) {
-                                    const targets = target === "全场"
-                                      ? entities.filter((entity) => entity.type === "subject")
-                                      : entities.filter((entity) => entity.id === `subject-${Number(target.replace(/\D/g, ""))}`);
-                                    if (targets.length) {
-                                      const targetX = targets.reduce((sum, entity) => sum + entity.x, 0) / targets.length;
-                                      const targetY = targets.reduce((sum, entity) => sum + entity.y, 0) / targets.length;
-                                      // Keep the camera's lens-facing axis aligned with the visible arrow.
-                                      const rotation = Math.atan2(targetX - camera.x, camera.y - targetY);
-                                      entities[cameraIndex] = { ...camera, relationRole: String(rotation) };
-                                    }
-                                  }
-                                  updatePromptSegment(index, { cameraTarget: target, layoutEntities: entities.length ? entities : segment.layoutEntities });
-                                }} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option>{(promptSubjects[taskShot.id] ?? []).map((subject, subjectIndex) => <option key={subjectIndex} value={`<Subject ${subjectIndex + 1}>`}>{subject.name || `主体 ${subjectIndex + 1}`}</option>)}<option value="自定义">自定义</option></select>{segment.cameraTarget === "自定义" && <input value={segment.cameraTargetCustom ?? ""} onChange={(event) => updatePromptSegment(index, { cameraTargetCustom: event.target.value })} placeholder="输入拍摄目标" className="mt-1 h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black" />}</label>
-                                <label className="min-w-0"><span className="field-label mb-1">景别</span><select value={segment.shotSize ?? ""} onChange={(event) => updatePromptSegment(index, { shotSize: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="远景">远景</option><option value="全景">全景</option><option value="中景">中景</option><option value="近景">近景</option><option value="特写">特写</option></select></label>
-                                <label className="min-w-0"><span className="field-label mb-1">镜头运动</span><select value={segment.cameraMove ?? ""} onChange={(event) => updatePromptSegment(index, { cameraMove: event.target.value })} className="h-7 w-full rounded border border-zinc-400 bg-white px-1.5 text-[9px] text-black"><option value="">请选择</option><option value="固定">固定</option><option value="推近">推近</option><option value="拉远">拉远</option><option value="横移">横移</option><option value="环绕">环绕</option><option value="跟拍">跟拍</option><option value="摇镜">摇镜</option></select></label>
-                              </div>
-                            </div>
-                            </div>
-                          </div>
-                          <input
-                            value={segment.description}
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              updatePromptSegment(index, {
-                                description: value,
-                              });
-                              if (!value.includes("@")) {
-                                setSubjectMention(null);
-                                return;
-                              }
-                              const caret = event.currentTarget.selectionStart ?? value.length;
-                              const at = value.lastIndexOf("@", caret - 1);
-                              const query = at >= 0 ? value.slice(at + 1, caret) : "";
-                              if (at >= 0 && !/[\s<>{}]/.test(query))
-                                setSubjectMention({
-                                  segmentIndex: index,
-                                  start: at,
-                                  query,
-                                  selected: 0,
-                                  category: subjectMention?.segmentIndex === index ? subjectMention.category : "root",
-                                });
-                              else setSubjectMention(null);
-                              if (at >= 0 && !/[\s<>{}]/.test(query)) updateSubjectMentionPosition(event.currentTarget, caret);
-                            }}
-                            onKeyDown={(event) => {
-                              if (!subjectMention) {
-                                if (["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) {
-                                  event.preventDefault();
-                                  const caret = event.currentTarget.selectionStart ?? event.currentTarget.value.length;
-                                  const at = event.currentTarget.value.lastIndexOf("@", caret - 1);
-                                  if (at >= 0) setSubjectMention({ segmentIndex: index, start: at, query: event.currentTarget.value.slice(at + 1, caret), selected: 0, category: "root" });
-                                }
-                                return;
-                              }
-                              if (
-                                !subjectMention ||
-                                subjectMention.segmentIndex !== index
-                              )
-                                return;
-                              const options = getMentionOptions(subjectMention.query, subjectMention.category);
-                              if (
-                                event.key === "ArrowDown" ||
-                                event.key === "ArrowUp" ||
-                                event.code === "ArrowDown" ||
-                                event.code === "ArrowUp"
-                              ) {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                const direction = event.key === "ArrowUp" || event.code === "ArrowUp" ? -1 : 1;
-                                if (direction === -1 && subjectMention.category === "camera" && subjectMention.selected === 0) {
-                                  setSubjectMention({ ...subjectMention, category: "root", query: "", selected: 1 });
-                                  return;
-                                }
-                                setSubjectMention((current) => current ? {
-                                  ...current,
-                                  selected: (current.selected + (direction === 1 ? 1 : options.length - 1)) % Math.max(1, options.length),
-                                } : current);
-                              } else if (event.key === "ArrowRight" || event.code === "ArrowRight") {
-                                const option = options[subjectMention.selected];
-                                if (option?.type === "category") {
-                                  event.preventDefault();
-                                  setSubjectMention({ ...subjectMention, category: option.category, query: "", selected: 0 });
-                                }
-                              } else if (event.key === "ArrowLeft" || event.code === "ArrowLeft") {
-                                if (subjectMention.category !== "root") {
-                                  event.preventDefault();
-                                  setSubjectMention({ ...subjectMention, category: subjectMention.category === "lens" || subjectMention.category === "framing" || subjectMention.category === "cameraMove" ? "camera" : "root", query: "", selected: 0 });
-                                }
-                              } else if (event.key === "Enter" || event.code === "Enter") {
-                                event.preventDefault();
-                                const option = options[subjectMention.selected];
-                                if (option?.type === "category") setSubjectMention({ ...subjectMention, category: option.category, query: "", selected: 0 });
-                                else commitMentionOption(subjectMention.selected);
-                              } else if (event.key === "Escape")
-                                setSubjectMention(null);
-                            }}
-                            placeholder="输入 @ 选择主体引用"
-                            className="h-8 w-full rounded border border-border bg-muted/25 px-2 text-[10px] outline-none placeholder:text-muted-foreground"
-                          />
-                          {subjectMention?.segmentIndex === index && (
-                            <div data-subject-mention-popup style={{ position: "fixed", left: mentionPosition.left, top: mentionPosition.top }} className="z-50 max-h-64 w-64 overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-xl">
-                              {getMentionOptions(subjectMention.query, subjectMention.category).map((option, optionIndex) => {
-                                if (option.type === "category") return (
-                                  <button data-mention-option-index={optionIndex} tabIndex={-1} type="button" key={option.category} onMouseDown={(event) => { event.preventDefault(); refocusSubjectInput(); setSubjectMention({ ...subjectMention, category: option.category, query: "", selected: 0 }); }} className={`flex w-full items-center rounded px-2 py-2 text-left text-[10px] ${optionIndex === subjectMention.selected ? "bg-primary/15 text-primary" : "hover:bg-muted"}`}>
-                                    <span className="truncate">{option.name} <span className="text-muted-foreground">›</span></span>
-                                  </button>
-                                );
-                                const subject = option.type === "subject" || option.type === "subjectVoice" ? getMentionSubjects()[option.index] : null;
-                                if ((option.type === "subject" || option.type === "subjectVoice") && !subject) return null;
-                                if (option.type === "camera") return (
-                                  <button data-mention-option-index={optionIndex} tabIndex={-1} type="button" key={`${option.key}-${option.value}`} onMouseDown={(event) => { event.preventDefault(); refocusSubjectInput(); commitMentionOption(optionIndex); }} className={`flex w-full items-center rounded px-2 py-1.5 text-left text-[10px] ${optionIndex === subjectMention.selected ? "bg-primary/15 text-primary" : "hover:bg-muted"}`}>
-                                    <span className="truncate">
-                                      {(option.key === "lens" ? "机位" : option.key === "framing" ? "景别" : "运镜") + " · " + option.name}
-                                    </span>
-                                  </button>
-                                );
-                                {
-                                  const thumb = (subject?.assetKeys ?? [])
-                                    .map((key) =>
-                                      referenceMentionOptions().find(
-                                        (item) => item.assetKey === key,
-                                      ),
-                                    )
-                                    .find((item) => item?.kind === "image");
-                                  return (
-                                    <button
-                                      data-mention-option-index={optionIndex}
-                                      tabIndex={-1}
-                                      type="button"
-                                      key={optionIndex}
-                                      onMouseDown={(event) => {
-                                        event.preventDefault();
-                                        refocusSubjectInput();
-                                        option.type === "subjectVoice" ? commitMentionOption(optionIndex) : commitSubjectMention(option.index);
-                                      }}
-                                      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[10px] ${optionIndex === subjectMention.selected ? "bg-primary/15 text-primary" : "hover:bg-muted"}`}
-                                    >
-                                      <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded bg-muted">
-                                        {thumb ? (
-                                          <img
-                                            src={thumb.url}
-                                            alt=""
-                                            className="size-full object-cover"
-                                          />
-                                        ) : (
-                                          <span className="text-[9px] text-muted-foreground">
-                                            主体
-                                          </span>
-                                        )}
-                                      </span>
-                                      <span className="truncate">
-                                        {option.name}
-                                      </span>
-                                      {option.type === "subjectVoice" && (
-                                        <Mic className="ml-auto size-3 shrink-0 text-primary" aria-label="声音来源" />
-                                      )}
-                                    </button>
-                                  );
-                                }
-                              })}
-                            </div>
-                          )}
-                        </div>
-                        <Button
-                          type="button"
-                          onClick={() => removePromptSegment(index)}
-                          disabled={activeSegments.length <= 1}
-                          variant="ghost"
-                          size="icon-sm"
-                          className="size-8 shrink-0 text-zinc-500 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-30"
-                          aria-label={"删除画面 " + (index + 1)}
-                        >
-                          <X className="size-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-2 flex justify-end">
-                  <Button
-                    type="button"
-                    onClick={addPromptSegment}
-                    variant="outline"
-                    size="sm"
-                    className="h-8 gap-1.5 px-3 text-[10px] text-zinc-300 hover:bg-white/8"
-                  >
-                    <Plus className="size-3" />
-                    添加画面
-                  </Button>
-                </div>
-                <p className="mt-1 text-[9px] text-muted-foreground">
-                  每个画面可设置开始和结束秒数；生成时会按时间范围、画面顺序和各自的镜头语言写入
-                  H3 提示词。
-                </p>
-              </div>
-              <div className="grid gap-2 rounded-lg border border-border bg-muted/20 p-2">
-                  {(
-                    [
-                      [
-                        "soundscape",
-                        "环境声音（overall_soundscape）",
-                        "填写环境声和动作声；不要重复对白",
-                      ],
-                      [
-                        "music",
-                        "非叙事音乐（non_diegetic_music）",
-                        "填写观众听到但角色听不到的背景音乐，没有则填 N/A",
-                      ],
-                    ] as const
-                  ).map(([key, label, placeholder]) => (
-                    <label key={key}>
-                      <span className="field-label">{label}</span>
-                      <textarea
-                        value={ref2vaFields[taskShot.id]?.[key] ?? ""}
-                        onChange={(event) =>
-                          setRef2vaFields((current) => ({
+            <div className="min-h-0 flex-1 overflow-hidden px-4 pt-2">
+              <textarea
+                ref={promptRef}
+                value={prompt}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setPrompt(value);
+                  updatePromptMention(value, event.target.selectionStart);
+                  if (taskShot) {
+                    setOptimizedPrompts((current) => {
+                      const next = { ...current };
+                      delete next[taskShot.id];
+                      return next;
+                    });
+                  }
+                  if (taskShot) setShotPrompts((current) => ({ ...current, [taskShot.id]: value }));
+                }}
+                onClick={(event) =>
+                  updatePromptMention(
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart,
+                  )
+                }
+                onKeyUp={(event) =>
+                  !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape"].includes(
+                    event.key,
+                  ) &&
+                  updatePromptMention(
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart,
+                  )
+                }
+                onKeyDown={(event) => {
+                  if (!promptMention || !mentionOptions.length) return;
+                  if (
+                    event.key === "ArrowDown" ||
+                    event.key === "ArrowRight" ||
+                    event.key === "ArrowUp" ||
+                    event.key === "ArrowLeft"
+                  ) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const direction =
+                      event.key === "ArrowDown" || event.key === "ArrowRight"
+                        ? 1
+                        : -1;
+                    setPromptMention((current) =>
+                      current
+                        ? {
                             ...current,
-                            [taskShot.id]: {
-                              ...ref2vaDefaults,
-                              ...(current[taskShot.id] ?? {}),
-                              [key]: event.target.value,
-                            },
-                          }))
-                        }
-                        placeholder={placeholder}
-                        className="mt-1 min-h-14 w-full resize-y rounded-md border border-border bg-muted/25 p-2 text-[10px] leading-4 outline-none placeholder:text-muted-foreground focus:border-primary/60"
-                      />
-                    </label>
+                            selected:
+                              (current.selected + direction + mentionOptions.length) %
+                              mentionOptions.length,
+                          }
+                        : current,
+                    );
+                  } else if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    insertReferenceMention(
+                      mentionOptions[promptMention.selected] ?? mentionOptions[0],
+                    );
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setPromptMention(null);
+                  }
+                }}
+                placeholder="在这里输入镜头提示词，然后点击“优化提示词”生成符合 H3 规范的完整提示词"
+                className="min-h-40 h-full w-full resize-none overflow-y-auto rounded-lg border border-border bg-muted/25 p-3 font-mono text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/60"
+              />
+              {promptMention && mentionOptions.length > 0 && (
+                <div
+                  className="fixed z-[80] max-h-64 w-64 overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-xl"
+                  style={{ left: mentionPosition.left, top: mentionPosition.top }}
+                  onMouseDown={(event) => event.preventDefault()}
+                >
+                  {mentionOptions.map((option, index) => (
+                    <button
+                      key={`${option.assetKey}-${option.token}`}
+                      type="button"
+                      aria-selected={index === promptMention.selected}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        insertReferenceMention(option);
+                      }}
+                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-zinc-300 hover:bg-primary/10 hover:text-primary ${index === promptMention.selected ? "bg-primary/10 text-primary" : ""}`}
+                    >
+                      <span className="grid size-7 shrink-0 place-items-center overflow-hidden rounded bg-muted">
+                        {option.url ? (
+                          option.kind === "video" ? (
+                            <video src={option.url} muted className="size-full object-cover" />
+                          ) : (
+                            <img src={option.url} alt="" className="size-full object-cover" />
+                          )
+                        ) : (
+                          <Package className="size-3 text-muted-foreground" />
+                        )}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{option.name}</span>
+                      <span className="shrink-0 text-[9px] text-muted-foreground">
+                        {option.token}
+                      </span>
+                    </button>
                   ))}
-              </div>
+                </div>
+              )}
             </div>
             <div className="relative mt-auto shrink-0 border-t border-border/60 bg-card/95 p-4 backdrop-blur">
               <div className="pointer-events-none absolute bottom-full left-0 right-0 min-h-4 text-center text-[9px] font-medium">
@@ -8116,7 +7052,7 @@ export default function Home() {
                 className="h-10 w-full gap-1.5 bg-[#f4bd50] px-3 text-[10px] font-semibold text-[#17120a] hover:bg-[#ffd070]"
               >
                 <Eye className="size-3.5" />
-                查看完整提示词
+                查看优化后的提示词
               </Button>
             </div>
           </div>
@@ -8658,6 +7594,86 @@ export default function Home() {
           </div>
         </div>
       )}
+      {characterDeleteCandidate && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+          onMouseDown={() => setCharacterDeleteCandidate(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold">移除角色</h2>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              请选择对“{characterDeleteCandidate}”的处理方式。仅从当前项目移除会解除所有镜头引用并保留源文件；永久删除会删除角色文件夹中的身份图片、声音和配置。
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => setCharacterDeleteCandidate(null)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void removeProjectCharacter(characterDeleteCandidate, false)
+                }
+              >
+                仅从当前项目移除
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() =>
+                  void removeProjectCharacter(characterDeleteCandidate, true)
+                }
+              >
+                永久删除
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {assetDeleteCandidate && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+          onMouseDown={() => setAssetDeleteCandidate(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold">移除资产</h2>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              请选择对“{assetDeleteCandidate.name}”的处理方式。仅从当前项目移除会解除镜头引用并保留源文件；永久删除会删除资产目录及其中的全部文件。
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => setAssetDeleteCandidate(null)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void removeProjectAsset(assetDeleteCandidate, false)
+                }
+              >
+                仅从当前项目移除
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() =>
+                  void removeProjectAsset(assetDeleteCandidate, true)
+                }
+              >
+                永久删除
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       {promptViewerOpen && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
@@ -8669,16 +7685,16 @@ export default function Home() {
           >
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-semibold">完整提示词</h2>
+                <h2 className="text-sm font-semibold">优化后的提示词</h2>
                 <p className="mt-1 text-[10px] text-muted-foreground">
-                  内容根据当前片段的 clip.json 提示词字段实时拼接 · {activeMode}
+                当前镜头的 H3 提示词 · {activeMode}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setPromptViewerOpen(false)}
                 className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                aria-label="关闭完整提示词"
+                aria-label="关闭优化后的提示词"
               >
                 <X className="size-4" />
               </button>
