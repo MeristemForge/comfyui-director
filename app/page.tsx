@@ -4437,7 +4437,7 @@ export default function Home() {
       ? parseProjectAssetName(asset.name)
       : null;
     const token = parsedAsset?.usage
-      ? `${option.token} 是${parsedAsset.name}${parsedAsset.usage}${
+      ? `${option.token} 是${parsedAsset.name}的${parsedAsset.usage}${
           parsedAsset.description ? `（${parsedAsset.description}）` : ""
         } `
       : `${option.token} `;
@@ -4472,28 +4472,56 @@ export default function Home() {
           (subject) => subject.children ?? [],
         ),
       ];
-      const referenceMapping: H3ReferenceMapping[] = shotSubjects.flatMap(
-        (subject) =>
-          subject.assetKeys.flatMap((assetKey) => {
-            const match = assetKey.match(
-              new RegExp(`^${taskShot.id}-(image|video|audio)-(\\d+)$`),
-            );
-            const asset = referenceAssets[assetKey];
-            if (!match || !asset) return [];
-            const kind = match[1] as ReferenceKind;
-            const label = kind === "image" ? "Picture" : kind === "video" ? "Video" : "Audio";
-            const parsedAsset = asset.sourcePath
-              ? parseProjectAssetName(asset.name)
-              : null;
-            return [{
-              picture: `<${label} ${Number(match[2]) + 1}>`,
-              subject: parsedAsset?.name || subject.name.trim(),
-              role: subject.assetRoles?.[assetKey] ?? "composite",
-              assetName: asset.name,
-              usage: parsedAsset?.usage,
-              description: parsedAsset?.description,
-            }];
-          }),
+      const subjectByAssetKey = new Map<
+        string,
+        { name: string; role?: string }
+      >();
+      shotSubjects.forEach((subject) => {
+        subject.assetKeys.forEach((assetKey) => {
+          subjectByAssetKey.set(assetKey, {
+            name: subject.name.trim(),
+            role: subject.assetRoles?.[assetKey],
+          });
+        });
+      });
+      const kindOrder: Record<ReferenceKind, number> = {
+        image: 0,
+        video: 1,
+        audio: 2,
+      };
+      const shotReferences = Object.entries(referenceAssets)
+        .flatMap(([assetKey, asset]) => {
+          const match = assetKey.match(/^(.*)-(image|video|audio)-(\d+)$/);
+          if (!match || match[1] !== taskShot.id) return [];
+          return [{
+            assetKey,
+            asset,
+            kind: match[2] as ReferenceKind,
+            index: Number(match[3]),
+          }];
+        })
+        .sort(
+          (left, right) =>
+            kindOrder[left.kind] - kindOrder[right.kind] ||
+            left.index - right.index,
+        );
+      const referenceMapping: H3ReferenceMapping[] = shotReferences.map(
+        ({ assetKey, asset, kind, index }) => {
+          const subject = subjectByAssetKey.get(assetKey);
+          const parsedAsset = asset.sourcePath
+            ? parseProjectAssetName(asset.name)
+            : null;
+          const label =
+            kind === "image" ? "Picture" : kind === "video" ? "Video" : "Audio";
+          return {
+            picture: `<${label} ${index + 1}>`,
+            subject: parsedAsset?.name || subject?.name || asset.name,
+            role: subject?.role ?? "composite",
+            assetName: asset.name,
+            usage: parsedAsset?.usage,
+            description: parsedAsset?.description,
+          };
+        },
       );
       const response = await fetch("/api/optimize-prompt", {
         method: "POST",
