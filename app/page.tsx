@@ -4432,7 +4432,7 @@ export default function Home() {
 
   function insertReferenceMention(option: ReferenceMentionOption) {
     if (!promptMention || !taskShot) return;
-    const token = `${option.name} `;
+    const token = `${option.token} `;
     const nextPrompt = `${prompt.slice(0, promptMention.start)}${token}${prompt.slice(promptMention.end)}`;
     const nextCaret = promptMention.start + token.length;
     setPrompt(nextPrompt);
