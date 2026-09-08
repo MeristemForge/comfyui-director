@@ -43,7 +43,7 @@ export async function POST(request: Request) {
           .join("\n")
       : "";
     const referenceContext = mappings
-      ? `\n\nAuthoritative reference mapping (do not reorder, rename, or invent entries):\n${mappings}`
+      ? `\n\nReference inputs below correspond to the actual H3 input slots. Keep Picture/Video/Audio ordinals unchanged and use only the listed inputs. Infer subject grouping, subject names, reference roles, and relationships from the normalized filenames and the user's draft:\n${mappings}`
       : "";
     const context = `${H3_INSTRUCTION}\nUse the installed H3 prompt-writing skill when available.\n\nMode: ${body.mode || "T2VA"}\nDuration: ${body.duration || 6} seconds${referenceContext}\n\nUser draft:\n${draft}`;
     const helper = await fetch("http://127.0.0.1:3101/optimize-prompt", {
