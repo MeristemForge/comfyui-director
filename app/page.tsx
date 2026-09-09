@@ -1088,7 +1088,7 @@ export default function Home() {
   const [resolution, setResolution] = useState("864 × 480");
   const [aspect, setAspect] = useState("16:9");
   const [prompt, setPrompt] = useState("");
-  const [promptOptimizing, setPromptOptimizing] = useState(false);
+  const [promptOptimizing, setPromptOptimizing] = useState<Record<string, boolean>>({});
   const [llmExecutablePath, setLlmExecutablePath] = useState("");
   const [promptBuilderSettings, setPromptBuilderSettings] = useState<
     Record<string, PromptBuilderSettings>
@@ -4582,7 +4582,7 @@ export default function Home() {
   }
 
   async function optimizeH3Prompt() {
-    if (!taskShot || !prompt.trim() || promptOptimizing) return;
+    if (!taskShot || !prompt.trim() || promptOptimizing[taskShot.id]) return;
     if (!llmExecutablePath.trim()) {
       const message = "请先在导演台设置中配置本地 Agent 的可执行程序路径";
       setGenerationStatus(message);
@@ -4590,7 +4590,7 @@ export default function Home() {
       setEngineSettingsOpen(true);
       return;
     }
-    setPromptOptimizing(true);
+    setPromptOptimizing((current) => ({ ...current, [taskShot.id]: true }));
     setGenerationStatus("正在使用本地 Agent CLI 优化提示词…");
     try {
       const shotSubjects = [
@@ -4689,7 +4689,11 @@ export default function Home() {
     } catch (error) {
       setGenerationStatus(error instanceof Error ? error.message : "提示词优化失败");
     } finally {
-      setPromptOptimizing(false);
+      setPromptOptimizing((current) => {
+        const next = { ...current };
+        delete next[taskShot.id];
+        return next;
+      });
     }
   }
 
@@ -5959,10 +5963,10 @@ export default function Home() {
                   type="button"
                   size="sm"
                   className="h-7 px-2 text-[10px]"
-                  disabled={!prompt.trim() || promptOptimizing}
+                  disabled={!prompt.trim() || Boolean(taskShot && promptOptimizing[taskShot.id])}
                   onClick={() => void optimizeH3Prompt()}
                 >
-                  {promptOptimizing ? "优化中…" : "优化提示词"}
+                  {taskShot && promptOptimizing[taskShot.id] ? "优化中…" : "优化提示词"}
                 </Button>
                 <span className="text-[10px] text-zinc-500">{activeMode}</span>
               </div>
