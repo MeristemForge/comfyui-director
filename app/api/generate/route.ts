@@ -1,6 +1,6 @@
-import t2vTemplate from '../../../comfyui-workflows/minimax-h3/video_minimax_h3_t2v.json';
-import i2vTemplate from '../../../comfyui-workflows/minimax-h3/video_minimax_h3_i2v.json';
-import r2vTemplate from '../../../comfyui-workflows/minimax-h3/video_minimax_h3_r2v.json';
+import t2vTemplate from '../../../comfyui-workflows/minimax-h3/api/video_minimax_h3_t2v-api.json';
+import i2vTemplate from '../../../comfyui-workflows/minimax-h3/api/video_minimax_h3_i2v-api.json';
+import r2vTemplate from '../../../comfyui-workflows/minimax-h3/api/video_minimax_h3_r2v-api.json';
 import { normalizeComfyUrl } from '../comfy-url';
 
 export async function POST(request: Request) {
