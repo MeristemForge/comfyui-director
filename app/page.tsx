@@ -47,7 +47,16 @@ type Shot = {
   meta: string;
   state: string;
   prompt?: string | Partial<Ref2vaPromptManifest>;
+  visualStyle?: VisualStyleKey;
 };
+type VisualStyleKey = keyof typeof visualStylePresets;
+const visualStylePresets = {
+  natural_cinematic: { label: "自然电影写实", prompt: "Natural cinematic live-action look. Neutral white balance, realistic natural skin tones, balanced contrast, controlled highlights, restrained saturation, natural color separation, clean cinematic image without an obvious stylized color cast." },
+  high_key_portrait: { label: "高调清透人像", prompt: "High-key cinematic portrait look. Bright, clean and luminous image with soft flattering light. Fair translucent skin with subtle rosy pink undertones, natural healthy blush in cheeks and lips, neutral-to-slightly-cool white balance. Fresh vivid colors with controlled saturation. Avoid yellow or orange skin tones. Preserve realistic skin texture without excessive smoothing." },
+  teal_orange_blockbuster: { label: "青橙商业大片", prompt: "Premium theatrical blockbuster color grade. Cinematic teal-and-orange color separation, cooler shadows and controlled warm highlights, rich blacks, strong dimensional contrast, dramatic subject separation and polished Hollywood feature-film look. Keep human skin natural and believable rather than strongly orange." },
+  neon_noir: { label: "都市霓虹黑色电影", prompt: "Cinematic neon-noir night look. Deep controlled shadows, rich blacks, blue, cyan, magenta and red urban neon illumination, wet reflective surfaces, luminous practical lights, strong atmospheric separation and sophisticated metropolitan night mood. Keep faces clearly readable and skin tones natural under colored lighting." },
+  japanese_high_key_daylight: { label: "日系高调日光", prompt: "Japanese high-key daylight cinematic look. Bright airy daylight, clean blue skies, crisp white clouds, cool-to-neutral daylight balance and fresh transparent colors. Fair luminous skin with subtle rosy pink undertones, natural healthy blush and clean white highlights. Avoid yellow or orange skin tones. Bright, refreshing and photographic rather than anime illustration." },
+} as const;
 type ProjectShotRecord = Shot & {
   output?: string;
   references?: { subjects?: PersistedPromptSubject[] };
@@ -110,6 +119,9 @@ type ShotSettings = {
   mode: string;
   model: keyof typeof modelProfiles;
   turbo: boolean;
+  seed: string;
+  seedMode: "fixed" | "random";
+  keyframeMode: "first" | "last" | "first_last";
 };
 const shotSettingDefaults: ShotSettings = {
   duration: "6 秒",
@@ -119,6 +131,9 @@ const shotSettingDefaults: ShotSettings = {
   mode: "T2VA",
   model: "H3",
   turbo: true,
+  seed: "7483926150842719",
+  seedMode: "fixed",
+  keyframeMode: "first",
 };
 type PromptBuilderSettings = {
   style: string;
@@ -461,6 +476,7 @@ type PersistedDirectorState = {
   generationDurations?: Record<string, number>;
   shotTasks?: Record<string, ShotTask>;
   shotStages?: Record<string, string>;
+  shotVisualStyles?: Record<string, VisualStyleKey>;
   keyframes?: Record<string, PersistedKeyframe>;
   referenceAssets?: Record<string, PersistedReferenceAsset>;
 };
@@ -963,6 +979,7 @@ async function readProjectShots(
           output?: string;
           references?: { subjects?: PersistedPromptSubject[] };
           prompt?: string | Partial<Ref2vaPromptManifest> | ClipPromptRecord;
+          visualStyle?: VisualStyleKey;
         };
         const generation = data.generation ?? {};
         const durationText = `${generation.duration ?? 6}s`;
@@ -1000,6 +1017,7 @@ async function readProjectShots(
           promptOptimized: promptRecord?.optimized
             ? normalizePrompt(promptRecord.optimized)
             : undefined,
+          visualStyle: data.visualStyle,
         };
       } catch {
         return {
@@ -1025,6 +1043,7 @@ export default function Home() {
   >("first");
   const [shotProgress, setShotProgress] = useState<Record<string, number>>({});
   const [shotStages, setShotStages] = useState<Record<string, string>>({});
+  const [shotVisualStyles, setShotVisualStyles] = useState<Record<string, VisualStyleKey>>({});
   const [railWidth, setRailWidth] = useState(220);
   const [panelWidth, setPanelWidth] = useState(420);
   const [, setGenerationStatus] = useState("等待生成");
@@ -1401,7 +1420,15 @@ export default function Home() {
       if (saved.promptSubjects) setPromptSubjects(compactedReferences.subjects);
       if (saved.promptSegments) setPromptSegments(saved.promptSegments);
       if (saved.ref2vaFields) setRef2vaFields(saved.ref2vaFields);
-      if (saved.shotSettings) setShotSettings(saved.shotSettings);
+      if (saved.shotSettings)
+        setShotSettings(
+          Object.fromEntries(
+            Object.entries(saved.shotSettings).map(([id, settings]) => [
+              id,
+              { ...shotSettingDefaults, ...settings },
+            ]),
+          ),
+        );
       if (saved.shotVideos) setShotVideos(saved.shotVideos);
       if (saved.shotFileNames) setShotFileNames(saved.shotFileNames);
       if (saved.shotProgress) setShotProgress(saved.shotProgress);
@@ -1409,6 +1436,7 @@ export default function Home() {
         setGenerationDurations(saved.generationDurations);
       if (saved.shotTasks) setShotTasks(saved.shotTasks);
       if (saved.shotStages) setShotStages(saved.shotStages);
+      if (saved.shotVisualStyles) setShotVisualStyles(saved.shotVisualStyles);
       if (saved.keyframes)
         setKeyframes(
           Object.fromEntries(
@@ -1511,6 +1539,7 @@ export default function Home() {
       generationDurations,
       shotTasks,
       shotStages,
+      shotVisualStyles,
       keyframes: persistedKeyframes,
       referenceAssets: persistedReferences,
     };
@@ -1537,6 +1566,7 @@ export default function Home() {
     generationDurations,
     shotTasks,
     shotStages,
+    shotVisualStyles,
     keyframes,
     referenceAssets,
   ]);
@@ -1564,6 +1594,9 @@ export default function Home() {
             fps: Number.parseInt(settings.fps, 10) || 24,
             model: settings.model,
             turbo: settings.turbo,
+            seed: settings.seed,
+            seedMode: settings.seedMode,
+            keyframeMode: settings.keyframeMode,
             ...(shotTasks[shot.id]
               ? { seed: shotTasks[shot.id].seed, seedMode: shotTasks[shot.id].seedMode, steps: shotTasks[shot.id].steps }
               : {}),
@@ -1632,6 +1665,9 @@ export default function Home() {
     setMode(settings.mode);
     setModel(settings.model);
     setTurboMode(settings.turbo);
+    setSeed(settings.seed);
+    setSeedMode(settings.seedMode);
+    setKeyframeMode(settings.keyframeMode);
     setGenerationStatus(
       taskShot.state === "已完成"
         ? "已完成"
@@ -1873,7 +1909,7 @@ export default function Home() {
     setShots((current) => [...current, shot]);
     try {
       await writeClipManifest(shot, {
-        generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
+        generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed", keyframeMode: "first" },
         prompt: "",
       });
     } catch {
@@ -1899,6 +1935,7 @@ export default function Home() {
       ...current,
       [id]: { ...shotSettingDefaults },
     }));
+    setShotVisualStyles((current) => ({ ...current, [id]: "natural_cinematic" }));
     // A deleted shot may have reused this id. Never inherit its old keyframes.
     setKeyframes((current) => {
       const next = { ...current };
@@ -1942,14 +1979,70 @@ export default function Home() {
     setNewTitle(shots[index]?.title ?? "");
     setRenameIndex(index);
   }
-  function confirmRenameShot() {
+  async function copyDirectoryContents(
+    source: FileSystemDirectoryHandle,
+    target: FileSystemDirectoryHandle,
+  ) {
+    for await (const [name, entry] of source.entries()) {
+      if (entry.kind === "directory") {
+        const targetDirectory = await target.getDirectoryHandle(name, { create: true });
+        await copyDirectoryContents(entry, targetDirectory);
+        continue;
+      }
+      const sourceFile = await entry.getFile();
+      const targetFile = await target.getFileHandle(name, { create: true });
+      const writable = await targetFile.createWritable();
+      await writable.write(await sourceFile.arrayBuffer());
+      await writable.close();
+    }
+  }
+  async function renameSavedShotDirectory(
+    shotId: string,
+    oldTitle: string,
+    newTitle: string,
+  ) {
+    if (!projectDirectory) return;
+    const oldName = `${shotId}-${safeFileStem(oldTitle)}`;
+    const newName = `${shotId}-${safeFileStem(newTitle)}`;
+    if (oldName === newName) return;
+    const clips = await projectDirectory.getDirectoryHandle("片段");
+    const writableDirectory = clips as WritableDirectoryHandle;
+    const permission = writableDirectory.queryPermission
+      ? await writableDirectory.queryPermission({ mode: "readwrite" })
+      : "granted";
+    if (permission !== "granted") throw new Error("片段目录没有写入权限");
+    let source: FileSystemDirectoryHandle;
+    try {
+      source = await clips.getDirectoryHandle(oldName);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "NotFoundError") return;
+      throw error;
+    }
+    const target = await clips.getDirectoryHandle(newName, { create: true });
+    await copyDirectoryContents(source, target);
+    if (!writableDirectory.removeEntry) return;
+    await writableDirectory.removeEntry(oldName, { recursive: true });
+  }
+  async function confirmRenameShot() {
     if (renameIndex === null || !newTitle.trim()) return;
+    const shot = shots[renameIndex];
+    if (!shot) return;
     const title = newTitle.trim();
-    setShots((items) =>
-      items.map((item, itemIndex) =>
-        itemIndex === renameIndex ? { ...item, title } : item,
-      ),
+    try {
+      await renameSavedShotDirectory(shot.id, shot.title, title);
+    } catch {
+      setGenerationStatus("片段目录重命名失败，未修改片段名称");
+      return;
+    }
+    const next = shots.map((item, itemIndex) =>
+      itemIndex === renameIndex ? { ...item, title } : item,
     );
+    setShots(next);
+    try {
+      await writeProjectManifest(next);
+    } catch {
+      setGenerationStatus("片段名称已修改，但项目清单写入失败");
+    }
     setRenameIndex(null);
   }
   function deleteShot(index: number) {
@@ -2395,13 +2488,29 @@ export default function Home() {
     );
     setPromptViewerOpen(true);
   }
-  function savePromptDraft() {
-    if (!taskShot) return;
-    const nextPrompt = promptDraft.trim();
-    setOptimizedPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
+  function closePromptViewer() {
+    if (taskShot) {
+      const nextPrompt = promptDraft.trim();
+      setOptimizedPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
+      const settings = shotSettings[taskShot.id] ?? shotSettingDefaults;
+      void writeClipManifest(taskShot, {
+        generation: {
+          mode: settings.mode,
+          duration: Number.parseFloat(settings.duration) || 6,
+          resolution: settings.resolution,
+          aspect: settings.aspect,
+          fps: Number.parseInt(settings.fps, 10) || 24,
+          model: settings.model,
+          turbo: settings.turbo,
+        },
+        promptOriginal: shotPrompts[taskShot.id] ?? prompt,
+        promptOptimized: nextPrompt,
+        visualStyle: shotVisualStyles[taskShot.id] ?? "natural_cinematic",
+      });
+    }
     setPromptViewerOpen(false);
-    setPromptNotice({ type: "success", text: "优化提示词已保存" });
-  }  function shotElapsed(shotId: string) {
+  }
+  function shotElapsed(shotId: string) {
     const task = shotTasks[shotId];
     return task ? elapsedNow - task.startedAt : generationDurations[shotId];
   }
@@ -2680,10 +2789,22 @@ export default function Home() {
             ...(record.generation?.fps ? { fps: `${record.generation.fps} fps` } : {}),
             ...(record.generation?.model ? { model: record.generation.model } : {}),
             ...(typeof record.generation?.turbo === "boolean" ? { turbo: record.generation.turbo } : {}),
+            ...(record.generation?.seed ? { seed: record.generation.seed } : {}),
+            ...(record.generation?.seedMode === "random" || record.generation?.seedMode === "fixed"
+              ? { seedMode: record.generation.seedMode }
+              : {}),
+            ...(record.generation?.keyframeMode === "first" || record.generation?.keyframeMode === "last" || record.generation?.keyframeMode === "first_last"
+              ? { keyframeMode: record.generation.keyframeMode }
+              : {}),
           },
         ]),
     );
     setShotSettings(settings);
+    setShotVisualStyles(
+      Object.fromEntries(
+        records.filter((record) => record.visualStyle).map((record) => [record.id, record.visualStyle!]),
+      ),
+    );
     setShotPrompts(
       Object.fromEntries(
         records
@@ -3769,10 +3890,11 @@ export default function Home() {
     const referencedSubjects = subjects.filter((subject) =>
       referencedSubjectIds.has(subject.subjectId),
     );
-    const { promptOriginal, promptOptimized, prompt: fallbackPrompt, ...restOverrides } = overrides as Record<string, unknown> & {
+    const { promptOriginal, promptOptimized, prompt: fallbackPrompt, visualStyle: overrideVisualStyle, ...restOverrides } = overrides as Record<string, unknown> & {
       promptOriginal?: unknown;
       promptOptimized?: unknown;
       prompt?: unknown;
+      visualStyle?: unknown;
     };
     const originalPrompt =
       typeof promptOriginal === "string"
@@ -3793,6 +3915,10 @@ export default function Home() {
           }
         : optimizedPrompt ?? originalPrompt;
     const manifestOverrides = { ...restOverrides, prompt: manifestPrompt };
+    const visualStyle = typeof overrideVisualStyle === "string"
+      ? overrideVisualStyle
+      : shotVisualStyles[shot.id];
+    if (visualStyle) manifestOverrides.visualStyle = visualStyle;
     await writable.write(
       JSON.stringify(
         {
@@ -4531,6 +4657,9 @@ export default function Home() {
           mode: activeMode,
           duration: Number.parseFloat(duration) || 6,
           referenceMapping,
+          visualStyle: shotVisualStyles[taskShot.id]
+            ? { key: shotVisualStyles[taskShot.id], ...visualStylePresets[shotVisualStyles[taskShot.id]] }
+            : undefined,
           executablePath: llmExecutablePath.trim() || undefined,
         }),
       });
@@ -4541,6 +4670,20 @@ export default function Home() {
         ...current,
         [taskShot.id]: result.prompt!,
       }));
+      await writeClipManifest(taskShot, {
+        generation: {
+          mode: activeMode,
+          duration: Number.parseFloat(duration) || 6,
+          resolution: availableResolution,
+          aspect,
+          fps: Number.parseInt(fps, 10) || 24,
+          model,
+          turbo: turboMode,
+        },
+        promptOriginal: shotPrompts[taskShot.id] ?? prompt,
+        promptOptimized: result.prompt!,
+        visualStyle: shotVisualStyles[taskShot.id] ?? "natural_cinematic",
+      });
       setGenerationStatus("提示词优化完成");
     } catch (error) {
       setGenerationStatus(error instanceof Error ? error.message : "提示词优化失败");
@@ -4976,6 +5119,16 @@ export default function Home() {
           String(
             Math.floor(Math.random() * 9000000000000000) + 1000000000000000,
           );
+    setShotSettings((current) => ({
+      ...current,
+      [shotId]: {
+        ...shotSettingDefaults,
+        ...(current[shotId] ?? {}),
+        seed: submittedSeed,
+        seedMode,
+        keyframeMode,
+      },
+    }));
     const startedAt = Date.now();
     const taskSettings = shotSettings[shotId] ?? {
       ...shotSettingDefaults,
@@ -5782,6 +5935,25 @@ export default function Home() {
             <div className="flex items-center justify-between px-4 pt-3">
               <span className="field-label">H3 提示词模块</span>
               <div className="flex items-center gap-1.5">
+                {taskShot && (
+                  <>
+                    <label htmlFor="visual-style" className="sr-only">视觉风格</label>
+                    <select
+                      id="visual-style"
+                      value={shotVisualStyles[taskShot.id] ?? "natural_cinematic"}
+                      onChange={(event) => {
+                        const value = event.target.value as VisualStyleKey;
+                        setShotVisualStyles((current) => ({ ...current, [taskShot.id]: value }));
+                        void writeClipManifest(taskShot, { visualStyle: value });
+                      }}
+                      className="h-7 min-w-40 rounded-md border border-white/20 bg-black px-2 text-[10px] text-white outline-none focus:border-primary/60"
+                    >
+                      {Object.entries(visualStylePresets).map(([key, preset]) => (
+                        <option key={key} value={key} className="bg-black text-white">{preset.label}</option>
+                      ))}
+                    </select>
+                  </>
+                )}
                 <Button
                   type="button"
                   size="sm"
@@ -6019,7 +6191,11 @@ export default function Home() {
                     value={seed}
                     disabled={seedMode === "fixed"}
                     onChange={(event) =>
-                      setSeed(event.target.value.replace(/\D/g, ""))
+                      (() => {
+                        const value = event.target.value.replace(/\D/g, "");
+                        setSeed(value);
+                        updateSetting("seed", value);
+                      })()
                     }
                     className="min-w-0 flex-1 bg-transparent font-mono text-[11px] outline-none disabled:cursor-not-allowed disabled:opacity-55"
                     inputMode="numeric"
@@ -6029,13 +6205,16 @@ export default function Home() {
                       const nextMode =
                         seedMode === "fixed" ? "random" : "fixed";
                       setSeedMode(nextMode);
+                      updateSetting("seedMode", nextMode);
                       if (nextMode === "random")
-                        setSeed(
-                          String(
+                        (() => {
+                          const value = String(
                             Math.floor(Math.random() * 9000000000000000) +
                               1000000000000000,
-                          ),
-                        );
+                          );
+                          setSeed(value);
+                          updateSetting("seed", value);
+                        })();
                     }}
                     className={`grid h-full w-8 place-items-center transition hover:text-primary ${seedMode === "random" ? "text-primary" : "text-muted-foreground"}`}
                     aria-label={
@@ -6161,7 +6340,10 @@ export default function Home() {
                     ).map(([value, label]) => (
                       <button
                         key={value}
-                        onClick={() => setKeyframeMode(value)}
+                        onClick={() => {
+                          setKeyframeMode(value);
+                          updateSetting("keyframeMode", value);
+                        }}
                         className={`rounded-md px-2 py-1.5 text-[10px] font-medium transition ${keyframeMode === value ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                       >
                         {label}
@@ -6468,7 +6650,7 @@ export default function Home() {
       {promptViewerOpen && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onMouseDown={() => setPromptViewerOpen(false)}
+          onMouseDown={() => closePromptViewer()}
         >
           <div
             className="flex h-[min(78vh,680px)] w-full max-w-3xl flex-col rounded-xl border border-border bg-card p-5 shadow-2xl"
@@ -6483,7 +6665,7 @@ export default function Home() {
               </div>
               <button
                 type="button"
-                onClick={() => setPromptViewerOpen(false)}
+                onClick={() => closePromptViewer()}
                 className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
                 aria-label="关闭优化后的提示词"
               >
@@ -6493,7 +6675,13 @@ export default function Home() {
             <textarea
               autoFocus
               value={promptDraft}
-              onChange={(event) => setPromptDraft(event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                setPromptDraft(value);
+                if (taskShot) {
+                  setOptimizedPrompts((current) => ({ ...current, [taskShot.id]: value }));
+                }
+              }}
               placeholder="当前片段暂无可显示的提示词"
               className="mt-4 min-h-0 flex-1 resize-none rounded-lg border border-border bg-muted/25 p-3 font-mono text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/60"
             />
@@ -6501,20 +6689,10 @@ export default function Home() {
               <Button
                 type="button"
                 variant="ghost"
-                onClick={() => setPromptViewerOpen(false)}
+                onClick={() => closePromptViewer()}
                 className="h-8 px-4 text-xs"
               >
-                取消
-              </Button>
-              <Button
-                type="button"
-                onClick={() => {
-                  savePromptDraft();
-                  setPromptViewerOpen(false);
-                }}
-                className="h-8 bg-[#f4bd50] px-4 text-xs font-semibold text-[#17120a] hover:bg-[#ffd070]"
-              >
-                保存
+                关闭
               </Button>
             </div>
           </div>
