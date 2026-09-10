@@ -1431,6 +1431,24 @@ export default function Home() {
       setGenerationStatus("片段目录重命名失败，未修改片段名称");
       return;
     }
+    const oldFolder = `片段/${shot.id}-${safeFileStem(shot.title)}`;
+    const newFolder = `片段/${shot.id}-${safeFileStem(title)}`;
+    if (oldFolder !== newFolder) {
+      setReferenceAssets((current) => {
+        const nextAssets = { ...current };
+        const shotPrefix = `${shot.id}-`;
+        Object.entries(current).forEach(([key, asset]) => {
+          if (!key.startsWith(shotPrefix) || !asset.sourcePath) return;
+          const normalized = asset.sourcePath.replaceAll("\\", "/");
+          if (!normalized.startsWith(`${oldFolder}/`)) return;
+          nextAssets[key] = {
+            ...asset,
+            sourcePath: `${newFolder}/${normalized.slice(oldFolder.length + 1)}`,
+          };
+        });
+        return nextAssets;
+      });
+    }
     const next = shots.map((item, itemIndex) =>
       itemIndex === renameIndex ? { ...item, title } : item,
     );
@@ -3355,6 +3373,24 @@ export default function Home() {
     }));
   }
 
+  function isClipReferenceSourcePath(sourcePath?: string) {
+    return Boolean(sourcePath?.replaceAll("\\", "/").match(/^片段\/[^/]+\/引用\//));
+  }
+  async function deleteReferenceSourceFile(sourcePath?: string) {
+    if (!projectDirectory || !isClipReferenceSourcePath(sourcePath) || !sourcePath) return;
+    const parts = sourcePath.replaceAll("\\", "/").split("/").filter(Boolean);
+    const fileName = parts.pop();
+    if (!fileName) return;
+    try {
+      let directory: FileSystemDirectoryHandle = projectDirectory;
+      for (const part of parts) directory = await directory.getDirectoryHandle(part);
+      const writable = directory as WritableDirectoryHandle;
+      if (!writable.removeEntry) return;
+      await writable.removeEntry(fileName);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) return;
+    }
+  }
   async function saveReferenceSourceFile(
     shot: { id: string; title: string },
     file: File,
@@ -3395,6 +3431,7 @@ export default function Home() {
     event.target.value = "";
     if (!file || !taskShot) return;
     const key = referenceKey(taskShot.id, kind, index);
+    const previousAsset = referenceAssets[key];
     const url = URL.createObjectURL(file);
     setReferenceAssets((current) => ({
       ...current,
@@ -3403,10 +3440,21 @@ export default function Home() {
     try {
       const uploaded = await uploadReferenceFile(file, kind, comfyUrl);
       let sourcePath: string | undefined;
+      let backupFailed = false;
       try {
         sourcePath = await saveReferenceSourceFile(taskShot, file);
       } catch {
-        sourcePath = undefined;
+        backupFailed = true;
+      }
+      if (
+        sourcePath &&
+        previousAsset?.sourcePath &&
+        previousAsset.sourcePath !== sourcePath
+      ) {
+        void deleteReferenceSourceFile(previousAsset.sourcePath);
+      }
+      if (previousAsset?.url.startsWith("blob:") && previousAsset.url !== url) {
+        URL.revokeObjectURL(previousAsset.url);
       }
       setReferenceAssets((current) => ({
         ...current,
@@ -3417,29 +3465,36 @@ export default function Home() {
           ...(sourcePath ? { sourcePath } : {}),
         },
       }));
-      const parsedName =
-        parseProjectAssetName(file.name).name.trim() || originalFileStem(file.name);
       const role: ReferenceRole =
         kind === "video" ? "video" : kind === "audio" ? "audio" : "composite";
       setPromptSubjects((current) => {
-        const subjects = [...(current[taskShot.id] ?? [])];
-        const existingIndex = subjects.findIndex(
+        const subjects = current[taskShot.id] ?? [];
+        const alreadyBound = subjects.some(
+          (subject) =>
+            subject.assetKeys.includes(key) ||
+            (subject.children ?? []).some((child) => child.assetKeys.includes(key)),
+        );
+        if (alreadyBound) return current;
+        const parsedName =
+          parseProjectAssetName(file.name).name.trim() || originalFileStem(file.name);
+        const nextSubjects = [...subjects];
+        const existingIndex = nextSubjects.findIndex(
           (subject) =>
             subject.name.trim().toLowerCase() === parsedName.toLowerCase(),
         );
         if (existingIndex >= 0) {
-          const existing = subjects[existingIndex];
-          subjects[existingIndex] = {
+          const existing = nextSubjects[existingIndex];
+          nextSubjects[existingIndex] = {
             ...existing,
             assetKeys: [...new Set([...existing.assetKeys, key])],
             assetRoles: { ...existing.assetRoles, [key]: role },
           };
-          return { ...current, [taskShot.id]: subjects };
+          return { ...current, [taskShot.id]: nextSubjects };
         }
         return {
           ...current,
           [taskShot.id]: [
-            ...subjects,
+            ...nextSubjects,
             {
               name: parsedName,
               assetKeys: [key],
@@ -3448,7 +3503,19 @@ export default function Home() {
           ],
         };
       });
+      setGenerationStatus(
+        backupFailed
+          ? "已上传到 ComfyUI，但本地引用备份失败"
+          : `已添加参考素材“${file.name}”`,
+      );
     } catch (error) {
+      URL.revokeObjectURL(url);
+      setReferenceAssets((current) => {
+        const next = { ...current };
+        if (previousAsset) next[key] = previousAsset;
+        else delete next[key];
+        return next;
+      });
       setGenerationStatus(
         error instanceof Error
           ? `参考素材上传失败：${error.message}`
@@ -3462,6 +3529,7 @@ export default function Home() {
     const key = referenceKey(taskShot.id, kind, index);
     const asset = referenceAssets[key];
     if (asset?.url.startsWith("blob:")) URL.revokeObjectURL(asset.url);
+    void deleteReferenceSourceFile(asset?.sourcePath);
     setReferenceAssets((current) => {
       const next = { ...current };
       const prefix = `${taskShot.id}-${kind}-`;
