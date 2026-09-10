@@ -141,6 +141,11 @@ type PersistedPromptSubject = {
   references: PersistedPromptReference[];
   relation?: { type: string; parentSubjectId: string };
 };
+type PersistedKeyframe = {
+  name: string;
+  sourcePath?: string;
+  comfyName?: string;
+};
 type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
 };
@@ -308,6 +313,7 @@ type ProjectShotRecord = Shot & {
   generation: ClipGeneration;
   prompts: ClipPrompts;
   visualStyle: VisualStyleKey;
+  keyframes?: { first?: PersistedKeyframe; last?: PersistedKeyframe };
 };
 type ClipManifestOverrides = {
   generation?: Partial<ClipGenerationBase> & {
@@ -707,15 +713,32 @@ async function readProjectShots(
       if (data.output !== null && typeof data.output !== "string")
         throw new Error(`片段 ${clipId} 的 output 无效`);
       const output = data.output;
+      let outputAvailable = false;
+      if (output) {
+        const clipDirectoryPath = clipPath.split("/").slice(0, -1).join("/");
+        outputAvailable = Boolean(
+          await readProjectSourceFile(
+            handle,
+            `${clipDirectoryPath}/${output}`,
+          ),
+        );
+      }
+      const persistedKeyframes = data.keyframes;
+      if (
+        persistedKeyframes !== undefined &&
+        (typeof persistedKeyframes !== "object" || persistedKeyframes === null)
+      )
+        throw new Error(`片段 ${clipId} 的 keyframes 无效`);
       return {
         id: clipId,
         title: clipTitle,
-        state: output ? "已完成" : "草稿",
+        state: output ? (outputAvailable ? "已完成" : "文件缺失") : "草稿",
         output,
         generation,
         references: data.references,
         prompts: data.prompts,
         visualStyle: data.visualStyle,
+        keyframes: persistedKeyframes,
       };
     }),
   );
@@ -748,7 +771,7 @@ export default function Home() {
     {},
   );
   const [keyframes, setKeyframes] = useState<
-    Record<string, { name: string; url: string; comfyName?: string }>
+    Record<string, { name: string; url: string; comfyName?: string; sourcePath?: string }>
   >({});
   const [referenceAssets, setReferenceAssets] = useState<
     Record<string, ReferenceAsset>
@@ -1060,6 +1083,7 @@ export default function Home() {
     shotTasks,
     shotFileNames,
     referenceAssets,
+    keyframes,
   ]);
 
   useEffect(() => {
@@ -1334,6 +1358,7 @@ export default function Home() {
         generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
         promptOriginal: "",
       });
+      await writeProjectManifest([...shots, shot]);
     } catch {
       setGenerationStatus(
         "片段已创建，但项目目录没有写入权限，请重新选择项目目录",
@@ -1521,7 +1546,16 @@ export default function Home() {
     if (deletedId) {
       setShotPrompts((current) => {
         const nextPrompts = { ...current };
-        delete nextPrompts[deletedId];
+        Object.keys(nextPrompts)
+          .filter((key) => key.startsWith(`${deletedId}::`))
+          .forEach((key) => delete nextPrompts[key]);
+        return nextPrompts;
+      });
+      setOptimizedPrompts((current) => {
+        const nextPrompts = { ...current };
+        Object.keys(nextPrompts)
+          .filter((key) => key.startsWith(`${deletedId}::`))
+          .forEach((key) => delete nextPrompts[key]);
         return nextPrompts;
       });
       setPromptSubjects((current) => {
@@ -2034,6 +2068,29 @@ export default function Home() {
         records.map((record) => [record.id, record.visualStyle]),
       ),
     );
+    setKeyframes(
+      Object.fromEntries(
+        records.flatMap((record) =>
+          ([
+            ["首帧", record.keyframes?.first],
+            ["尾帧", record.keyframes?.last],
+          ] as const)
+            .filter((entry): entry is [string, PersistedKeyframe] => Boolean(entry[1]))
+            .map(([label, frame]) => [
+              `${record.id}-${label}`,
+              {
+                ...frame,
+                url: frame.comfyName
+                  ? referenceAssetUrl(
+                      { comfyName: frame.comfyName },
+                      comfyUrl,
+                    )
+                  : "",
+              },
+            ]),
+        ),
+      ),
+    );
     const restoredPrompts: Record<string, string> = {};
     const restoredOptimizedPrompts: Record<string, string> = {};
     records.forEach((record) => {
@@ -2204,19 +2261,9 @@ export default function Home() {
       Object.fromEntries(
         Object.entries(current).map(([shotId, subjects]) => [
           shotId,
-          subjects
-            .map((subject) => ({
-              ...subject,
-              assetKeys: subject.assetKeys.filter(
-                (key) => !matchesAsset(referenceAssets[key]?.sourcePath),
-              ),
-              children: (subject.children ?? []).map((child) => ({
-                ...child,
-                assetKeys: child.assetKeys.filter(
-                  (key) => !matchesAsset(referenceAssets[key]?.sourcePath),
-                ),
-              })),
-            }))
+          remapSubjectReferenceKeys(subjects, (key) =>
+            matchesAsset(referenceAssets[key]?.sourcePath) ? null : key,
+          )
             .filter(
               (subject) =>
                 subject.assetKeys.length > 0 ||
@@ -3188,11 +3235,22 @@ export default function Home() {
         : { ...generationBase, mode: manifestMode };
     const output = Object.prototype.hasOwnProperty.call(overrides, "output")
       ? overrides.output ?? null
-      : shotFileNames[shot.id] ?? shot.output ?? null;
+      : shot.output ?? null;
     const visualStyle =
       overrides.visualStyle ??
       shotVisualStyles[shot.id] ??
       "natural_cinematic";
+    const savedKeyframes = Object.fromEntries(
+      ([
+        ["first", keyframes[`${shot.id}-首帧`]],
+        ["last", keyframes[`${shot.id}-尾帧`]],
+      ] as const).filter(([, frame]) => frame?.comfyName || frame?.sourcePath)
+        .map(([name, frame]) => [name, {
+          name: frame!.name,
+          ...(frame!.sourcePath ? { sourcePath: frame!.sourcePath } : {}),
+          ...(frame!.comfyName ? { comfyName: frame!.comfyName } : {}),
+        }]),
+    ) as { first?: PersistedKeyframe; last?: PersistedKeyframe };
     await writable.write(
       JSON.stringify(
         {
@@ -3205,6 +3263,7 @@ export default function Home() {
             subjects: referencedSubjects,
           },
           visualStyle,
+          ...(Object.keys(savedKeyframes).length ? { keyframes: savedKeyframes } : {}),
           output,
         },
         null,
@@ -3469,6 +3528,26 @@ export default function Home() {
     await writable.write(await file.arrayBuffer());
     await writable.close();
     return `片段/${shot.id}-${safeFileStem(shot.title)}/引用/${targetName}`;
+  }
+  async function saveKeyframeSourceFile(
+    shot: { id: string; title: string },
+    file: File,
+    label: "首帧" | "尾帧",
+  ) {
+    if (!projectDirectory) return undefined;
+    const clips = await projectDirectory.getDirectoryHandle("片段", { create: true });
+    const clipDirectory = await clips.getDirectoryHandle(
+      `${shot.id}-${safeFileStem(shot.title)}`,
+      { create: true },
+    );
+    const frameDirectory = await clipDirectory.getDirectoryHandle("关键帧", { create: true });
+    const extension = file.name.match(/\.[^.]+$/)?.[0] ?? ".png";
+    const targetName = `${label}${extension}`;
+    const handle = await frameDirectory.getFileHandle(targetName, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(await file.arrayBuffer());
+    await writable.close();
+    return `片段/${shot.id}-${safeFileStem(shot.title)}/关键帧/${targetName}`;
   }
   async function uploadReference(
     event: React.ChangeEvent<HTMLInputElement>,
@@ -4128,6 +4207,7 @@ export default function Home() {
       const fileName = `continuity-${sourceShotId}-to-${nextShot.id}-${Math.round(video.currentTime * 1000)}.png`;
       const url = URL.createObjectURL(blob);
       const key = `${nextShot.id}-首帧`;
+      const projectEpoch = projectEpochRef.current;
       setKeyframes((current) => ({
         ...current,
         [key]: { name: fileName, url },
@@ -4149,9 +4229,18 @@ export default function Home() {
       });
       const uploaded = (await response.json()) as { name?: string };
       if (!response.ok || !uploaded.name) throw new Error("上传首帧失败");
+      if (projectEpoch !== projectEpochRef.current) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const sourcePath = await saveKeyframeSourceFile(
+        nextShot,
+        new File([blob], fileName, { type: "image/png" }),
+        "首帧",
+      );
       setKeyframes((current) => ({
         ...current,
-        [key]: { name: fileName, url, comfyName: uploaded.name },
+        [key]: { name: fileName, url, comfyName: uploaded.name, sourcePath },
       }));
       setGenerationStatus(`已将当前帧设为片段 ${nextShot.id} 首帧`);
     } catch {
@@ -5601,7 +5690,9 @@ export default function Home() {
                           onChange={async (event) => {
                             const file = event.target.files?.[0];
                             if (!file) return;
-                            const key = `${shots[activeShot].id}-${label}`;
+                            const currentShot = shots[activeShot];
+                            const frameLabel = label as "首帧" | "尾帧";
+                            const key = `${currentShot.id}-${frameLabel}`;
                             const url = URL.createObjectURL(file);
                             setKeyframes((current) => ({
                               ...current,
@@ -5611,6 +5702,11 @@ export default function Home() {
                             form.append("image", file, file.name);
                             form.append("comfy_url", comfyUrl);
                             try {
+                              const sourcePath = await saveKeyframeSourceFile(
+                                currentShot,
+                                file,
+                                frameLabel,
+                              );
                               const response = await fetch("/api/upload", {
                                 method: "POST",
                                 body: form,
@@ -5625,10 +5721,28 @@ export default function Home() {
                                     name: file.name,
                                     url,
                                     comfyName: uploaded.name,
+                                    sourcePath,
                                   },
                                 }));
-                            } catch {
-                              /* local preview remains available */
+                              else {
+                                URL.revokeObjectURL(url);
+                                setKeyframes((current) => {
+                                  const next = { ...current };
+                                  delete next[key];
+                                  return next;
+                                });
+                                setGenerationStatus("关键帧上传失败");
+                              }
+                            } catch (error) {
+                              URL.revokeObjectURL(url);
+                              setKeyframes((current) => {
+                                const next = { ...current };
+                                delete next[key];
+                                return next;
+                              });
+                              setGenerationStatus(
+                                error instanceof Error ? error.message : "关键帧上传失败",
+                              );
                             }
                           }}
                         />
@@ -5900,5 +6014,3 @@ export default function Home() {
     </main>
   );
 }
-
-
