@@ -7,6 +7,7 @@ import {
   Box,
   CircleStop,
   Clapperboard,
+  Clipboard,
   Dice5,
   Eye,
   Film,
@@ -65,6 +66,7 @@ type ProjectShotRecord = Shot & {
   prompt?: string | Partial<Ref2vaPromptManifest>;
   promptOriginal?: string;
   promptOptimized?: string;
+  prompts?: Record<string, ClipPromptRecord>;
 };
 type ProjectAssetType =
   "character" | "scene" | "clothing" | "prop" | "video" | "audio" | "custom";
@@ -473,7 +475,6 @@ type PersistedDirectorState = {
   shotSettings?: Record<string, ShotSettings>;
   shotVideos?: Record<string, string>;
   shotFileNames?: Record<string, string>;
-  shotProgress?: Record<string, number>;
   generationDurations?: Record<string, number>;
   shotTasks?: Record<string, ShotTask>;
   shotStages?: Record<string, string>;
@@ -512,6 +513,9 @@ function normalizePrompt(value: unknown): string {
   )
     return sections[0][1].trim();
   return sections.map(([name, section]) => `${name}:\n${section}`).join("\n\n");
+}
+function promptStoreKey(shotId: string, mode: string) {
+  return `${shotId}::${mode}`;
 }
 function toRef2vaPromptManifest(value: unknown): Ref2vaPromptManifest {
   const text = normalizePrompt(value);
@@ -979,7 +983,7 @@ async function readProjectShots(
           generation?: ProjectShotRecord["generation"];
           output?: string;
           references?: { subjects?: PersistedPromptSubject[] };
-          prompt?: string | Partial<Ref2vaPromptManifest> | ClipPromptRecord;
+          prompts?: Record<string, ClipPromptRecord>;
           visualStyle?: VisualStyleKey;
         };
         const generation = data.generation ?? {};
@@ -993,13 +997,6 @@ async function readProjectShots(
             if (entry.kind === "file" && /\.(mp4|webm|mov)$/i.test(name)) { output = name; break; }
           }
         }
-        const savedPrompt = data.prompt;
-        const promptRecord =
-          savedPrompt &&
-          typeof savedPrompt === "object" &&
-          "original" in savedPrompt
-            ? (savedPrompt as ClipPromptRecord)
-            : null;
         return {
           id: clip.id,
           title: clip.title,
@@ -1009,15 +1006,7 @@ async function readProjectShots(
           output,
           generation,
           references: data.references,
-          prompt: promptRecord
-            ? normalizePrompt(promptRecord.original)
-            : normalizePrompt(savedPrompt),
-          promptOriginal: promptRecord
-            ? normalizePrompt(promptRecord.original)
-            : undefined,
-          promptOptimized: promptRecord?.optimized
-            ? normalizePrompt(promptRecord.optimized)
-            : undefined,
+          prompts: data.prompts,
           visualStyle: data.visualStyle,
         };
       } catch {
@@ -1042,7 +1031,6 @@ export default function Home() {
   const [keyframeMode, setKeyframeMode] = useState<
     "first" | "last" | "first_last"
   >("first");
-  const [shotProgress, setShotProgress] = useState<Record<string, number>>({});
   const [shotStages, setShotStages] = useState<Record<string, string>>({});
   const [shotVisualStyles, setShotVisualStyles] = useState<Record<string, VisualStyleKey>>({});
   const [railWidth, setRailWidth] = useState(220);
@@ -1111,6 +1099,7 @@ export default function Home() {
   >(null);
   const [promptViewerOpen, setPromptViewerOpen] = useState(false);
   const [promptDraft, setPromptDraft] = useState("");
+  const [promptCopied, setPromptCopied] = useState(false);
   const [optimizedPrompts, setOptimizedPrompts] = useState<Record<string, string>>({});
   const [promptNotice, setPromptNotice] = useState<{
     type: "success" | "error";
@@ -1407,14 +1396,7 @@ export default function Home() {
         setActiveShot((current) => Math.min(current, saved.shots!.length - 1));
       }
       if (saved.shotPrompts) {
-        setShotPrompts(
-          Object.fromEntries(
-            Object.entries(saved.shotPrompts).map(([id, value]) => [
-              id,
-              normalizePrompt(value),
-            ]),
-          ),
-        );
+        setShotPrompts(saved.shotPrompts);
       }
       if (saved.promptBuilderSettings)
         setPromptBuilderSettings(saved.promptBuilderSettings);
@@ -1432,7 +1414,6 @@ export default function Home() {
         );
       if (saved.shotVideos) setShotVideos(saved.shotVideos);
       if (saved.shotFileNames) setShotFileNames(saved.shotFileNames);
-      if (saved.shotProgress) setShotProgress(saved.shotProgress);
       if (saved.generationDurations)
         setGenerationDurations(saved.generationDurations);
       if (saved.shotTasks) setShotTasks(saved.shotTasks);
@@ -1536,7 +1517,6 @@ export default function Home() {
       shotSettings,
       shotVideos,
       shotFileNames,
-      shotProgress,
       generationDurations,
       shotTasks,
       shotStages,
@@ -1563,7 +1543,6 @@ export default function Home() {
     shotSettings,
     shotVideos,
     shotFileNames,
-    shotProgress,
     generationDurations,
     shotTasks,
     shotStages,
@@ -1582,9 +1561,10 @@ export default function Home() {
     void (async () => {
       for (const shot of shots) {
         const settings = shotSettings[shot.id] ?? shotSettingDefaults;
+        const modeKey = promptStoreKey(shot.id, settings.mode);
         const promptData =
-          optimizedPrompts[shot.id] ??
-          shotPrompts[shot.id] ??
+          optimizedPrompts[modeKey] ??
+          shotPrompts[modeKey] ??
           (shot.id === taskShot?.id ? prompt : "");
         await writeClipManifest(shot, {
           generation: {
@@ -1605,9 +1585,9 @@ export default function Home() {
               ? { keyframeMode }
               : {}),
           },
-          promptOriginal: shotPrompts[shot.id] ??
+          promptOriginal: shotPrompts[modeKey] ??
             (shot.id === taskShot?.id ? prompt : ""),
-          promptOptimized: optimizedPrompts[shot.id],
+          promptOptimized: optimizedPrompts[modeKey],
           prompt: promptData,
           output: shotVideos[shot.id] || shot.output
             ? (shotFileNames[shot.id] ?? shot.output ??
@@ -1645,7 +1625,9 @@ export default function Home() {
   useEffect(() => {
     if (!storageReady || !taskShot) return;
     const settings = shotSettings[taskShot.id] ?? shotSettingDefaults;
-    setPrompt(normalizePrompt(shotPrompts[taskShot.id]));
+    setPrompt(
+      normalizePrompt(shotPrompts[promptStoreKey(taskShot.id, settings.mode)]),
+    );
     setPromptNotice(null);
     setSettingsSegmentIndex(null);
     setActivePromptSegment((current) => ({
@@ -1855,7 +1837,11 @@ export default function Home() {
       settings?.resolution ?? nextShot.meta.split("·")[0].trim();
     setActiveShot(index);
     activeShotIdRef.current = nextShot.id;
-    setPrompt(normalizePrompt(shotPrompts[nextShot.id]));
+    setPrompt(
+      normalizePrompt(
+        shotPrompts[promptStoreKey(nextShot.id, settings?.mode ?? activeMode)],
+      ),
+    );
     const savedVideo = shotVideos[nextShot.id];
     setVideoUrl(savedVideo ?? null);
     void loadArchivedShotVideo(nextShot).then((url) => {
@@ -1874,11 +1860,6 @@ export default function Home() {
                 ? "已停止"
                 : "等待生成",
     );
-    if (nextShot.state !== "生成中")
-      setShotProgress((current) => ({
-        ...current,
-        [nextShot.id]: nextShot.state === "已完成" ? 100 : 0,
-      }));
     setDuration(
       settings?.duration ?? `${nextShot.detail.match(/\d+/)?.[0] ?? 6} 秒`,
     );
@@ -1973,7 +1954,6 @@ export default function Home() {
     setKeyframeMode("first");
     setVideoUrl(null);
     setGenerationStatus("等待生成");
-    setShotProgress((current) => ({ ...current, [id]: 0 }));
     setAddDialog(false);
   }
   function renameShot(index: number) {
@@ -2128,11 +2108,6 @@ export default function Home() {
         delete nextFileNames[deletedId];
         return nextFileNames;
       });
-      setShotProgress((current) => {
-        const nextProgress = { ...current };
-        delete nextProgress[deletedId];
-        return nextProgress;
-      });
       setGenerationDurations((current) => {
         const nextDurations = { ...current };
         delete nextDurations[deletedId];
@@ -2168,7 +2143,11 @@ export default function Home() {
     const nextShot = next[nextIndex];
     if (nextShot) {
       const settings = shotSettings[nextShot.id] ?? shotSettingDefaults;
-      setPrompt(normalizePrompt(shotPrompts[nextShot.id]));
+      setPrompt(
+        normalizePrompt(
+          shotPrompts[promptStoreKey(nextShot.id, settings.mode)],
+        ),
+      );
       setVideoUrl(shotVideos[nextShot.id] ?? null);
       setDuration(settings.duration);
       setResolution(settings.resolution);
@@ -2458,6 +2437,12 @@ export default function Home() {
   }
   function changeGenerationMode(nextMode: string) {
     setMode(nextMode);
+    const nextModePrompt = taskShot
+      ? shotPrompts[promptStoreKey(taskShot.id, nextMode)] ?? ""
+      : "";
+    if (taskShot) {
+      setPrompt(normalizePrompt(nextModePrompt));
+    }
     updateSetting("mode", nextMode);
     const shot = shots[activeShot];
     if (shot) {
@@ -2477,72 +2462,41 @@ export default function Home() {
           turbo: settings.turbo,
         },
         prompt:
-          optimizedPrompts[shot.id] ??
-          shotPrompts[shot.id] ??
-          (shot.id === taskShot?.id ? prompt : ""),
+          optimizedPrompts[promptStoreKey(shot.id, nextMode)] ??
+          shotPrompts[promptStoreKey(shot.id, nextMode)] ??
+          (shot.id === taskShot?.id ? nextModePrompt : ""),
       });
     }
   }
   function openPromptViewer() {
-    setPromptDraft(
-      taskShot ? optimizedPrompts[taskShot.id] ?? prompt : prompt,
-    );
+    const optimized = taskShot
+      ? optimizedPrompts[promptStoreKey(taskShot.id, activeMode)]?.trim()
+      : "";
+    if (!optimized) {
+      setGenerationStatus("当前模式暂无优化提示词，请先点击“优化提示词”");
+      return;
+    }
+    setPromptDraft(optimized);
+    setPromptCopied(false);
     setPromptViewerOpen(true);
   }
-  function closePromptViewer() {
-    if (taskShot) {
-      const nextPrompt = promptDraft.trim();
-      setOptimizedPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
-      const settings = shotSettings[taskShot.id] ?? shotSettingDefaults;
-      void writeClipManifest(taskShot, {
-        generation: {
-          mode: settings.mode,
-          duration: Number.parseFloat(settings.duration) || 6,
-          resolution: settings.resolution,
-          aspect: settings.aspect,
-          fps: Number.parseInt(settings.fps, 10) || 24,
-          model: settings.model,
-          turbo: settings.turbo,
-        },
-        promptOriginal: shotPrompts[taskShot.id] ?? prompt,
-        promptOptimized: nextPrompt,
-        visualStyle: shotVisualStyles[taskShot.id] ?? "natural_cinematic",
-      });
+  async function copyPromptViewer() {
+    if (!promptDraft.trim()) return;
+    try {
+      await navigator.clipboard.writeText(promptDraft);
+      setPromptCopied(true);
+      window.setTimeout(() => setPromptCopied(false), 1600);
+    } catch {
+      setGenerationStatus("复制失败，请手动选择提示词复制");
     }
+  }
+  function closePromptViewer() {
+    setPromptCopied(false);
     setPromptViewerOpen(false);
   }
   function shotElapsed(shotId: string) {
     const task = shotTasks[shotId];
     return task ? elapsedNow - task.startedAt : generationDurations[shotId];
-  }
-  function stageForNode(nodeId: string | null | undefined) {
-    if (!nodeId) return null;
-    if (
-      ["119", "120", "127", "128", "134", "135", "143", "144", "145"].includes(
-        nodeId,
-      )
-    )
-      return "加载模型";
-    if (
-      [
-        "125",
-        "124",
-        "123",
-        "126",
-        "131",
-        "132",
-        "133",
-        "136",
-        "137",
-        "138",
-        "139",
-      ].includes(nodeId)
-    )
-      return "正在采样";
-    if (["121", "122"].includes(nodeId)) return "解码视频";
-    if (nodeId === "130") return "封装视频";
-    if (nodeId === "92") return "保存视频";
-    return null;
   }
   function resetProjectEditorState() {
     setShots([]);
@@ -2558,7 +2512,6 @@ export default function Home() {
     setShotSettings({});
     setShotVideos({});
     setShotFileNames({});
-    setShotProgress({});
     setGenerationDurations({});
     setShotTasks({});
     setShotStages({});
@@ -2806,23 +2759,18 @@ export default function Home() {
         records.filter((record) => record.visualStyle).map((record) => [record.id, record.visualStyle!]),
       ),
     );
-    setShotPrompts(
-      Object.fromEntries(
-        records
-          .filter((record) => record.prompt)
-          .map((record) => [
-            record.id,
-            normalizePrompt(record.promptOriginal ?? record.prompt),
-          ]),
-      ),
-    );
-    setOptimizedPrompts(
-      Object.fromEntries(
-        records
-          .filter((record) => record.promptOptimized?.trim())
-          .map((record) => [record.id, record.promptOptimized!.trim()]),
-      ),
-    );
+    const restoredPrompts: Record<string, string> = {};
+    const restoredOptimizedPrompts: Record<string, string> = {};
+    records.forEach((record) => {
+      Object.entries(record.prompts ?? {}).forEach(([mode, promptRecord]) => {
+        const key = promptStoreKey(record.id, mode);
+        restoredPrompts[key] = normalizePrompt(promptRecord.original);
+        if (typeof promptRecord.optimized === "string" && promptRecord.optimized.trim())
+          restoredOptimizedPrompts[key] = normalizePrompt(promptRecord.optimized);
+      });
+    });
+    setShotPrompts(restoredPrompts);
+    setOptimizedPrompts(restoredOptimizedPrompts);
     const restored: Record<string, PromptSubject[]> = {};
     const restoredReferenceAssets: Record<string, ReferenceAsset> = {};
     records.forEach((record) => {
@@ -3102,9 +3050,6 @@ export default function Home() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-sm font-semibold">导演台设置</h2>
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                配置 ComfyUI 连接和提示词优化服务。
-              </p>
             </div>
             <button
               type="button"
@@ -3116,7 +3061,7 @@ export default function Home() {
             </button>
           </div>
           <label htmlFor="comfyui-url" className="field-label mt-5">
-            连接地址
+            ComfyUI 地址
           </label>
           <input
             id="comfyui-url"
@@ -3133,17 +3078,10 @@ export default function Home() {
             className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60"
             autoFocus
           />
-          <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-            示例：http://127.0.0.1:8188 或局域网地址 http://192.168.1.20:8188。
-          </p>
           <div className="mt-5 border-t border-border pt-4">
             <span className="field-label">本地 Agent CLI</span>
-            <p className="mt-1 text-[9px] leading-4 text-muted-foreground">
-              填写用于优化 H3 提示词的本地命令行 Agent，系统会根据可执行文件名自动识别。
-            </p>
             <div className="mt-3 space-y-3">
-              <label className="block"><span className="field-label">Agent 可执行程序路径</span><input value={llmExecutablePath} onChange={(event) => setLlmExecutablePath(event.target.value)} placeholder="留空使用 PATH 中的 codex" className="mt-1 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60" /></label>
-              <p className="text-[9px] leading-4 text-muted-foreground">支持 Codex、Claude Code 和 Gemini CLI。请填写具体可执行文件，而不是其所在文件夹；留空时默认使用系统 PATH 中的 codex。</p>
+              <label className="block"><span className="field-label">Agent 路径</span><input value={llmExecutablePath} onChange={(event) => setLlmExecutablePath(event.target.value)} placeholder="codex 或可执行文件路径" className="mt-1 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60" /></label>
             </div>
           </div>
           <div className="mt-5 flex justify-end gap-2">
@@ -3915,7 +3853,38 @@ export default function Home() {
             selected: optimizedPrompt ? "optimized" : "original",
           }
         : optimizedPrompt ?? originalPrompt;
-    const manifestOverrides = { ...restOverrides, prompt: manifestPrompt };
+    const promptModes: Record<string, ClipPromptRecord> = {};
+    const modePrefix = `${shot.id}::`;
+    const promptModeNames = new Set([
+      "T2VA",
+      "I2VA",
+      "R2VA",
+      ...Object.keys(shotPrompts)
+        .filter((key) => key.startsWith(modePrefix))
+        .map((key) => key.slice(modePrefix.length)),
+      ...Object.keys(optimizedPrompts)
+        .filter((key) => key.startsWith(modePrefix))
+        .map((key) => key.slice(modePrefix.length)),
+    ]);
+    promptModeNames.forEach((mode) => {
+        const key = promptStoreKey(shot.id, mode);
+        const modeOptimized = optimizedPrompts[key]?.trim();
+        promptModes[mode] = {
+          original: shotPrompts[key] ?? "",
+          ...(modeOptimized ? { optimized: modeOptimized } : {}),
+          selected: modeOptimized ? "optimized" : "original",
+        };
+    });
+    promptModes[manifestMode] = {
+      original: originalPrompt,
+      ...(optimizedPrompt ? { optimized: optimizedPrompt } : {}),
+      selected: optimizedPrompt ? "optimized" : "original",
+    };
+    const manifestOverrides = {
+      ...restOverrides,
+      prompt: manifestPrompt,
+      prompts: promptModes,
+    };
     const visualStyle = typeof overrideVisualStyle === "string"
       ? overrideVisualStyle
       : shotVisualStyles[shot.id];
@@ -4040,21 +4009,11 @@ export default function Home() {
         .replace(/[. ]+$/g, "");
       let finalName = sourceFileName || task.fileName;
       try {
-        let response: Response | null =
-          comfyUrl === "http://127.0.0.1:8188"
-            ? await fetch("http://127.0.0.1:3101/finalize-output", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: payload,
-              })
-            : null;
-        if (!response || !response.ok) {
-          response = await fetch("/api/output/finalize", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: payload,
-          });
-        }
+        const response = await fetch("/api/output/finalize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+        });
         const result = (await response.json().catch(() => ({}))) as {
           ok?: boolean;
           filename?: string;
@@ -4571,7 +4530,10 @@ export default function Home() {
     const nextPrompt = `${prompt.slice(0, promptMention.start)}${token}${prompt.slice(promptMention.end)}`;
     const nextCaret = promptMention.start + token.length;
     setPrompt(nextPrompt);
-    setShotPrompts((current) => ({ ...current, [taskShot.id]: nextPrompt }));
+    setShotPrompts((current) => ({
+      ...current,
+      [promptStoreKey(taskShot.id, activeMode)]: nextPrompt,
+    }));
     setPromptMention(null);
     window.requestAnimationFrame(() => {
       const textarea = promptRef.current;
@@ -4582,7 +4544,15 @@ export default function Home() {
   }
 
   async function optimizeH3Prompt() {
-    if (!taskShot || !prompt.trim() || promptOptimizing[taskShot.id]) return;
+    if (!taskShot) {
+      setGenerationStatus("请先选择一个镜头");
+      return;
+    }
+    if (!prompt.trim()) {
+      setGenerationStatus("请先输入提示词");
+      return;
+    }
+    if (promptOptimizing[taskShot.id]) return;
     if (!llmExecutablePath.trim()) {
       const message = "请先在导演台设置中配置本地 Agent 的可执行程序路径";
       setGenerationStatus(message);
@@ -4661,7 +4631,7 @@ export default function Home() {
           visualStyle: shotVisualStyles[taskShot.id]
             ? { key: shotVisualStyles[taskShot.id], ...visualStylePresets[shotVisualStyles[taskShot.id]] }
             : undefined,
-          executablePath: llmExecutablePath.trim() || undefined,
+          executablePath: llmExecutablePath.trim(),
         }),
       });
       const result = (await response.json().catch(() => ({}))) as { prompt?: string; error?: string };
@@ -4669,7 +4639,7 @@ export default function Home() {
         throw new Error(result.error || "提示词优化失败");
       setOptimizedPrompts((current) => ({
         ...current,
-        [taskShot.id]: result.prompt!,
+        [promptStoreKey(taskShot.id, activeMode)]: result.prompt!,
       }));
       await writeClipManifest(taskShot, {
         generation: {
@@ -4681,7 +4651,7 @@ export default function Home() {
           model,
           turbo: turboMode,
         },
-        promptOriginal: shotPrompts[taskShot.id] ?? prompt,
+        promptOriginal: shotPrompts[promptStoreKey(taskShot.id, activeMode)] ?? prompt,
         promptOptimized: result.prompt!,
         visualStyle: shotVisualStyles[taskShot.id] ?? "natural_cinematic",
       });
@@ -4880,7 +4850,6 @@ export default function Home() {
                 delete next[shotId];
                 return next;
               });
-              setShotProgress((current) => ({ ...current, [shotId]: 100 }));
               setShotStages((current) => ({
                 ...current,
                 [shotId]: "整理输出",
@@ -4914,7 +4883,6 @@ export default function Home() {
                 delete next[shotId];
                 return next;
               });
-              setShotProgress((current) => ({ ...current, [shotId]: 0 }));
               setShotStages((current) => ({
                 ...current,
                 [shotId]: "生成失败",
@@ -4943,148 +4911,6 @@ export default function Home() {
     };
   }, [shotTasks, shotStages, comfyUrl]);
 
-  useEffect(() => {
-    const taskIds = Object.values(shotTasks).map((task) => task.promptId);
-    if (!taskIds.length) return;
-    let wsBase = "ws://127.0.0.1:8188";
-    try {
-      const parsed = new URL(comfyUrl);
-      wsBase = `${parsed.protocol === "https:" ? "wss" : "ws"}://${parsed.host}${parsed.pathname.replace(/\/$/, "")}`;
-    } catch {
-      // HTTP polling remains available when the configured address is invalid.
-    }
-    const socket = new WebSocket(
-      `${wsBase}/ws?clientId=${encodeURIComponent(clientId)}`,
-    );
-    socket.onmessage = (event) => {
-      if (typeof event.data !== "string") return;
-      try {
-        const message = JSON.parse(event.data) as {
-          type?: string;
-          data?: {
-            prompt_id?: string;
-            node?: string | null;
-            value?: number;
-            max?: number;
-            step?: number;
-            steps?: number;
-            progress?: { value?: number; max?: number };
-            nodes?: Record<
-              string,
-              { value?: number; max?: number; state?: string }
-            >;
-          };
-        };
-        const data = message.data;
-        if (!data) return;
-        const promptId = data.prompt_id;
-        const matchedTask =
-          promptId && taskIds.includes(promptId)
-            ? Object.entries(shotTasks).find(
-                ([, task]) => task.promptId === promptId,
-              )
-            : taskIds.length === 1
-              ? Object.entries(shotTasks)[0]
-              : undefined;
-        if (!matchedTask) return;
-        const shotId = matchedTask[0];
-        const eventStage = stageForNode(data.node);
-        if (eventStage) {
-          setShotStages((current) => ({ ...current, [shotId]: eventStage }));
-          if (activeShotIdRef.current === shotId)
-            setGenerationStatus(eventStage);
-        }
-        let ratio: number | null = null;
-        if (
-          Number.isFinite(data.step) &&
-          Number.isFinite(data.steps) &&
-          data.steps! > 0
-        )
-          ratio = data.step! / data.steps!;
-        if (
-          message.type === "progress" &&
-          Number.isFinite(data.value) &&
-          Number.isFinite(data.max) &&
-          data.max! > 0
-        )
-          ratio = data.value! / data.max!;
-        if (
-          ratio === null &&
-          data.progress &&
-          Number.isFinite(data.progress.value) &&
-          Number.isFinite(data.progress.max) &&
-          data.progress.max! > 0
-        ) {
-          ratio = data.progress.value! / data.progress.max!;
-        }
-        if (message.type === "progress_state" && data.nodes) {
-          const nodes = Object.values(data.nodes);
-          const runningNode = nodes.find(
-            (node) => node.state === "running" || node.state === "executing",
-          );
-          const currentNode =
-            runningNode ??
-            nodes.find((node) => Number(node.value) < Number(node.max));
-          if (
-            currentNode &&
-            Number.isFinite(currentNode.value) &&
-            Number.isFinite(currentNode.max) &&
-            Number(currentNode.max) > 0
-          ) {
-            ratio = Number(currentNode.value) / Number(currentNode.max);
-          }
-        }
-        const stage =
-          eventStage ??
-          (message.type === "progress" || message.type === "progress_state"
-            ? "正在采样"
-            : null);
-        if (ratio === null && !stage) return;
-        let percentage =
-          stage === "加载模型"
-            ? 5
-            : stage === "正在采样"
-              ? 10
-              : stage === "解码视频"
-                ? 90
-                : stage === "封装视频"
-                  ? 97
-                  : stage === "保存视频"
-                    ? 99
-                    : 1;
-        if (ratio !== null) {
-          const normalized = Math.max(0, Math.min(1, ratio));
-          percentage =
-            stage === "加载模型"
-              ? normalized * 10
-              : stage === "解码视频"
-                ? 90 + normalized * 7
-                : stage === "封装视频"
-                  ? 97 + normalized * 2
-                  : stage === "保存视频"
-                    ? 99
-                    : 10 + normalized * 80;
-          if (stage === "正在采样" && activeShotIdRef.current === shotId) {
-            const currentStep = Math.min(
-              matchedTask[1].steps,
-              Math.max(0, Math.round(normalized * matchedTask[1].steps)),
-            );
-            setGenerationStatus(
-              `正在采样 · ${currentStep}/${matchedTask[1].steps} 步`,
-            );
-          }
-        }
-        setShotProgress((current) => ({
-          ...current,
-          [shotId]: Math.max(0, Math.min(99, Math.round(percentage))),
-        }));
-      } catch {
-        // Ignore non-JSON or unsupported ComfyUI events.
-      }
-    };
-    return () => socket.close();
-  }, [shotTasks, comfyUrl]);
-
   function toggleGeneration() {
     if (!taskShot) return;
     const shotId = taskShot.id;
@@ -5107,7 +4933,6 @@ export default function Home() {
           item.id === shotId ? { ...item, state: "已停止" } : item,
         ),
       );
-      setShotProgress((current) => ({ ...current, [shotId]: 0 }));
       setShotStages((current) => ({ ...current, [shotId]: "已停止" }));
       setGenerationStatus("已停止");
       return;
@@ -5222,10 +5047,10 @@ export default function Home() {
       }
     }
     const generationPrompt =
-      optimizedPrompts[shotId] ??
+      optimizedPrompts[promptStoreKey(shotId, activeMode)] ??
       (shotId === taskShot?.id && prompt.trim()
         ? prompt.trim()
-        : (shotPrompts[shotId] ?? prompt));
+        : (shotPrompts[promptStoreKey(shotId, activeMode)] ?? prompt));
     setVideoUrl(null);
     setSubmittingShots((current) => ({ ...current, [shotId]: true }));
     void fetch("/api/generate", {
@@ -5325,7 +5150,6 @@ export default function Home() {
             item.id === shotId ? { ...item, state: "失败" } : item,
           ),
         );
-        setShotProgress((current) => ({ ...current, [shotId]: 0 }));
         setShotStages((current) => ({ ...current, [shotId]: "提交失败" }));
         if (activeShotIdRef.current === shotId)
           setGenerationStatus(`提交失败：${message}`);
@@ -5336,7 +5160,6 @@ export default function Home() {
         item.id === shotId ? { ...item, state: "生成中" } : item,
       ),
     );
-    setShotProgress((current) => ({ ...current, [shotId]: 0 }));
     setShotStages((current) => ({ ...current, [shotId]: "排队中" }));
     if (seedMode === "random") setSeed(submittedSeed);
   }
@@ -5982,11 +5805,15 @@ export default function Home() {
                   if (taskShot) {
                     setOptimizedPrompts((current) => {
                       const next = { ...current };
-                      delete next[taskShot.id];
+                      delete next[promptStoreKey(taskShot.id, activeMode)];
                       return next;
                     });
                   }
-                  if (taskShot) setShotPrompts((current) => ({ ...current, [taskShot.id]: value }));
+                  if (taskShot)
+                    setShotPrompts((current) => ({
+                      ...current,
+                      [promptStoreKey(taskShot.id, activeMode)]: value,
+                    }));
                 }}
                 onClick={(event) =>
                   updatePromptMention(
@@ -6680,17 +6507,20 @@ export default function Home() {
             <textarea
               autoFocus
               value={promptDraft}
-              onChange={(event) => {
-                const value = event.target.value;
-                setPromptDraft(value);
-                if (taskShot) {
-                  setOptimizedPrompts((current) => ({ ...current, [taskShot.id]: value }));
-                }
-              }}
+              readOnly
               placeholder="当前片段暂无可显示的提示词"
               className="mt-4 min-h-0 flex-1 resize-none rounded-lg border border-border bg-muted/25 p-3 font-mono text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/60"
             />
             <div className="mt-4 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void copyPromptViewer()}
+                className="h-8 gap-1.5 px-4 text-xs"
+              >
+                <Clipboard className="size-3.5" />
+                {promptCopied ? "已复制" : "复制"}
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
