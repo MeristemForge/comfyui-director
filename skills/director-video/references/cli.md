@@ -14,7 +14,7 @@ node scripts/directorctl.mjs clips --project <path>
 node scripts/directorctl.mjs clip --project <path> --clip <id>
 ```
 
-`assets` lists files below `资产/`. `clip` returns the complete manifest, including persisted reference slots and prompt selection.
+`assets` lists files below `资产/`. `clip` returns the complete version 2 manifest, including persisted reference slots and the separate `prompts.T2VA`, `prompts.I2VA`, and `prompts.R2VA` records. Rendering uses a mode's `optimized` string when present and otherwise uses its `original` string.
 
 ## Bind and prepare
 

@@ -27,4 +27,4 @@ The prompt record may be either a plain string or:
 }
 ```
 
-`directorctl` converts the selected structured prompt into the sectioned text accepted by `/api/generate`. Duration, resolution, aspect, FPS, model, turbo, seed, and keyframe settings come from `generation` unless an explicit CLI override is supplied.
+`directorctl` reads the string prompt for the active generation mode, preferring `optimized` and falling back to `original`, then sends it to `/api/generate`. Duration, resolution, aspect, FPS, model, turbo, seed, and keyframe settings come from `generation` unless an explicit CLI override is supplied.

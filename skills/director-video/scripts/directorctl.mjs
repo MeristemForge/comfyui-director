@@ -8,15 +8,9 @@ const DEFAULT_DIRECTOR_URL = "http://localhost:3000";
 const DEFAULT_COMFY_URL = "http://127.0.0.1:8188";
 const DEFAULT_TIMEOUT_SECONDS = 1800;
 const REFERENCE_LIMITS = { image: 9, video: 3, audio: 3 };
-const PROMPT_SECTIONS = [
-  "subject_definitions",
-  "summary",
-  "retention_analysis",
-  "detailed_description",
-  "integrated_multimodal_description",
-  "overall_soundscape",
-  "non_diegetic_music",
-];
+const GENERATION_MODES = ["T2VA", "I2VA", "R2VA"];
+const REFERENCE_ROLES = ["character", "wardrobe", "object", "environment", "video", "audio", "composite"];
+const REFERENCE_KINDS = ["image", "video", "audio"];
 
 function usage() {
   return `directorctl - operate ComfyUI Director Desk projects without UI clicks
@@ -117,28 +111,76 @@ async function writeJson(filePath, value) {
 async function projectInfo(projectPath) {
   const root = path.resolve(projectPath || ".");
   const script = await readJson(path.join(root, "script.json"));
+  if (script.project?.version !== 2) fail("不支持此项目格式，请使用 version 2 项目");
   if (!Array.isArray(script.clips)) fail("script.json 缺少 clips 数组");
+  script.clips.forEach((clip, index) => {
+    if (!clip || typeof clip.id !== "string" || !clip.id.trim() ||
+      typeof clip.title !== "string" || !clip.title.trim() ||
+      typeof clip.path !== "string" || !clip.path.trim())
+      fail(`script.json 的第 ${index + 1} 个片段格式无效`);
+  });
   return { root, script };
 }
 
+function validateClipManifest(manifest, clip) {
+  if (manifest.version !== 2) fail(`片段 ${clip.id} 不是 version 2 格式`);
+  if (manifest.id !== clip.id || manifest.title !== clip.title)
+    fail(`片段 ${clip.id} 与 script.json 记录不一致`);
+  const generation = manifest.generation;
+  if (
+    !generation ||
+    !GENERATION_MODES.includes(generation.mode) ||
+    !Number.isFinite(generation.duration) || generation.duration <= 0 ||
+    typeof generation.resolution !== "string" || !generation.resolution.trim() ||
+    typeof generation.aspect !== "string" || !generation.aspect.trim() ||
+    !Number.isFinite(generation.fps) || generation.fps <= 0 ||
+    generation.model !== "H3" ||
+    typeof generation.turbo !== "boolean" ||
+    typeof generation.seed !== "string" || !generation.seed.trim() ||
+    !["fixed", "random"].includes(generation.seedMode) ||
+    !["first", "last", "first_last"].includes(generation.keyframeMode) ||
+    (generation.steps !== undefined && (!Number.isInteger(generation.steps) || generation.steps <= 0))
+  ) fail(`片段 ${clip.id} 的 generation 不完整`);
+  if (!manifest.prompts || !GENERATION_MODES.every((mode) => {
+    const prompt = manifest.prompts[mode];
+    return prompt && typeof prompt.original === "string" &&
+      (prompt.optimized === undefined || typeof prompt.optimized === "string");
+  })) fail(`片段 ${clip.id} 的 prompts 不完整`);
+  if (!Array.isArray(manifest.references?.subjects))
+    fail(`片段 ${clip.id} 的 references 不完整`);
+  for (const [subjectIndex, subject] of manifest.references.subjects.entries()) {
+    if (!subject || typeof subject.subjectId !== "string" || !subject.subjectId.trim() ||
+      typeof subject.name !== "string" || !subject.name.trim() || !Array.isArray(subject.references))
+      fail(`片段 ${clip.id} 的第 ${subjectIndex + 1} 个引用主体无效`);
+    if (subject.relation !== undefined &&
+      (typeof subject.relation.type !== "string" || !subject.relation.type.trim() ||
+        typeof subject.relation.parentSubjectId !== "string" || !subject.relation.parentSubjectId.trim()))
+      fail(`片段 ${clip.id} 的引用主体关系无效`);
+    for (const [referenceIndex, reference] of subject.references.entries()) {
+      if (!reference || typeof reference.assetKey !== "string" || !reference.assetKey.trim() ||
+        typeof reference.name !== "string" || !reference.name.trim() ||
+        !REFERENCE_ROLES.includes(reference.role) || !REFERENCE_KINDS.includes(reference.kind))
+        fail(`片段 ${clip.id} 的第 ${subjectIndex + 1} 个主体中，第 ${referenceIndex + 1} 个引用无效`);
+    }
+  }
+  if (typeof manifest.visualStyle !== "string" || !manifest.visualStyle.trim())
+    fail(`片段 ${clip.id} 的 visualStyle 无效`);
+  if (manifest.output !== null && typeof manifest.output !== "string")
+    fail(`片段 ${clip.id} 的 output 无效`);
+}
+
 function clipManifestPath(root, clip) {
-  const manifestPath = typeof clip.path === "string" && clip.path.trim()
-    ? clip.path
-    : `片段/${clip.id}-${safeStem(clip.title)}/clip.json`;
-  return ensureInside(root, manifestPath);
+  if (typeof clip.path !== "string" || !clip.path.trim())
+    fail(`片段 ${clip.id} 缺少 clip.json 路径`);
+  return ensureInside(root, clip.path);
 }
 
 async function getClip(project, clipId) {
   const clip = project.script.clips.find((item) => String(item.id) === String(clipId));
   if (!clip) fail(`找不到片段：${clipId}`);
   const manifestPath = clipManifestPath(project.root, clip);
-  let manifest;
-  try {
-    manifest = await readJson(manifestPath);
-  } catch (error) {
-    if (error.details?.code === "ENOENT") manifest = { id: clip.id, title: clip.title };
-    else throw error;
-  }
+  const manifest = await readJson(manifestPath);
+  validateClipManifest(manifest, clip);
   return { clip, manifest, manifestPath, directory: path.dirname(manifestPath) };
 }
 
@@ -150,19 +192,22 @@ function inferKind(filePath) {
 }
 
 function referenceKind(reference) {
-  if (["image", "video", "audio"].includes(reference.kind)) return reference.kind;
-  const match = String(reference.assetKey || "").match(/-(image|video|audio)-\d+$/);
-  return match?.[1] || inferKind(reference.sourcePath || reference.name || "");
+  if (!["image", "video", "audio"].includes(reference.kind))
+    fail(`引用 ${reference.assetKey || "unknown"} 缺少有效 kind`);
+  return reference.kind;
 }
 
 function inferRole(assetType, explicitRole) {
-  if (explicitRole) return explicitRole === "clothing" ? "wardrobe" : explicitRole;
-  return ({ character: "character", clothing: "wardrobe", prop: "object", scene: "environment", video: "composite", audio: "composite" })[assetType] || "composite";
+  if (explicitRole) {
+    if (!REFERENCE_ROLES.includes(explicitRole)) fail(`无效引用角色：${explicitRole}`);
+    return explicitRole;
+  }
+  return ({ character: "character", wardrobe: "wardrobe", prop: "object", scene: "environment", video: "video", audio: "audio" })[assetType] || "composite";
 }
 
 function assetTypeFromFolder(filePath) {
   const folder = relativeProjectPath(filePath).split("/")[1];
-  return ({ "角色": "character", "服装": "clothing", "道具": "prop", "场景": "scene", "视频": "video", "音频": "audio", "自定义": "custom" })[folder] || "custom";
+  return ({ "角色": "character", "服装": "wardrobe", "道具": "prop", "场景": "scene", "视频": "video", "音频": "audio", "自定义": "custom" })[folder] || "custom";
 }
 
 function nameFromFile(filePath) {
@@ -187,10 +232,9 @@ function allReferences(manifest) {
 }
 
 function referenceEntries(manifest) {
-  return allReferences(manifest).flatMap((subject) => [
-    ...(Array.isArray(subject.references) ? subject.references.map((reference) => ({ subject, reference })) : []),
-    ...(Array.isArray(subject.children) ? subject.children.flatMap((child) => (child.references || []).map((reference) => ({ subject: child, reference }))) : []),
-  ]);
+  return allReferences(manifest).flatMap((subject) =>
+    subject.references.map((reference) => ({ subject, reference })),
+  );
 }
 
 function nextSlot(manifest, clipId, kind) {
@@ -209,7 +253,7 @@ async function resolveAsset(root, input) {
   if (!info) fail(`找不到资产：${input}`);
   if (info.isFile()) return [{ absolute, sourcePath: relativeProjectPath(path.relative(root, absolute)), name: path.basename(absolute), type: assetTypeFromFolder(path.relative(root, absolute)) }];
   const files = await walkFiles(absolute);
-  const resolved = files.filter((file) => path.basename(file) !== "clothing.json" && path.basename(file) !== "asset.json" && path.basename(file) !== "prop.json" && path.basename(file) !== "scene.json").map((file) => ({ absolute: path.join(absolute, file), sourcePath: relativeProjectPath(path.relative(root, path.join(absolute, file))), name: path.basename(file), type: assetTypeFromFolder(path.relative(root, path.join(absolute, file))) }));
+  const resolved = files.filter((file) => !file.toLowerCase().endsWith(".json")).map((file) => ({ absolute: path.join(absolute, file), sourcePath: relativeProjectPath(path.relative(root, path.join(absolute, file))), name: path.basename(file), type: assetTypeFromFolder(path.relative(root, path.join(absolute, file))) }));
   if (!resolved.length) fail(`资产目录中没有可绑定的媒体文件：${input}`);
   return resolved;
 }
@@ -249,17 +293,9 @@ async function bind(project, args) {
   return { ok: true, clip: target.clip.id, manifest: relativeProjectPath(path.relative(project.root, target.manifestPath)), bound };
 }
 
-function promptText(value) {
-  if (typeof value === "string") return value.trim();
-  if (!value || typeof value !== "object") return "";
-  const record = value;
-  return PROMPT_SECTIONS.filter((name) => typeof record[name] === "string" && record[name].trim()).map((name) => `${name}:\n${record[name].trim()}`).join("\n\n");
-}
-
-function selectedPrompt(manifest) {
-  const prompt = manifest.prompt;
-  if (prompt && typeof prompt === "object" && "original" in prompt) return prompt.selected === "optimized" && prompt.optimized ? promptText(prompt.optimized) : promptText(prompt.original);
-  return promptText(prompt);
+function selectedPrompt(manifest, mode = manifest.generation.mode) {
+  const prompt = manifest.prompts[mode];
+  return String(prompt.optimized || prompt.original).trim();
 }
 
 function fileUrl(base, value) {
@@ -339,18 +375,19 @@ async function prepare(project, args, urls) {
 }
 
 function generationOptions(manifest, args) {
-  const generation = manifest.generation || {};
+  const generation = manifest.generation;
+  if (!generation) fail("clip.json 缺少 generation");
   return {
-    mode: args.mode || generation.mode || "R2VA",
-    duration: Number(args.duration ?? generation.duration ?? 6) || 6,
-    resolution: args.resolution || generation.resolution || "864 × 480",
-    aspect: args.aspect || generation.aspect || "16:9",
-    fps: Number(args.fps ?? generation.fps ?? 24) || 24,
-    model: args.model || generation.model || "H3",
-    turbo: args.turbo === undefined ? Boolean(generation.turbo ?? true) : args.turbo !== "false",
-    seed: args.seed ?? generation.seed ?? String(Math.floor(Math.random() * 9000000000000000) + 1000000000000000),
-    seedMode: args.seed_mode || generation.seedMode || "fixed",
-    keyframeMode: args.keyframe_mode || generation.keyframeMode || "first",
+    mode: args.mode || generation.mode,
+    duration: Number(args.duration ?? generation.duration),
+    resolution: args.resolution || generation.resolution,
+    aspect: args.aspect || generation.aspect,
+    fps: Number(args.fps ?? generation.fps),
+    model: args.model || generation.model,
+    turbo: args.turbo === undefined ? generation.turbo : args.turbo !== "false",
+    seed: args.seed ?? generation.seed,
+    seedMode: args.seed_mode || generation.seedMode,
+    keyframeMode: args.keyframe_mode || generation.keyframeMode,
   };
 }
 
@@ -359,7 +396,9 @@ async function render(project, args, urls) {
   const prepared = await prepare(project, args, urls);
   const options = generationOptions(prepared.target.manifest, args);
   const mode = options.mode;
-  if (!prepared.prompt) fail("片段没有可生成的提示词，请先写入 clip.json 的 prompt");
+  if (!GENERATION_MODES.includes(mode)) fail(`无效生成模式：${mode}`);
+  const prompt = selectedPrompt(prepared.target.manifest, mode);
+  if (!prompt) fail(`当前 ${mode} 模式没有提示词，请先写入 clip.json 的 prompts.${mode}`);
   const references = mode === "R2VA" ? prepared.references : { images: [], videos: [], audios: [] };
   const promptOverride = args.prompt_file
     ? (await readFile(ensureInside(project.root, args.prompt_file), "utf8")).trim()
@@ -367,7 +406,7 @@ async function render(project, args, urls) {
   const body = {
     shot_id: prepared.target.clip.id,
     shot_title: prepared.target.clip.title,
-    prompt: promptOverride || prepared.prompt,
+    prompt: promptOverride || prompt,
     ...options,
     client_id: `directorctl-${process.pid}`,
     comfy_url: urls.comfy,

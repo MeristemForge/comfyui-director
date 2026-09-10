@@ -19,7 +19,7 @@ Use this skill when the user asks an agent to work with a local ComfyUI Director
 - Before every render, ask the user to confirm the generation settings: video model, generation mode, duration, resolution, aspect ratio, FPS, and turbo/acceleration. Existing values in `clip.json` are a proposal to show the user, not permission to submit.
 - Do not call `render` until the user confirms those settings. Pass the confirmed values explicitly with `--mode`, `--model`, `--duration`, `--resolution`, `--aspect`, `--fps`, and `--turbo true|false`; do not silently rely on CLI defaults.
 - Use `render --wait` for a completed video. A submitted task is not a successful render; only report success after the command returns `status: completed` and an output path.
-- Preserve the user's original prompt. The renderer selects `prompt.selected`; an optimized prompt may be a string or the R2VA section object used by `clip.json`.
+- Preserve the user's original prompt. Version 2 projects store a separate string record for every mode in `prompts.T2VA`, `prompts.I2VA`, and `prompts.R2VA`; the renderer uses `optimized` when present and otherwise uses `original` for the generation mode.
 - When an agent-written prompt is supplied, it takes precedence for this render without destroying the original prompt in `clip.json`. Save it into the manifest only when the user explicitly asks to persist the optimization.
 - Do not exceed H3 limits: 9 images, 3 videos, and 3 audios. Never reorder existing references just to fill a slot.
 - Ask for or infer a project path only from the user's workspace context. Do not scan unrelated directories or upload files outside the selected project.

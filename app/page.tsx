@@ -33,21 +33,13 @@ import {
   type ProjectTreeAsset,
 } from "@/components/project-tree";
 
-type Ref2vaPromptManifest = {
-  subject_definitions: string;
-  summary: string;
-  retention_analysis: string;
-  detailed_description: string;
-  overall_soundscape: string;
-  non_diegetic_music: string;
-};
 type Shot = {
   id: string;
   title: string;
   detail: string;
   meta: string;
   state: string;
-  prompt?: string | Partial<Ref2vaPromptManifest>;
+  output?: string | null;
   visualStyle?: VisualStyleKey;
 };
 type VisualStyleKey = keyof typeof visualStylePresets;
@@ -59,21 +51,31 @@ const visualStylePresets = {
   neon_noir: { label: "都市霓虹黑色电影", prompt: `Cinematic neon-noir night look. Deep controlled shadows, rich blacks, blue, cyan, magenta and red urban neon illumination, wet reflective surfaces, luminous practical lights, strong atmospheric separation and sophisticated metropolitan night mood. Keep faces clearly readable and skin tones natural under colored lighting.\n\n${visualSubjectRealismGuidance}` },
   japanese_high_key_daylight: { label: "日系高调日光", prompt: `Japanese high-key daylight cinematic look. Bright airy daylight, clean blue skies, crisp white clouds, cool-to-neutral daylight balance and fresh transparent colors. Keep skin fair, natural, and evenly balanced with clean white highlights. Avoid yellow or orange skin tones. Bright, refreshing and photographic rather than anime illustration.\n\n${visualSubjectRealismGuidance}` },
 } as const;
-type ProjectShotRecord = Shot & {
-  output?: string;
-  references?: { subjects?: PersistedPromptSubject[] };
-  generation?: { mode?: string; duration?: number; resolution?: string; aspect?: string; fps?: number; model?: keyof typeof modelProfiles; turbo?: boolean; seed?: string; seedMode?: "fixed" | "random"; keyframeMode?: string; steps?: number };
-  prompt?: string | Partial<Ref2vaPromptManifest>;
-  promptOriginal?: string;
-  promptOptimized?: string;
-  prompts?: Record<string, ClipPromptRecord>;
-};
+type GenerationMode = "T2VA" | "I2VA" | "R2VA";
+const generationModes = ["T2VA", "I2VA", "R2VA"] as const;
+type ReferenceRole =
+  | "character"
+  | "wardrobe"
+  | "object"
+  | "environment"
+  | "video"
+  | "audio"
+  | "composite";
+const referenceRoles: readonly ReferenceRole[] = [
+  "character",
+  "wardrobe",
+  "object",
+  "environment",
+  "video",
+  "audio",
+  "composite",
+];
 type ProjectAssetType =
-  "character" | "scene" | "clothing" | "prop" | "video" | "audio" | "custom";
+  "character" | "scene" | "wardrobe" | "prop" | "video" | "audio" | "custom";
 const assetUsageOptions: Record<ProjectAssetType, readonly string[]> = {
   character: ["角色参考"],
   scene: ["场景参考"],
-  clothing: ["服装参考"],
+  wardrobe: ["服装参考"],
   prop: ["道具参考"],
   video: ["动作参考", "镜头参考", "表演参考"],
   audio: ["声音参考", "环境音", "音乐参考"],
@@ -99,27 +101,13 @@ const modelProfiles = {
       "1344 × 768",
     ],
   },
-  "LTX 2.5": {
-    modes: ["T2V", "I2V"],
-    images: 1,
-    videos: 1,
-    audios: 0,
-    resolutions: ["768 × 512", "1024 × 576", "1280 × 720", "1920 × 1080"],
-  },
-  "Wan 3.0": {
-    modes: ["T2V", "I2V", "V2V"],
-    images: 4,
-    videos: 1,
-    audios: 1,
-    resolutions: ["832 × 480", "1280 × 720", "1280 × 768", "1920 × 1080"],
-  },
 } as const;
 type ShotSettings = {
   duration: string;
   resolution: string;
   aspect: string;
   fps: string;
-  mode: string;
+  mode: GenerationMode;
   model: keyof typeof modelProfiles;
   turbo: boolean;
   seed: string;
@@ -138,147 +126,27 @@ const shotSettingDefaults: ShotSettings = {
   seedMode: "fixed",
   keyframeMode: "first",
 };
-type PromptBuilderSettings = {
-  style: string;
-  framing: string;
-  camera: string;
-  lens: string;
-};
-type PromptBuilderSettingsInput = Partial<PromptBuilderSettings>;
-const promptBuilderDefaults: PromptBuilderSettings = {
-  style: "realistic_cinematic",
-  framing: "",
-  camera: "",
-  lens: "",
-};
 type PromptSubject = {
   name: string;
   assetKeys: string[];
-  assetRoles?: Record<string, string>;
+  assetRoles?: Record<string, ReferenceRole>;
   children?: PromptSubject[];
-  visualRetention?: "fully_preserved" | "partially_preserved" | "attribute_transfer" | "weak_reference";
-  audioRetention?: "fully_copy" | "partially_copy" | "reference" | "weak_reference";
-  retentionTargetId?: string;
-  referenceRetentions?: Record<string, {
-    visual?: "fully_preserved" | "partially_preserved" | "attribute_transfer" | "weak_reference";
-    audio?: "fully_copy" | "partially_copy" | "reference" | "weak_reference";
-    targetSubjectId?: string;
-    preserveFeatures?: string[];
-    referenceScopes?: string[];
-  }>;
 };
 type PersistedPromptReference = {
-  assetKey?: string;
-  role?: string;
-  name?: string;
-  kind?: ReferenceKind;
+  assetKey: string;
+  role: ReferenceRole;
+  name: string;
+  kind: ReferenceKind;
   comfyName?: string;
   comfySubfolder?: string;
   sourcePath?: string;
 };
 type PersistedPromptSubject = {
-  subjectId?: string;
-  name?: string;
-  role?: string;
-  references?: PersistedPromptReference[];
-  relation?: { parentSubjectId?: string };
-  assetKeys?: string[];
-  assetRoles?: Record<string, string>;
-  children?: PersistedPromptSubject[];
+  subjectId: string;
+  name: string;
+  references: PersistedPromptReference[];
+  relation?: { type: string; parentSubjectId: string };
 };
-type Ref2vaFields = {
-  summary: string;
-  taskType: "reference generation" | "video editing" | "video continuation";
-  audioProcessing: Array<"audio reuse" | "audio reference">;
-  retentionAnalysis: string;
-  soundscape: string;
-  music: string;
-};
-const ref2vaDefaults: Ref2vaFields = {
-  summary: "",
-  taskType: "reference generation",
-  audioProcessing: [],
-  retentionAnalysis: "",
-  soundscape: "",
-  music: "N/A",
-};
-function normalizePromptBuilderSettings(
-  settings?: PromptBuilderSettingsInput,
-): PromptBuilderSettings {
-  return {
-    style: settings?.style ?? promptBuilderDefaults.style,
-    framing: settings?.framing ?? promptBuilderDefaults.framing,
-    camera: settings?.camera ?? promptBuilderDefaults.camera,
-    lens: settings?.lens ?? promptBuilderDefaults.lens,
-  };
-}
-const promptBuilderOptions = {
-  style: [
-    ["realistic_cinematic", "写实电影"],
-    ["natural_documentary", "自然纪实"],
-    ["commercial_clean", "商业广告"],
-    ["vintage_film", "复古胶片"],
-    ["music_video", "风格化 MV"],
-    ["noir", "黑色电影"],
-    ["soft_romance", "柔和爱情片"],
-    ["animation_3d", "三维动画"],
-    ["hitchcock_suspense", "希区柯克式悬疑"],
-    ["neo_noir", "现代黑色电影"],
-    ["arthouse_minimal", "作者电影·极简"],
-  ] as const,
-  framing: [
-    ["extreme_closeup", "大特写"], ["closeup", "特写"], ["close", "近景"],
-    ["medium_close", "中近景"], ["medium", "中景"], ["medium_wide", "中全景"],
-    ["wide", "全景"], ["extreme_wide", "大远景"],
-  ],
-  camera: [
-    ["static", "固定镜头"], ["push_slow", "推镜"], ["pull_slow", "拉镜"],
-    ["front_follow", "前跟"], ["back_follow", "后跟"], ["side_follow", "侧跟"],
-    ["track", "横移"], ["pan", "摇镜"], ["crane_up", "升镜"], ["crane_down", "降镜"],
-    ["arc", "环绕"], ["handheld_follow", "手持跟拍"], ["gimbal_follow", "稳定器跟拍"], ["dolly_zoom", "希区柯克推拉"],
-  ],
-  lens: [
-    ["front_level", "正面平视"], ["side", "侧面"], ["back", "背面"],
-    ["low_angle", "低机位"], ["high_angle", "高机位"], ["overhead", "俯拍"],
-    ["upward", "仰拍"], ["over_shoulder", "过肩"], ["pov", "第一人称"],
-  ],
-  lighting: [
-    ["warm", "暖黄色"],
-    ["cool", "冷蓝色"],
-    ["daylight", "自然日光"],
-    ["sunset", "夕阳光"],
-    ["soft", "柔和漫射"],
-    ["backlight", "轮廓逆光"],
-    ["high_contrast", "高反差"],
-    ["low_key", "低调暗光"],
-    ["neon", "霓虹光"],
-    ["practical", "实景灯光"],
-  ],
-  emotion: [
-    ["joy", "喜悦"],
-    ["anger", "愤怒"],
-    ["sadness", "悲伤"],
-    ["fear", "恐惧"],
-    ["surprise", "惊讶"],
-    ["disgust", "厌恶"],
-    ["shy", "害羞"],
-    ["embarrassed", "难为情"],
-    ["nervous", "紧张不安"],
-    ["restrained", "克制"],
-    ["intimate", "暧昧亲密"],
-    ["calm", "平静"],
-    ["lonely", "孤独"],
-    ["hopeful", "充满希望"],
-    ["determined", "坚定"],
-    ["playful", "俏皮"],
-    ["longing", "渴望"],
-    ["tense", "压迫紧绷"],
-  ],
-  music: [
-    ["none", "无背景配乐（仅原声）"],
-    ["music", "有背景配乐"],
-  ],
-} as const;
 type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
 };
@@ -297,47 +165,17 @@ type WritableDirectoryHandle = FileSystemDirectoryHandle & {
 
 function openDirectoryDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("comfyui-director", 2);
+    const request = indexedDB.open("comfyui-director", 3);
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains("handles"))
         database.createObjectStore("handles");
-      if (!database.objectStoreNames.contains("state"))
-        database.createObjectStore("state");
+      if (database.objectStoreNames.contains("state"))
+        database.deleteObjectStore("state");
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
-}
-
-async function saveDirectorState(state: PersistedDirectorState) {
-  const database = await openDirectoryDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const request = database
-      .transaction("state", "readwrite")
-      .objectStore("state")
-      .put(state, "director-state");
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-  database.close();
-}
-
-async function loadDirectorState() {
-  const database = await openDirectoryDatabase();
-  const state = await new Promise<PersistedDirectorState | undefined>(
-    (resolve, reject) => {
-      const request = database
-        .transaction("state", "readonly")
-        .objectStore("state")
-        .get("director-state");
-      request.onsuccess = () =>
-        resolve(request.result as PersistedDirectorState | undefined);
-      request.onerror = () => reject(request.error);
-    },
-  );
-  database.close();
-  return state;
 }
 
 async function saveProjectDirectoryHandle(handle: FileSystemDirectoryHandle) {
@@ -457,31 +295,6 @@ type ReferenceAsset = {
   kind: ReferenceKind;
 };
 type ReferenceDrag = { kind: ReferenceKind; index: number };
-type PersistedReferenceAsset = {
-  name: string;
-  comfyName?: string;
-  comfySubfolder?: string;
-  kind: ReferenceKind;
-  sourcePath?: string;
-};
-type PersistedKeyframe = { name: string; comfyName?: string };
-type PersistedDirectorState = {
-  shots?: typeof initialShots;
-  shotPrompts?: Record<string, string>;
-  promptBuilderSettings?: Record<string, PromptBuilderSettings>;
-  promptSubjects?: Record<string, PromptSubject[]>;
-  promptSegments?: Record<string, PromptSegment[]>;
-  ref2vaFields?: Record<string, Ref2vaFields>;
-  shotSettings?: Record<string, ShotSettings>;
-  shotVideos?: Record<string, string>;
-  shotFileNames?: Record<string, string>;
-  generationDurations?: Record<string, number>;
-  shotTasks?: Record<string, ShotTask>;
-  shotStages?: Record<string, string>;
-  shotVisualStyles?: Record<string, VisualStyleKey>;
-  keyframes?: Record<string, PersistedKeyframe>;
-  referenceAssets?: Record<string, PersistedReferenceAsset>;
-};
 type PromptMention = {
   start: number;
   end: number;
@@ -490,79 +303,42 @@ type PromptMention = {
 };
 type ClipPromptRecord = {
   original: string;
-  optimized?: Partial<Ref2vaPromptManifest> | string;
-  selected: "original" | "optimized";
+  optimized?: string;
+};
+type ClipGeneration = {
+  mode: GenerationMode;
+  duration: number;
+  resolution: string;
+  aspect: string;
+  fps: number;
+  model: "H3";
+  turbo: boolean;
+  seed: string;
+  seedMode: "fixed" | "random";
+  keyframeMode: "first" | "last" | "first_last";
+  steps?: number;
+};
+type ClipPrompts = Record<GenerationMode, ClipPromptRecord>;
+type ProjectShotRecord = Shot & {
+  version: 2;
+  output: string | null;
+  references: { subjects: PersistedPromptSubject[] };
+  generation: ClipGeneration;
+  prompts: ClipPrompts;
+  visualStyle: VisualStyleKey;
+};
+type ClipManifestOverrides = {
+  generation?: Partial<ClipGeneration>;
+  promptOriginal?: string;
+  promptOptimized?: string;
+  output?: string | null;
+  visualStyle?: VisualStyleKey;
 };
 function normalizePrompt(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (!value || typeof value !== "object") return "";
-  const prompt = value as Partial<Ref2vaPromptManifest>;
-  const sections = [
-    ["subject_definitions", prompt.subject_definitions],
-    ["summary", prompt.summary],
-    ["retention_analysis", prompt.retention_analysis],
-    ["detailed_description", prompt.detailed_description],
-    ["overall_soundscape", prompt.overall_soundscape],
-    ["non_diegetic_music", prompt.non_diegetic_music],
-  ].filter(
-    ([, section]) => typeof section === "string" && section.trim(),
-  ) as Array<[string, string]>;
-  if (
-    sections.length === 1 &&
-    sections[0][0] === "detailed_description"
-  )
-    return sections[0][1].trim();
-  return sections.map(([name, section]) => `${name}:\n${section}`).join("\n\n");
+  return typeof value === "string" ? value : "";
 }
 function promptStoreKey(shotId: string, mode: string) {
   return `${shotId}::${mode}`;
-}
-function toRef2vaPromptManifest(value: unknown): Ref2vaPromptManifest {
-  const text = normalizePrompt(value);
-  const names = [
-    "subject_definitions",
-    "summary",
-    "retention_analysis",
-    "detailed_description",
-    "overall_soundscape",
-    "non_diegetic_music",
-  ] as const;
-  const sections = Object.fromEntries(
-    names.map((name, index) => {
-      const start = new RegExp(`(?:^|\\n)${name}\\s*:\\s*`, "i").exec(text);
-      if (!start) return [name, ""];
-      const contentStart = start.index + start[0].length;
-      const next = names
-        .slice(index + 1)
-        .map((nextName) => new RegExp(`(?:^|\\n)${nextName}\\s*:\\s*`, "i").exec(text))
-        .find((match) => match && match.index >= contentStart);
-      return [name, text.slice(contentStart, next?.index ?? text.length).trim()];
-    }),
-  ) as Record<(typeof names)[number], string>;
-  const legacyIntegrated = new RegExp(
-    `(?:^|\\n)integrated_multimodal_description\\s*:\\s*([\\s\\S]*?)(?=\\n(?:overall_soundscape|non_diegetic_music)\\s*:|$)`,
-    "i",
-  ).exec(text);
-  if (!sections.detailed_description && legacyIntegrated) {
-    sections.detailed_description = legacyIntegrated[1].trim();
-  }
-  for (const name of ["overall_soundscape", "non_diegetic_music"] as const) {
-    if (sections[name]) continue;
-    const legacy = new RegExp(
-      `(?:^|\\n)${name}\\s*:\\s*([\\s\\S]*?)(?=\\n(?:overall_soundscape|non_diegetic_music)\\s*:|$)`,
-      "i",
-    ).exec(text);
-    if (legacy) sections[name] = legacy[1].trim();
-  }
-  if (!names.some((name) => sections[name])) sections.detailed_description = text;
-  return {
-    subject_definitions: sections.subject_definitions,
-    summary: sections.summary,
-    retention_analysis: sections.retention_analysis,
-    detailed_description: sections.detailed_description,
-    overall_soundscape: sections.overall_soundscape,
-    non_diegetic_music: sections.non_diegetic_music,
-  };
 }
 type ReferenceMentionOption = {
   kind: ReferenceKind;
@@ -570,9 +346,7 @@ type ReferenceMentionOption = {
   token: string;
   name: string;
   url: string;
-  ready: boolean;
   assetKey: string;
-  category?: string;
 };
 type H3ReferenceMapping = {
   picture: string;
@@ -583,87 +357,8 @@ type H3ReferenceMapping = {
   description?: string;
 };
 
-function normalizePromptSubjects(subjects: Record<string, PromptSubject[]>) {
-  return Object.fromEntries(
-    Object.entries(subjects).map(([shotId, shotSubjects]) => {
-      const topLevelNames = new Set(
-        shotSubjects.map((subject) => subject.name.trim().toLowerCase()),
-      );
-      return [
-        shotId,
-        shotSubjects.map((subject) => {
-          const children = (subject.children ?? []).filter(
-            (child) => !topLevelNames.has(child.name.trim().toLowerCase()),
-          );
-          return children.length === (subject.children ?? []).length
-            ? subject
-            : { ...subject, children };
-        }),
-      ];
-    }),
-  ) as Record<string, PromptSubject[]>;
-}
-
-function compactPersistedReferences(
-  references: Record<string, PersistedReferenceAsset>,
-  subjects: Record<string, PromptSubject[]>,
-) {
-  const remap = new Map<string, string>();
-  const compacted: Record<string, PersistedReferenceAsset> = {};
-  const groups = new Map<string, Array<[string, PersistedReferenceAsset, number]>>();
-  Object.entries(references).forEach(([key, asset]) => {
-    const match = key.match(/^(.*)-(image|video|audio)-(\d+)$/);
-    if (!match) {
-      compacted[key] = asset;
-      return;
-    }
-    const groupKey = `${match[1]}-${match[2]}`;
-    const group = groups.get(groupKey) ?? [];
-    group.push([key, asset, Number(match[3])]);
-    groups.set(groupKey, group);
-  });
-  groups.forEach((entries) => {
-    entries
-      .sort((left, right) => left[2] - right[2])
-      .forEach(([key, asset], index) => {
-        const match = key.match(/^(.*)-(image|video|audio)-\d+$/);
-        if (!match) return;
-        const nextKey = `${match[1]}-${match[2]}-${index}`;
-        remap.set(key, nextKey);
-        compacted[nextKey] = asset;
-      });
-  });
-  const compactedSubjects = Object.fromEntries(
-    Object.entries(subjects).map(([shotId, shotSubjects]) => [
-      shotId,
-      shotSubjects.map((subject) => ({
-        ...subject,
-        assetKeys: subject.assetKeys.map((key) => remap.get(key) ?? key),
-        children: subject.children?.map((child) => ({
-          ...child,
-          assetKeys: child.assetKeys.map((key) => remap.get(key) ?? key),
-        })),
-      })),
-    ]),
-  ) as Record<string, PromptSubject[]>;
-  return { references: compacted, subjects: compactedSubjects };
-}
-
-function normalizePersistedReferenceRole(role: string | undefined) {
-  return role === "wardrobe" ? "clothing" : role?.trim() || "composite";
-}
-
-function inferReferenceKind(
-  key: string,
-  kind: ReferenceKind | undefined,
-): ReferenceKind {
-  if (kind === "image" || kind === "video" || kind === "audio") return kind;
-  const inferred = key.match(/-(image|video|audio)-\d+$/)?.[1];
-  return inferred === "video" || inferred === "audio" ? inferred : "image";
-}
-
 function restoreProjectShotReferences(
-  persistedSubjects: PersistedPromptSubject[] | undefined,
+  persistedSubjects: PersistedPromptSubject[],
   comfyUrl: string,
 ) {
   const nodes: Array<{
@@ -676,20 +371,17 @@ function restoreProjectShotReferences(
   const addReference = (
     subject: PromptSubject,
     reference: PersistedPromptReference,
-    fallbackRole?: string,
   ) => {
-    const assetKey = reference.assetKey?.trim();
-    if (!assetKey) return;
-    const role = normalizePersistedReferenceRole(reference.role ?? fallbackRole);
+    const assetKey = reference.assetKey.trim();
+    const role = reference.role;
     if (!subject.assetKeys.includes(assetKey)) subject.assetKeys.push(assetKey);
     subject.assetRoles = { ...subject.assetRoles, [assetKey]: role };
     if (referenceAssets[assetKey]) return;
-    const kind = inferReferenceKind(assetKey, reference.kind);
     const restoredAsset = {
-      name: reference.name?.trim() || assetKey,
+      name: reference.name.trim(),
       comfyName: reference.comfyName,
       comfySubfolder: reference.comfySubfolder,
-      kind,
+      kind: reference.kind,
     };
     referenceAssets[assetKey] = {
       ...restoredAsset,
@@ -698,33 +390,20 @@ function restoreProjectShotReferences(
     };
   };
 
-  const collect = (
-    record: PersistedPromptSubject,
-    inheritedParentId?: string,
-  ) => {
+  const collect = (record: PersistedPromptSubject) => {
     const subject: PromptSubject = {
-      name: record.name?.trim() || "未命名主体",
+      name: record.name.trim(),
       assetKeys: [],
       assetRoles: {},
     };
-    (record.references ?? []).forEach((reference) =>
-      addReference(subject, reference, record.role),
-    );
-    (record.assetKeys ?? []).forEach((assetKey) =>
-      addReference(subject, {
-        assetKey,
-        role: record.assetRoles?.[assetKey] ?? record.role,
-      }),
-    );
+    record.references.forEach((reference) => addReference(subject, reference));
     nodes.push({
-      id: record.subjectId?.trim() || `restored-subject-${nodes.length}`,
+      id: record.subjectId.trim(),
       subject,
-      parentId: record.relation?.parentSubjectId?.trim() || inheritedParentId,
+      parentId: record.relation?.parentSubjectId.trim(),
     });
-    const parentId = nodes[nodes.length - 1].id;
-    (record.children ?? []).forEach((child) => collect(child, parentId));
   };
-  (persistedSubjects ?? []).forEach((subject) => collect(subject));
+  persistedSubjects.forEach((subject) => collect(subject));
 
   const subjects: PromptSubject[] = [];
   const subjectsById = new Map(nodes.map((node) => [node.id, node.subject]));
@@ -761,7 +440,7 @@ async function readProjectSourceFile(
     .replaceAll("\\", "/")
     .split("/")
     .filter(Boolean);
-  const pathParts = parts[0] === "资产" ? parts.slice(1) : parts;
+  const pathParts = parts;
   if (
     !pathParts.length ||
     pathParts.some((part) => part === "." || part === "..")
@@ -886,7 +565,6 @@ const projectAssetFolders = [
   "自定义",
 ] as const;
 
-/** Resolve the canonical 资产/<type> folder while still reading legacy root-level folders. */
 async function getProjectAssetFolder(
   project: FileSystemDirectoryHandle,
   folderName: string,
@@ -896,17 +574,8 @@ async function getProjectAssetFolder(
     const assets = await project.getDirectoryHandle("资产", { create: true });
     return assets.getDirectoryHandle(folderName, { create: true });
   }
-  try {
-    const assets = await project.getDirectoryHandle("资产");
-    try {
-      return await assets.getDirectoryHandle(folderName);
-    } catch {
-      // A partially migrated project may have this asset type at the legacy root.
-    }
-  } catch {
-    // Legacy projects do not have an 资产 folder yet.
-  }
-  return project.getDirectoryHandle(folderName);
+  const assets = await project.getDirectoryHandle("资产");
+  return assets.getDirectoryHandle(folderName);
 }
 
 async function uniqueProjectAssetFileName(
@@ -934,24 +603,6 @@ async function uniqueProjectAssetFileName(
   return candidate;
 }
 
-async function readAssetThumbnail(
-  asset: FileSystemDirectoryHandle,
-): Promise<string | undefined> {
-  try {
-    const manifest = await asset.getFileHandle("clothing.json");
-    const data = JSON.parse(await (await manifest.getFile()).text()) as {
-      references?: Array<{ file?: string }>;
-    };
-    const fileName = data.references?.[0]?.file;
-    if (!fileName) return undefined;
-    return URL.createObjectURL(
-      await (await asset.getFileHandle(fileName)).getFile(),
-    );
-  } catch {
-    return undefined;
-  }
-}
-
 async function readAssetFileThumbnail(
   entry: FileSystemFileHandle,
 ): Promise<string | undefined> {
@@ -965,59 +616,122 @@ async function readAssetFileThumbnail(
 
 async function readProjectShots(
   handle: FileSystemDirectoryHandle,
-): Promise<ProjectShotRecord[] | null> {
+): Promise<ProjectShotRecord[]> {
   const scriptFile = await handle.getFileHandle("script.json");
   const script = JSON.parse(await (await scriptFile.getFile()).text()) as {
-    clips?: Array<{ id: string; title: string }>;
+    project?: { version?: unknown };
+    clips?: Array<{ id?: unknown; title?: unknown; path?: unknown }>;
   };
-  if (!Array.isArray(script.clips)) return null;
-  const clips = await handle.getDirectoryHandle("片段", { create: true });
+  if (script.project?.version !== 2)
+    throw new Error("不支持此项目格式，请创建 version 2 项目");
+  if (!Array.isArray(script.clips))
+    throw new Error("script.json 缺少 clips 数组");
   return Promise.all(
-    script.clips.map(async (clip) => {
-      try {
-        const folder = await clips.getDirectoryHandle(
-          `${clip.id}-${safeFileStem(clip.title)}`,
-        );
-        const file = await folder.getFileHandle("clip.json");
-        const data = JSON.parse(await (await file.getFile()).text()) as {
-          generation?: ProjectShotRecord["generation"];
-          output?: string;
-          references?: { subjects?: PersistedPromptSubject[] };
-          prompts?: Record<string, ClipPromptRecord>;
-          visualStyle?: VisualStyleKey;
-        };
-        const generation = data.generation ?? {};
-        const durationText = `${generation.duration ?? 6}s`;
-        const resolutionText = generation.resolution ?? "864×480";
-        const fpsText = `${generation.fps ?? 24}fps`;
-        let output = typeof data.output === "string" ? data.output : undefined;
-        if (!output) {
-          const entries = (folder as FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> }).entries();
-          for await (const [name, entry] of entries) {
-            if (entry.kind === "file" && /\.(mp4|webm|mov)$/i.test(name)) { output = name; break; }
-          }
-        }
-        return {
-          id: clip.id,
-          title: clip.title,
-          detail: `${durationText} · ${generation.mode ?? "T2VA"} · ${resolutionText} · ${fpsText}`,
-          meta: `${generation.aspect ?? "16:9"}${output ? " · 已归档" : ""}`,
-          state: output ? "已完成" : "草稿",
-          output,
-          generation,
-          references: data.references,
-          prompts: data.prompts,
-          visualStyle: data.visualStyle,
-        };
-      } catch {
-        return {
-          id: clip.id,
-          title: clip.title,
-          detail: "6s · R2VA · 864×480 · 24fps",
-          meta: "16:9",
-          state: "草稿",
-        };
-      }
+    script.clips.map(async (clip, index) => {
+      if (
+        typeof clip.id !== "string" ||
+        typeof clip.title !== "string" ||
+        typeof clip.path !== "string" ||
+        !clip.id.trim() ||
+        !clip.title.trim() ||
+        !clip.path.trim()
+      )
+        throw new Error(`script.json 的第 ${index + 1} 个片段格式无效`);
+      const clipId = clip.id;
+      const clipTitle = clip.title;
+      const clipPath = clip.path;
+      const source = await readProjectSourceFile(handle, clipPath);
+      if (!source) throw new Error(`片段 ${clipId} 的路径无效`);
+      const data = JSON.parse(await source.text()) as Partial<ProjectShotRecord>;
+      if (data.version !== 2)
+        throw new Error(`片段 ${clipId} 不是 version 2 格式`);
+      if (data.id !== clipId || data.title !== clipTitle)
+        throw new Error(`片段 ${clipId} 与 script.json 记录不一致`);
+      const generation = data.generation;
+      if (
+        !generation ||
+        !generationModes.includes(generation.mode) ||
+        !Number.isFinite(generation.duration) ||
+        generation.duration <= 0 ||
+        typeof generation.resolution !== "string" ||
+        !generation.resolution.trim() ||
+        typeof generation.aspect !== "string" ||
+        !generation.aspect.trim() ||
+        !Number.isFinite(generation.fps) ||
+        generation.fps <= 0 ||
+        generation.model !== "H3" ||
+        typeof generation.turbo !== "boolean" ||
+        typeof generation.seed !== "string" ||
+        !generation.seed.trim() ||
+        (generation.seedMode !== "fixed" && generation.seedMode !== "random") ||
+        !["first", "last", "first_last"].includes(generation.keyframeMode) ||
+        (generation.steps !== undefined &&
+          (!Number.isInteger(generation.steps) || generation.steps <= 0))
+      )
+        throw new Error(`片段 ${clipId} 的 generation 不完整`);
+      if (
+        !data.prompts ||
+        !generationModes.every(
+          (mode) =>
+            typeof data.prompts?.[mode as GenerationMode]?.original === "string" &&
+            (data.prompts[mode as GenerationMode].optimized === undefined ||
+              typeof data.prompts[mode as GenerationMode].optimized === "string"),
+        )
+      )
+        throw new Error(`片段 ${clipId} 的 prompts 不完整`);
+      if (!data.references || !Array.isArray(data.references.subjects))
+        throw new Error(`片段 ${clipId} 的 references 不完整`);
+      data.references.subjects.forEach((subject, subjectIndex) => {
+        if (
+          typeof subject?.subjectId !== "string" ||
+          !subject.subjectId.trim() ||
+          typeof subject.name !== "string" ||
+          !subject.name.trim() ||
+          !Array.isArray(subject.references)
+        )
+          throw new Error(
+            `片段 ${clipId} 的第 ${subjectIndex + 1} 个引用主体无效`,
+          );
+        if (
+          subject.relation !== undefined &&
+          (typeof subject.relation.type !== "string" ||
+            !subject.relation.type.trim() ||
+            typeof subject.relation.parentSubjectId !== "string" ||
+            !subject.relation.parentSubjectId.trim())
+        )
+          throw new Error(`片段 ${clipId} 的引用主体关系无效`);
+        subject.references.forEach((reference, referenceIndex) => {
+          if (
+            typeof reference?.assetKey !== "string" ||
+            !reference.assetKey.trim() ||
+            typeof reference.name !== "string" ||
+            !reference.name.trim() ||
+            !referenceRoles.includes(reference.role) ||
+            !["image", "video", "audio"].includes(reference.kind)
+          )
+            throw new Error(
+              `片段 ${clipId} 的第 ${subjectIndex + 1} 个主体中，第 ${referenceIndex + 1} 个引用无效`,
+            );
+        });
+      });
+      if (!data.visualStyle || !(data.visualStyle in visualStylePresets))
+        throw new Error(`片段 ${clipId} 的 visualStyle 无效`);
+      if (data.output !== null && typeof data.output !== "string")
+        throw new Error(`片段 ${clipId} 的 output 无效`);
+      const output = data.output;
+      return {
+        id: clipId,
+        title: clipTitle,
+        detail: `${generation.duration}s · ${generation.mode} · ${generation.resolution} · ${generation.fps}fps`,
+        meta: `${generation.aspect}${output ? " · 已归档" : ""}`,
+        state: output ? "已完成" : "草稿",
+        version: 2,
+        output,
+        generation,
+        references: data.references,
+        prompts: data.prompts,
+        visualStyle: data.visualStyle,
+      };
     }),
   );
 }
@@ -1025,7 +739,7 @@ async function readProjectShots(
 export default function Home() {
   const [activeShot, setActiveShot] = useState(0);
   const [shots, setShots] = useState(initialShots);
-  const [mode, setMode] = useState("T2VA");
+  const [mode, setMode] = useState<GenerationMode>("T2VA");
   const [model, setModel] = useState<keyof typeof modelProfiles>("H3");
   const [turboMode, setTurboMode] = useState(true);
   const [keyframeMode, setKeyframeMode] = useState<
@@ -1078,25 +792,10 @@ export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [promptOptimizing, setPromptOptimizing] = useState<Record<string, boolean>>({});
   const [llmExecutablePath, setLlmExecutablePath] = useState("");
-  const [promptBuilderSettings, setPromptBuilderSettings] = useState<
-    Record<string, PromptBuilderSettings>
-  >({});
   const [promptSubjects, setPromptSubjects] = useState<
     Record<string, PromptSubject[]>
   >({});
-  const [promptSegments, setPromptSegments] = useState<
-    Record<string, PromptSegment[]>
-  >({});
-  const [ref2vaFields, setRef2vaFields] = useState<
-    Record<string, Ref2vaFields>
-  >({});
-  const [activePromptSegment, setActivePromptSegment] = useState<
-    Record<string, number>
-  >({});
   const [promptPanelHeight, setPromptPanelHeight] = useState(300);
-  const [settingsSegmentIndex, setSettingsSegmentIndex] = useState<
-    number | null
-  >(null);
   const [promptViewerOpen, setPromptViewerOpen] = useState(false);
   const [promptDraft, setPromptDraft] = useState("");
   const [promptCopied, setPromptCopied] = useState(false);
@@ -1150,7 +849,8 @@ export default function Home() {
         {
           ...shotSettingDefaults,
           duration: `${shot.detail.match(/\d+/)?.[0] ?? 6} 秒`,
-          mode: shot.detail.match(/T2VA|I2VA|R2VA/)?.[0] ?? "T2VA",
+          mode: (shot.detail.match(/T2VA|I2VA|R2VA/)?.[0] ??
+            "T2VA") as GenerationMode,
           aspect: shot.id === "02" ? "2.35:1" : "16:9",
           resolution: shot.meta
             .split("·")[0]
@@ -1192,16 +892,6 @@ export default function Home() {
     ["已完成", "失败", "文件缺失", "已停止"].includes(taskShot.state),
   );
   const activeStage = taskShot ? shotStages[taskShot.id] : undefined;
-  const activeSegments = taskShot ? getPromptSegments(taskShot.id) : [];
-  const activeSegmentIndex = taskShot
-    ? Math.min(
-        activePromptSegment[taskShot.id] ?? 0,
-        Math.max(0, activeSegments.length - 1),
-      )
-    : 0;
-  const durationSeconds = Number.parseFloat(duration) || 6;
-  const settingsSegment =
-    settingsSegmentIndex !== null ? activeSegments[settingsSegmentIndex] : null;
   useEffect(() => {
     const savedComfyUrl = window.localStorage.getItem("comfyui-url");
     if (savedComfyUrl) {
@@ -1210,68 +900,6 @@ export default function Home() {
     }
     setLlmExecutablePath(window.localStorage.getItem("llm-executable-path") ?? "");
   }, []);
-
-  useEffect(() => {
-    if (activeMode !== "R2VA" || !taskShot) return;
-    setRef2vaFields((current) => {
-      const existing = current[taskShot.id];
-      const legacySoundscapes = [
-        "McDonald's indoor ambience, customer conversations, footsteps, register beeps, paper movement, and synchronized object handling.",
-        "Use only realistic, synchronized physical sounds directly supported by visible actions and objects, such as footsteps, breathing, fabric movement, door movement, and object handling. Do not add mood-setting ambience, horror atmosphere, emotional sound beds, drones, tension effects, or unrequested music.",
-        "Use natural diegetic ambience and synchronized physical sound effects based on the visible environment and actions. Keep the sound realistic and grounded in the scene. Do not add unrelated sounds or invent additional dialogue. Spoken dialogue is defined only in detailed_description.",
-        "Use realistic diegetic ambience appropriate to the visible environment, together with synchronized physical sounds directly supported by visible actions and objects. Keep all sounds natural and restrained. Do not add horror atmosphere, emotional sound beds, drones, tension effects, or unrequested music.",
-      ];
-      const nextSoundscape =
-        !existing?.soundscape?.trim() ||
-        legacySoundscapes.includes(existing.soundscape.trim())
-          ? ref2vaDefaults.soundscape
-          : existing.soundscape;
-      const nextMusic = existing?.music?.trim() || ref2vaDefaults.music;
-      if (
-        existing?.soundscape === nextSoundscape &&
-        existing?.music === nextMusic
-      )
-        return current;
-      return {
-        ...current,
-        [taskShot.id]: {
-          ...ref2vaDefaults,
-          ...(existing ?? {}),
-          soundscape: nextSoundscape,
-          music: nextMusic,
-        },
-      };
-    });
-    const subjects = (promptSubjects[taskShot.id] ?? []).filter((subject) =>
-      subject.name.trim(),
-    );
-    if (!subjects.length)
-      return;
-    const defaults = subjects
-      .map((subject, index) => {
-        const name = subject.name.trim();
-        const isScene =
-          /场景|环境|店|室内|街道|建筑|空间|background|environment/i.test(name);
-        const isObject = /道具|物体|杯|票|餐|pizza|coffee|object|prop/i.test(
-          name,
-        );
-        const text = isScene
-          ? "preserve spatial layout, lighting, color palette, architectural structure, and key props."
-          : isObject
-            ? "preserve shape, material, color, size, and spatial relationships."
-            : "preserve identity, facial features, hairstyle, and body proportions.";
-        return `<Subject ${index + 1}> (appears throughout the target video): fully_preserved - ${text}`;
-      })
-      .join("\n");
-    setRef2vaFields((current) => ({
-      ...current,
-      [taskShot.id]: {
-        ...ref2vaDefaults,
-        ...(current[taskShot.id] ?? {}),
-        retentionAnalysis: defaults,
-      },
-    }));
-  }, [activeMode, taskShot?.id, promptSubjects]);
 
   useEffect(() => {
     if (!taskShot) return;
@@ -1331,22 +959,10 @@ export default function Home() {
   useEffect(() => {
     let disposed = false;
     const restoreState = async () => {
-      let localState: PersistedDirectorState | null = null;
       const persistedComfyUrl =
         window.localStorage.getItem("comfyui-url")?.trim() ||
         "http://127.0.0.1:8188";
-      try {
-        localState = JSON.parse(
-          window.localStorage.getItem("comfyui-director-state") ?? "null",
-        ) as PersistedDirectorState | null;
-      } catch {
-        // Ignore malformed local state and try the project state instead.
-      }
-      const indexedState =
-        typeof indexedDB === "undefined"
-          ? null
-          : await loadDirectorState().catch(() => null);
-      if (disposed) return;
+      window.localStorage.removeItem("comfyui-director-state");
       const savedProjectHandle =
         typeof indexedDB === "undefined"
           ? null
@@ -1356,6 +972,7 @@ export default function Home() {
         (await isDirectoryHandleAvailable(savedProjectHandle))
           ? savedProjectHandle
           : null;
+      if (disposed) return;
       if (savedProjectHandle && !projectHandle)
         void clearProjectDirectoryHandle().catch(() => undefined);
       if (projectHandle) {
@@ -1375,108 +992,25 @@ export default function Home() {
       ).filter((handle): handle is FileSystemDirectoryHandle =>
         Boolean(handle),
       );
+      if (disposed) return;
       if (projectHandles.length !== savedProjectHandles.length)
         void saveProjectDirectoryHandles(projectHandles).catch(() => undefined);
       if (projectHandles.length) setProjectDirectories(projectHandles);
-      const saved: PersistedDirectorState = {
-        ...(indexedState ?? {}),
-        ...(localState ?? {}),
-        referenceAssets: {
-          ...(indexedState?.referenceAssets ?? {}),
-          ...(localState?.referenceAssets ?? {}),
-        },
-      };
-      const restoredSubjects = normalizePromptSubjects(saved.promptSubjects ?? {});
-      const compactedReferences = compactPersistedReferences(
-        saved.referenceAssets ?? {},
-        restoredSubjects,
-      );
-      if (saved.shots?.length && !projectHandle) {
-        setShots(saved.shots);
-        setActiveShot((current) => Math.min(current, saved.shots!.length - 1));
-      }
-      if (saved.shotPrompts) {
-        setShotPrompts(saved.shotPrompts);
-      }
-      if (saved.promptBuilderSettings)
-        setPromptBuilderSettings(saved.promptBuilderSettings);
-      if (saved.promptSubjects) setPromptSubjects(compactedReferences.subjects);
-      if (saved.promptSegments) setPromptSegments(saved.promptSegments);
-      if (saved.ref2vaFields) setRef2vaFields(saved.ref2vaFields);
-      if (saved.shotSettings)
-        setShotSettings(
-          Object.fromEntries(
-            Object.entries(saved.shotSettings).map(([id, settings]) => [
-              id,
-              { ...shotSettingDefaults, ...settings },
-            ]),
-          ),
-        );
-      if (saved.shotVideos) setShotVideos(saved.shotVideos);
-      if (saved.shotFileNames) setShotFileNames(saved.shotFileNames);
-      if (saved.generationDurations)
-        setGenerationDurations(saved.generationDurations);
-      if (saved.shotTasks) setShotTasks(saved.shotTasks);
-      if (saved.shotStages) setShotStages(saved.shotStages);
-      if (saved.shotVisualStyles) setShotVisualStyles(saved.shotVisualStyles);
-      if (saved.keyframes)
-        setKeyframes(
-          Object.fromEntries(
-            Object.entries(saved.keyframes).map(([key, frame]) => {
-              const params = new URLSearchParams({
-                filename: frame.comfyName ?? "",
-                type: "input",
-                comfy_url: persistedComfyUrl,
-              });
-              return [
-                key,
-                {
-                  ...frame,
-                  url: frame.comfyName ? `/api/video?${params.toString()}` : "",
-                },
-              ];
-            }),
-          ),
-        );
-      if (saved.referenceAssets)
-        setReferenceAssets(
-          Object.fromEntries(
-            Object.entries(compactedReferences.references).map(([key, asset]) => {
-              const params = new URLSearchParams({
-                filename: asset.comfyName ?? "",
-                type: "input",
-                comfy_url: persistedComfyUrl,
-              });
-              if (asset.comfySubfolder)
-                params.set("subfolder", asset.comfySubfolder);
-              return [
-                key,
-                {
-                  ...asset,
-                  url: asset.comfyName ? `/api/video?${params.toString()}` : "",
-                },
-              ];
-            }),
-          ),
-        );
       if (projectHandle) {
         try {
           const projectShots = await readProjectShots(projectHandle);
-          // A readable project manifest is authoritative, including an empty
-          // clips list. Never let the global fallback state leak into another
-          // project's editor.
           resetProjectEditorState();
-          if (projectShots) {
-            const restoredAssets = applyProjectShotRecords(projectShots);
-            await hydrateProjectReferenceAssets(
-              projectHandle,
-              restoredAssets,
-              persistedComfyUrl,
-            );
-          }
+          const restoredAssets = applyProjectShotRecords(projectShots);
+          await hydrateProjectReferenceAssets(
+            projectHandle,
+            restoredAssets,
+            persistedComfyUrl,
+          );
           setActiveShot(0);
-        } catch {
-          // Keep local state when the persisted directory handle is unavailable.
+        } catch (error) {
+          setGenerationStatus(
+            error instanceof Error ? error.message : "项目读取失败",
+          );
         }
       }
       setStorageReady(true);
@@ -1486,70 +1020,6 @@ export default function Home() {
       disposed = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (!storageReady) return;
-    const persistedReferences = Object.fromEntries(
-      Object.entries(referenceAssets).map(([key, asset]) => [
-        key,
-        {
-          name: asset.name,
-          comfyName: asset.comfyName,
-          comfySubfolder: asset.comfySubfolder,
-          kind: asset.kind,
-          sourcePath: asset.sourcePath,
-        },
-      ]),
-    );
-    const persistedKeyframes = Object.fromEntries(
-      Object.entries(keyframes).map(([key, frame]) => [
-        key,
-        { name: frame.name, comfyName: frame.comfyName },
-      ]),
-    );
-    const state = {
-      shots,
-      shotPrompts,
-      promptBuilderSettings,
-      promptSubjects,
-      promptSegments,
-      ref2vaFields,
-      shotSettings,
-      shotVideos,
-      shotFileNames,
-      generationDurations,
-      shotTasks,
-      shotStages,
-      shotVisualStyles,
-      keyframes: persistedKeyframes,
-      referenceAssets: persistedReferences,
-    };
-    window.localStorage.setItem(
-      "comfyui-director-state",
-      JSON.stringify(state),
-    );
-    if (typeof indexedDB !== "undefined")
-      void saveDirectorState(state).catch(() => {
-        // Local storage remains available when IndexedDB is unavailable.
-      });
-  }, [
-    storageReady,
-    shots,
-    shotPrompts,
-    promptBuilderSettings,
-    promptSubjects,
-    promptSegments,
-    ref2vaFields,
-    shotSettings,
-    shotVideos,
-    shotFileNames,
-    generationDurations,
-    shotTasks,
-    shotStages,
-    shotVisualStyles,
-    keyframes,
-    referenceAssets,
-  ]);
 
   useEffect(() => {
     if (!storageReady || !projectDirectory) return;
@@ -1562,10 +1032,6 @@ export default function Home() {
       for (const shot of shots) {
         const settings = shotSettings[shot.id] ?? shotSettingDefaults;
         const modeKey = promptStoreKey(shot.id, settings.mode);
-        const promptData =
-          optimizedPrompts[modeKey] ??
-          shotPrompts[modeKey] ??
-          (shot.id === taskShot?.id ? prompt : "");
         await writeClipManifest(shot, {
           generation: {
             mode: settings.mode,
@@ -1588,11 +1054,10 @@ export default function Home() {
           promptOriginal: shotPrompts[modeKey] ??
             (shot.id === taskShot?.id ? prompt : ""),
           promptOptimized: optimizedPrompts[modeKey],
-          prompt: promptData,
           output: shotVideos[shot.id] || shot.output
             ? (shotFileNames[shot.id] ?? shot.output ??
               `shot-${shot.id}-${safeFileStem(shot.title)}.mp4`)
-            : undefined,
+            : null,
         });
       }
       await writeProjectManifest();
@@ -1603,7 +1068,6 @@ export default function Home() {
     shots,
     shotSettings,
     promptSubjects,
-    promptSegments,
     shotPrompts,
     optimizedPrompts,
     shotVideos,
@@ -1629,14 +1093,6 @@ export default function Home() {
       normalizePrompt(shotPrompts[promptStoreKey(taskShot.id, settings.mode)]),
     );
     setPromptNotice(null);
-    setSettingsSegmentIndex(null);
-    setActivePromptSegment((current) => ({
-      ...current,
-      [taskShot.id]: Math.min(
-        current[taskShot.id] ?? 0,
-        Math.max(0, getPromptSegments(taskShot.id).length - 1),
-      ),
-    }));
     setVideoUrl(shotVideos[taskShot.id] ?? (taskShot as typeof taskShot & { output?: string }).output ?? null);
     void loadArchivedShotVideo(taskShot).then((url) => {
       if (url && activeShotIdRef.current === taskShot.id) setVideoUrl(url);
@@ -1892,27 +1348,21 @@ export default function Home() {
     try {
       await writeClipManifest(shot, {
         generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed", keyframeMode: "first" },
-        prompt: "",
+        promptOriginal: "",
       });
     } catch {
       setGenerationStatus(
         "片段已创建，但项目目录没有写入权限，请重新选择项目目录",
       );
     }
-    setShotPrompts((current) => ({ ...current, [id]: "" }));
-    setPromptBuilderSettings((current) => ({
+    setShotPrompts((current) => ({
       ...current,
-      [id]: { ...promptBuilderDefaults },
+      [promptStoreKey(id, "T2VA")]: "",
     }));
     // Each shot owns its subjects and references. Reuse is explicit via the
     // subject library, so a new shot cannot accidentally process prior-shot
     // characters that were never added to it.
     setPromptSubjects((current) => ({ ...current, [id]: [] }));
-    setRef2vaFields((current) => ({
-      ...current,
-      [id]: { ...ref2vaDefaults, retentionAnalysis: "" },
-    }));
-    setPromptSegments((current) => ({ ...current, [id]: [] }));
     setShotSettings((current) => ({
       ...current,
       [id]: { ...shotSettingDefaults },
@@ -1940,7 +1390,6 @@ export default function Home() {
     setShotTasks(clearShotEntry);
     setShotStages(clearShotEntry);
     setSubmittingShots(clearShotEntry);
-    setActivePromptSegment(clearShotEntry);
     setActiveShot(shots.length);
     activeShotIdRef.current = id;
     setPrompt("");
@@ -2073,25 +1522,10 @@ export default function Home() {
         delete nextPrompts[deletedId];
         return nextPrompts;
       });
-      setPromptBuilderSettings((current) => {
-        const nextBuilder = { ...current };
-        delete nextBuilder[deletedId];
-        return nextBuilder;
-      });
       setPromptSubjects((current) => {
         const nextSubjects = { ...current };
         delete nextSubjects[deletedId];
         return nextSubjects;
-      });
-      setRef2vaFields((current) => {
-        const nextFields = { ...current };
-        delete nextFields[deletedId];
-        return nextFields;
-      });
-      setPromptSegments((current) => {
-        const nextSegments = { ...current };
-        delete nextSegments[deletedId];
-        return nextSegments;
       });
       setShotSettings((current) => {
         const nextSettings = { ...current };
@@ -2190,7 +1624,7 @@ export default function Home() {
   function ensureReferenceMode(shotId: string) {
     const current = shotSettings[shotId] ?? shotSettingDefaults;
     if (current.mode === "R2VA") return;
-    const next = { ...current, mode: "R2VA" };
+    const next: ShotSettings = { ...current, mode: "R2VA" };
     setShotSettings((settings) => ({ ...settings, [shotId]: next }));
     if (taskShot?.id === shotId) setMode("R2VA");
   }
@@ -2201,90 +1635,6 @@ export default function Home() {
     const settings = getShotSettings(shot);
     return `${settings.duration.replace(/\s*秒$/, "s")} · ${settings.mode} · ${settings.turbo ? "加速" : "标准"} · ${settings.resolution.replace(/\s*×\s*/, "×")} · ${settings.fps.replace(/\s+/g, "")}`;
   }
-  function updatePromptBuilder<K extends keyof PromptBuilderSettings>(
-    key: K,
-    value: PromptBuilderSettings[K],
-    segmentIndex = activeSegmentIndex,
-  ) {
-    const shotId = shots[activeShot]?.id;
-    if (!shotId) return;
-    setPromptSegments((current) => {
-      const segments = current[shotId]?.length
-        ? current[shotId].map((segment) => ({
-            ...segment,
-            settings: normalizePromptBuilderSettings(segment.settings),
-          }))
-        : [
-            {
-              id: `${shotId}-segment-1`,
-              description: "",
-              settings: normalizePromptBuilderSettings(
-                current[shotId]?.[0]?.settings,
-              ),
-            },
-          ];
-      const segment = segments[segmentIndex] ?? segments[0];
-      segments[segmentIndex] = {
-        ...segment,
-        settings: {
-          ...promptBuilderDefaults,
-          ...segment.settings,
-          [key]: value,
-        },
-      };
-      return { ...current, [shotId]: segments };
-    });
-    setPromptBuilderSettings((current) => ({
-      ...current,
-      [shotId]: { ...promptBuilderDefaults, ...current[shotId], [key]: value },
-    }));
-  }
-  function resetPromptBuilder(segmentIndex = activeSegmentIndex) {
-    const shotId = shots[activeShot]?.id;
-    if (!shotId) return;
-    setPromptSegments((current) => {
-      const segments = [...getPromptSegments(shotId)];
-      if (!segments[segmentIndex]) return current;
-      segments[segmentIndex] = {
-        ...segments[segmentIndex],
-        settings: { ...promptBuilderDefaults },
-      };
-      return { ...current, [shotId]: segments };
-    });
-    setPromptBuilderSettings((current) => ({
-      ...current,
-      [shotId]: { ...promptBuilderDefaults },
-    }));
-  }
-  function getPromptSegments(shotId: string) {
-    const saved = promptSegments[shotId];
-    const total = Number.parseFloat(duration) || 6;
-    if (saved?.length) {
-      return saved.map((segment, index) => ({
-        ...segment,
-        settings: normalizePromptBuilderSettings(segment.settings),
-        start:
-          typeof segment.start === "number"
-            ? segment.start
-            : index === 0
-              ? 0
-              : (total * index) / saved.length,
-        end:
-          typeof segment.end === "number"
-            ? segment.end
-            : (total * (index + 1)) / saved.length,
-      }));
-    }
-    return [
-      {
-        id: `${shotId}-segment-1`,
-        description: "",
-        settings: normalizePromptBuilderSettings(promptBuilderSettings[shotId]),
-        start: 0,
-        end: total,
-      },
-    ];
-  }
   async function bindProjectAsset(asset: ProjectTreeAsset) {
     const shotId = taskShot?.id;
     if (!shotId || !projectDirectory) return;
@@ -2293,7 +1643,7 @@ export default function Home() {
       const folderName =
         asset.type === "character"
           ? "角色"
-          : asset.type === "clothing"
+          : asset.type === "wardrobe"
           ? "服装"
           : asset.type === "prop"
             ? "道具"
@@ -2304,89 +1654,35 @@ export default function Home() {
                 : asset.type === "video"
                   ? "视频"
                   : "音频";
-      const manifestName =
-        asset.type === "clothing"
-          ? "clothing.json"
-          : asset.type === "prop"
-            ? "prop.json"
-            : asset.type === "scene"
-              ? "scene.json"
-              : "asset.json";
       const folder = await getProjectAssetFolder(projectDirectory, folderName);
-      let assetDirectory: FileSystemDirectoryHandle | null = null;
-      let directFile: File | null = null;
-      try {
-        directFile = await (await folder.getFileHandle(asset.name)).getFile();
-      } catch {
-        assetDirectory = await folder.getDirectoryHandle(asset.name);
-      }
-      const data = assetDirectory
-        ? (JSON.parse(
-            await (
-              await assetDirectory.getFileHandle(manifestName)
-            ).getFile().then((file) => file.text()),
-          ) as {
-            references?: Array<{ file?: string; role?: string; mimeType?: string }>;
-          })
-        : null;
-      const uploadedKeys: string[] = [];
-      const uploadedRoles: string[] = [];
-      const sourceFiles = directFile
-        ? [{
-            file: directFile,
-            role:
-              asset.type === "character"
-                ? "character"
-                : asset.type === "clothing"
-                ? "clothing"
-                : asset.type === "prop"
-                  ? "object"
-                  : asset.type === "scene"
-                    ? "environment"
-                    : "composite",
-          }]
-        : (data?.references ?? [])
-            .filter((reference) => reference.file)
-            .map(async (reference) => ({
-              file: await (
-                await assetDirectory!.getFileHandle(reference.file!)
-              ).getFile(),
-              role:
-                reference.role ??
-                (asset.type === "character"
-                  ? "character"
-                  : asset.type === "clothing"
-                  ? "clothing"
-                  : asset.type === "prop"
-                    ? "object"
-                    : asset.type === "scene"
-                      ? "environment"
-                      : "composite"),
-            }));
-      const resolvedSourceFiles = directFile
-        ? sourceFiles
-        : await Promise.all(sourceFiles);
-      for (const sourceEntry of resolvedSourceFiles) {
-        const file = sourceEntry.file;
-        const kind: ReferenceKind = file.type.startsWith("audio/")
-          ? "audio"
-          : file.type.startsWith("video/")
-            ? "video"
-            : "image";
-        const role = sourceEntry.role;
-        const existingKey = Object.entries(referenceAssets).find(
-          ([key, existing]) =>
-            key.startsWith(`${shotId}-${kind}-`) &&
-            existing.kind === kind &&
-            existing.name.trim().toLowerCase() === file.name.trim().toLowerCase(),
-        )?.[0];
-        if (existingKey) {
-          uploadedKeys.push(existingKey);
-          uploadedRoles.push(role);
-          continue;
-        }
-        const index = nextReferenceIndex(shotId, kind, uploadedKeys);
-        const key = referenceKey(shotId, kind, index);
+      const file = await (await folder.getFileHandle(asset.name)).getFile();
+      const kind: ReferenceKind = file.type.startsWith("audio/")
+        ? "audio"
+        : file.type.startsWith("video/")
+          ? "video"
+          : "image";
+      const role: ReferenceRole =
+        asset.type === "character"
+          ? "character"
+          : asset.type === "wardrobe"
+            ? "wardrobe"
+            : asset.type === "prop"
+              ? "object"
+              : asset.type === "scene"
+                ? "environment"
+                : asset.type === "video"
+                  ? "video"
+                  : asset.type === "audio"
+                    ? "audio"
+                    : "composite";
+      const existingKey = Object.entries(referenceAssets).find(
+        ([key, existing]) =>
+          key.startsWith(`${shotId}-${kind}-`) &&
+          existing.kind === kind &&
+          existing.name.trim().toLowerCase() === file.name.trim().toLowerCase(),
+      )?.[0];
+      const key = existingKey ?? referenceKey(shotId, kind, nextReferenceIndex(shotId, kind));
+      if (!existingKey) {
         const uploaded = await uploadReferenceFile(file, kind, comfyUrl);
         setReferenceAssets((current) => ({
           ...current,
@@ -2394,12 +1690,12 @@ export default function Home() {
             name: file.name,
             url: URL.createObjectURL(file),
             ...uploaded,
-            sourcePath: `资产/${folderName}/${asset.name}${directFile ? "" : `/${file.name}`}`,
+            sourcePath: `资产/${folderName}/${asset.name}`,
           },
         }));
-        uploadedKeys.push(key);
-        uploadedRoles.push(role);
       }
+      const uploadedKeys = [key];
+      const uploadedRoles: ReferenceRole[] = [role];
       const parsedAsset = parseProjectAssetName(asset.name);
       setPromptSubjects((current) => {
         const subjects = [...(current[shotId] ?? [])];
@@ -2435,7 +1731,7 @@ export default function Home() {
       );
     }
   }
-  function changeGenerationMode(nextMode: string) {
+  function changeGenerationMode(nextMode: GenerationMode) {
     setMode(nextMode);
     const nextModePrompt = taskShot
       ? shotPrompts[promptStoreKey(taskShot.id, nextMode)] ?? ""
@@ -2461,8 +1757,7 @@ export default function Home() {
           model: settings.model,
           turbo: settings.turbo,
         },
-        prompt:
-          optimizedPrompts[promptStoreKey(shot.id, nextMode)] ??
+        promptOriginal:
           shotPrompts[promptStoreKey(shot.id, nextMode)] ??
           (shot.id === taskShot?.id ? nextModePrompt : ""),
       });
@@ -2504,11 +1799,7 @@ export default function Home() {
     setPrompt("");
     setVideoUrl(null);
     setShotPrompts({});
-    setPromptBuilderSettings({});
     setPromptSubjects({});
-    setPromptSegments({});
-    setRef2vaFields({});
-    setActivePromptSegment({});
     setShotSettings({});
     setShotVideos({});
     setShotFileNames({});
@@ -2519,7 +1810,6 @@ export default function Home() {
     setKeyframes({});
     setReferenceAssets({});
     setPromptViewerOpen(false);
-    setSettingsSegmentIndex(null);
   }
   async function chooseProjectDirectory() {
     const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
@@ -2564,7 +1854,7 @@ export default function Home() {
         await writable.write(
           JSON.stringify(
             {
-              project: { name: directory.name || "未命名项目", version: 1 },
+              project: { name: directory.name || "未命名项目", version: 2 },
               clips: [],
             },
             null,
@@ -2603,23 +1893,12 @@ export default function Home() {
         try {
           await directory.getDirectoryHandle(folder);
         } catch {
-          // Accept old projects whose asset categories live at the project root.
-          if (folder === "资产") {
-            let hasLegacyAssets = false;
-            for (const assetFolder of projectAssetFolders) {
-              try {
-                await directory.getDirectoryHandle(assetFolder);
-                hasLegacyAssets = true;
-                break;
-              } catch {
-                /* Continue checking legacy folders. */
-              }
-            }
-            if (hasLegacyAssets) continue;
-          }
           missing.push(folder);
         }
       }
+      if (missing.length)
+        throw new Error(`项目格式无效，缺少目录：${missing.join("、")}`);
+      const loaded = await readProjectShots(directory);
       resetProjectEditorState();
       setProjectDirectory(directory);
       setProjectDirectories((current) => {
@@ -2632,27 +1911,18 @@ export default function Home() {
       });
       setProjectDirectoryName(directory.name || "导入项目");
       void saveProjectDirectoryHandle(directory);
-      try {
-        const loaded = await readProjectShots(directory);
-        if (loaded) {
-          const restoredAssets = applyProjectShotRecords(loaded);
-          await hydrateProjectReferenceAssets(
-            directory,
-            restoredAssets,
-            comfyUrl,
-          );
-        }
-      } catch {
-        // Keep an empty editor for projects without a readable manifest.
-      }
-      setGenerationStatus(
-        missing.length
-          ? `项目已导入，但缺少目录：${missing.join("、")}`
-          : `项目已导入：${directory.name || "未命名项目"}`,
+      const restoredAssets = applyProjectShotRecords(loaded);
+      await hydrateProjectReferenceAssets(
+        directory,
+        restoredAssets,
+        comfyUrl,
       );
+      setGenerationStatus(`项目已导入：${directory.name || "未命名项目"}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      setGenerationStatus("导入项目失败");
+      setGenerationStatus(
+        error instanceof Error ? error.message : "导入项目失败",
+      );
     }
   }
   async function refreshProjectTree() {
@@ -2664,7 +1934,7 @@ export default function Home() {
     for (const type of [
       "character",
       "scene",
-      "clothing",
+      "wardrobe",
       "prop",
       "video",
       "audio",
@@ -2676,7 +1946,7 @@ export default function Home() {
             ? "角色"
             : type === "scene"
             ? "场景"
-            : type === "clothing"
+            : type === "wardrobe"
               ? "服装"
               : type === "prop"
                 ? "道具"
@@ -2690,20 +1960,11 @@ export default function Home() {
           folderName,
         );
         for await (const [name, entry] of folder.entries()) {
-          if (type === "character" && entry.kind === "directory") continue;
-          const assetType =
-            type === "scene" && entry.kind === "directory" ? "scene" : type;
+          if (entry.kind !== "file") continue;
           assets.push({
             name,
-            type: assetType,
-            thumbnail:
-              entry.kind === "file"
-                ? await readAssetFileThumbnail(entry)
-                : assetType === "clothing"
-                  ? await readAssetThumbnail(
-                      await folder.getDirectoryHandle(name),
-                    )
-                  : undefined,
+            type,
+            thumbnail: await readAssetFileThumbnail(entry),
           });
         }
       } catch {
@@ -2724,45 +1985,43 @@ export default function Home() {
   }
   function applyProjectShotRecords(records: ProjectShotRecord[]) {
     setShots(
-      records.map(
-        ({ generation: _generation, references: _references, ...shot }) => shot,
-      ),
+      records.map((record) => ({
+        id: record.id,
+        title: record.title,
+        detail: record.detail,
+        meta: record.meta,
+        state: record.state,
+        output: record.output,
+        visualStyle: record.visualStyle,
+      })),
     );
     const settings = Object.fromEntries(
-      records
-        .filter((record) => record.generation)
-        .map((record) => [
-          record.id,
-          {
-            ...shotSettingDefaults,
-            ...(shotSettings[record.id] ?? {}),
-            ...(record.generation?.mode ? { mode: record.generation.mode } : {}),
-            ...(record.generation?.duration ? { duration: `${record.generation.duration} 秒` } : {}),
-            ...(record.generation?.resolution ? { resolution: record.generation.resolution.replace(/\s*[x×]\s*/i, " × ") } : {}),
-            ...(record.generation?.aspect ? { aspect: record.generation.aspect } : {}),
-            ...(record.generation?.fps ? { fps: `${record.generation.fps} fps` } : {}),
-            ...(record.generation?.model ? { model: record.generation.model } : {}),
-            ...(typeof record.generation?.turbo === "boolean" ? { turbo: record.generation.turbo } : {}),
-            ...(record.generation?.seed ? { seed: record.generation.seed } : {}),
-            ...(record.generation?.seedMode === "random" || record.generation?.seedMode === "fixed"
-              ? { seedMode: record.generation.seedMode }
-              : {}),
-            ...(record.generation?.keyframeMode === "first" || record.generation?.keyframeMode === "last" || record.generation?.keyframeMode === "first_last"
-              ? { keyframeMode: record.generation.keyframeMode }
-              : {}),
-          },
-        ]),
+      records.map((record) => [
+        record.id,
+        {
+          duration: `${record.generation.duration} 秒`,
+          resolution: record.generation.resolution.replace(/\s*[x×]\s*/i, " × "),
+          aspect: record.generation.aspect,
+          fps: `${record.generation.fps} fps`,
+          mode: record.generation.mode,
+          model: record.generation.model,
+          turbo: record.generation.turbo,
+          seed: record.generation.seed,
+          seedMode: record.generation.seedMode,
+          keyframeMode: record.generation.keyframeMode,
+        },
+      ]),
     );
     setShotSettings(settings);
     setShotVisualStyles(
       Object.fromEntries(
-        records.filter((record) => record.visualStyle).map((record) => [record.id, record.visualStyle!]),
+        records.map((record) => [record.id, record.visualStyle]),
       ),
     );
     const restoredPrompts: Record<string, string> = {};
     const restoredOptimizedPrompts: Record<string, string> = {};
     records.forEach((record) => {
-      Object.entries(record.prompts ?? {}).forEach(([mode, promptRecord]) => {
+      Object.entries(record.prompts).forEach(([mode, promptRecord]) => {
         const key = promptStoreKey(record.id, mode);
         restoredPrompts[key] = normalizePrompt(promptRecord.original);
         if (typeof promptRecord.optimized === "string" && promptRecord.optimized.trim())
@@ -2775,7 +2034,7 @@ export default function Home() {
     const restoredReferenceAssets: Record<string, ReferenceAsset> = {};
     records.forEach((record) => {
       const shotReferences = restoreProjectShotReferences(
-        record.references?.subjects,
+        record.references.subjects,
         comfyUrl,
       );
       restored[record.id] = shotReferences.subjects;
@@ -2841,16 +2100,15 @@ export default function Home() {
     );
     if (!handle) return;
     if (projectDirectory?.name === name) return;
-    resetProjectEditorState();
-    setProjectDirectory(handle);
-    setProjectDirectoryName(handle.name);
     try {
       const loaded = await readProjectShots(handle);
-      if (loaded) {
-        const restoredAssets = applyProjectShotRecords(loaded);
-        await hydrateProjectReferenceAssets(handle, restoredAssets, comfyUrl);
-      }
+      resetProjectEditorState();
+      setProjectDirectory(handle);
+      setProjectDirectoryName(handle.name);
+      const restoredAssets = applyProjectShotRecords(loaded);
+      await hydrateProjectReferenceAssets(handle, restoredAssets, comfyUrl);
       setActiveShot(0);
+      void saveProjectDirectoryHandle(handle).catch(() => undefined);
     } catch (error) {
       if (
         error instanceof DOMException &&
@@ -2873,7 +2131,9 @@ export default function Home() {
         setGenerationStatus(`项目“${name}”已在电脑上删除，已从列表移除`);
       } else {
         setGenerationStatus(
-          `项目“${handle.name}”的片段文件暂时无法读取，当前编辑区已清空`,
+          error instanceof Error
+            ? `无法切换到项目“${handle.name}”：${error.message}`
+            : `项目“${handle.name}”的片段文件无法读取`,
         );
       }
       return;
@@ -2885,7 +2145,7 @@ export default function Home() {
       ? "角色"
       : asset.type === "scene"
       ? "场景"
-      : asset.type === "clothing"
+      : asset.type === "wardrobe"
         ? "服装"
         : asset.type === "prop"
           ? "道具"
@@ -2900,7 +2160,7 @@ export default function Home() {
       ? "角色"
       : asset.type === "scene"
       ? "场景"
-      : asset.type === "clothing"
+      : asset.type === "wardrobe"
         ? "服装"
         : asset.type === "prop"
           ? "道具"
@@ -2968,15 +2228,8 @@ export default function Home() {
         return;
       }
       const folderName = assetFolderName(asset);
-      // Assets may be either uploaded files or asset directories. Resolve the
-      // same canonical location used by the scanner, with legacy fallback.
-      let folder: FileSystemDirectoryHandle;
-      try {
-        const assetsRoot = await projectDirectory.getDirectoryHandle("资产");
-        folder = await assetsRoot.getDirectoryHandle(folderName);
-      } catch {
-        folder = await projectDirectory.getDirectoryHandle(folderName);
-      }
+      const assetsRoot = await projectDirectory.getDirectoryHandle("资产");
+      const folder = await assetsRoot.getDirectoryHandle(folderName);
       const writableFolder = folder as WritableDirectoryHandle;
       if (!writableFolder.removeEntry) {
         window.alert("当前浏览器不支持删除资产");
@@ -3415,7 +2668,7 @@ export default function Home() {
           ? "角色"
           : kind === "scene"
           ? "场景"
-          : kind === "clothing"
+          : kind === "wardrobe"
             ? "服装"
             : kind === "prop"
               ? "道具"
@@ -3487,7 +2740,7 @@ export default function Home() {
         icon: MapPinned,
       },
       {
-        type: "clothing",
+        type: "wardrobe",
         label: "服装",
         description: "上传服装参考文件",
         icon: Shirt,
@@ -3579,7 +2832,7 @@ export default function Home() {
                         ? "男主"
                         : assetType === "scene"
                           ? "麦当劳"
-                          : assetType === "clothing"
+                          : assetType === "wardrobe"
                             ? "女主"
                             : assetType === "prop"
                               ? "手机"
@@ -3700,7 +2953,7 @@ export default function Home() {
     await writable.write(
       JSON.stringify(
         {
-          project: { name: projectDirectoryName, version: 1 },
+          project: { name: projectDirectoryName, version: 2 },
           clips: shotList.map((item) => ({
             id: item.id,
             title: item.title,
@@ -3714,15 +2967,21 @@ export default function Home() {
     await writable.close();
   }
   async function writeClipManifest(
-    shot: { id: string; title: string },
-    overrides: Record<string, unknown> = {},
+    shot: {
+      id: string;
+      title: string;
+      output?: string | null;
+      visualStyle?: VisualStyleKey;
+    },
+    overrides: ClipManifestOverrides = {},
   ) {
     if (!projectDirectory) return;
-    const permission = projectDirectory.queryPermission
-      ? await projectDirectory.queryPermission({ mode: "readwrite" })
+    const writableProjectDirectory = projectDirectory as WritableDirectoryHandle;
+    const permission = writableProjectDirectory.queryPermission
+      ? await writableProjectDirectory.queryPermission({ mode: "readwrite" })
       : "granted";
-    if (permission !== "granted" && projectDirectory.requestPermission) {
-      const requested = await projectDirectory.requestPermission({
+    if (permission !== "granted" && writableProjectDirectory.requestPermission) {
+      const requested = await writableProjectDirectory.requestPermission({
         mode: "readwrite",
       });
       if (requested !== "granted") {
@@ -3742,21 +3001,24 @@ export default function Home() {
     });
     const writable = await file.createWritable();
     const shotSubjects = promptSubjects[shot.id] ?? [];
-    const serializeReference = (assetKey: string, role: string) => ({
-      assetKey,
-      role: role === "clothing" ? "wardrobe" : role,
-      ...(referenceAssets[assetKey]
-        ? {
-            name: referenceAssets[assetKey].name,
-            kind: referenceAssets[assetKey].kind,
-            comfyName: referenceAssets[assetKey].comfyName,
-            comfySubfolder: referenceAssets[assetKey].comfySubfolder,
-            ...(referenceAssets[assetKey].sourcePath ? { sourcePath: referenceAssets[assetKey].sourcePath } : {}),
-          }
-        : {}),
-    });
-    const relationForRole = (role: string) =>
-      role === "clothing"
+    const serializeReference = (
+      assetKey: string,
+      role: ReferenceRole,
+    ): PersistedPromptReference | null => {
+      const asset = referenceAssets[assetKey];
+      if (!asset) return null;
+      return {
+        assetKey,
+        role,
+        name: asset.name,
+        kind: asset.kind,
+        ...(asset.comfyName ? { comfyName: asset.comfyName } : {}),
+        ...(asset.comfySubfolder ? { comfySubfolder: asset.comfySubfolder } : {}),
+        ...(asset.sourcePath ? { sourcePath: asset.sourcePath } : {}),
+      };
+    };
+    const relationForRole = (role: ReferenceRole) =>
+      role === "wardrobe"
         ? "worn_by"
         : role === "object"
           ? "held_by"
@@ -3766,12 +3028,14 @@ export default function Home() {
     const subjects: PersistedPromptSubject[] = shotSubjects
       .filter((subject) => subject.name.trim())
       .flatMap((subject) => {
-        const references = subject.assetKeys.map((assetKey) =>
-          serializeReference(
-            assetKey,
-            subject.assetRoles?.[assetKey] ?? "composite",
-          ),
-        );
+        const references = subject.assetKeys
+          .map((assetKey) =>
+            serializeReference(
+              assetKey,
+              subject.assetRoles?.[assetKey] ?? "composite",
+            ),
+          )
+          .filter((reference): reference is PersistedPromptReference => Boolean(reference));
         const children = (subject.children ?? []).map((child) => {
           const childRole =
             child.assetKeys
@@ -3780,17 +3044,18 @@ export default function Home() {
           return {
             subjectId: `subject-${shot.id}-${safeFileStem(child.name.trim())}`,
             name: child.name.trim(),
-            role: childRole === "clothing" ? "wardrobe" : childRole,
             relation: {
               type: relationForRole(childRole),
               parentSubjectId: `subject-${shot.id}-${safeFileStem(subject.name.trim())}`,
             },
-            references: child.assetKeys.map((assetKey) =>
-              serializeReference(
-                assetKey,
-                child.assetRoles?.[assetKey] ?? childRole,
-              ),
-            ),
+            references: child.assetKeys
+              .map((assetKey) =>
+                serializeReference(
+                  assetKey,
+                  child.assetRoles?.[assetKey] ?? childRole,
+                ),
+              )
+              .filter((reference): reference is PersistedPromptReference => Boolean(reference)),
           };
         });
         const parent = {
@@ -3805,8 +3070,12 @@ export default function Home() {
           references: child.references,
         }))];
       });
-    const manifestMode =
-      (overrides.generation as { mode?: string } | undefined)?.mode ?? "T2VA";
+    const savedSettings = {
+      ...shotSettingDefaults,
+      ...(shotSettings[shot.id] ?? {}),
+    };
+    const generationOverride = overrides.generation ?? {};
+    const manifestMode = generationOverride.mode ?? savedSettings.mode;
     const subjectsById = new Map(
       subjects.map((subject) => [subject.subjectId, subject]),
     );
@@ -3829,75 +3098,69 @@ export default function Home() {
     const referencedSubjects = subjects.filter((subject) =>
       referencedSubjectIds.has(subject.subjectId),
     );
-    const { promptOriginal, promptOptimized, prompt: fallbackPrompt, visualStyle: overrideVisualStyle, ...restOverrides } = overrides as Record<string, unknown> & {
-      promptOriginal?: unknown;
-      promptOptimized?: unknown;
-      prompt?: unknown;
-      visualStyle?: unknown;
+    const promptModes = Object.fromEntries(
+      (["T2VA", "I2VA", "R2VA"] as const).map((promptMode) => {
+        const key = promptStoreKey(shot.id, promptMode);
+        const original =
+          promptMode === manifestMode && overrides.promptOriginal !== undefined
+            ? overrides.promptOriginal
+            : shotPrompts[key] ??
+              (taskShot?.id === shot.id && activeMode === promptMode ? prompt : "");
+        const optimized =
+          promptMode === manifestMode && overrides.promptOptimized !== undefined
+            ? overrides.promptOptimized.trim()
+            : optimizedPrompts[key]?.trim();
+        return [
+          promptMode,
+          {
+            original,
+            ...(optimized ? { optimized } : {}),
+          },
+        ];
+      }),
+    ) as ClipPrompts;
+    const generation: ClipGeneration = {
+      mode: manifestMode,
+      duration:
+        generationOverride.duration ??
+        (Number.parseFloat(savedSettings.duration) || 6),
+      resolution: generationOverride.resolution ?? savedSettings.resolution,
+      aspect: generationOverride.aspect ?? savedSettings.aspect,
+      fps:
+        generationOverride.fps ?? (Number.parseInt(savedSettings.fps, 10) || 24),
+      model: "H3",
+      turbo: generationOverride.turbo ?? savedSettings.turbo,
+      seed: generationOverride.seed ?? savedSettings.seed,
+      seedMode: generationOverride.seedMode ?? savedSettings.seedMode,
+      keyframeMode:
+        generationOverride.keyframeMode ?? savedSettings.keyframeMode,
+      ...(generationOverride.steps !== undefined
+        ? { steps: generationOverride.steps }
+        : shotTasks[shot.id]?.steps !== undefined
+          ? { steps: shotTasks[shot.id].steps }
+          : {}),
     };
-    const originalPrompt =
-      typeof promptOriginal === "string"
-        ? promptOriginal
-        : normalizePrompt(fallbackPrompt);
-    const optimizedPrompt =
-      typeof promptOptimized === "string" && promptOptimized.trim()
-        ? promptOptimized
-        : undefined;
-    const manifestPrompt =
-      manifestMode === "R2VA"
-        ? {
-            original: originalPrompt,
-            ...(optimizedPrompt
-              ? { optimized: toRef2vaPromptManifest(optimizedPrompt) }
-              : {}),
-            selected: optimizedPrompt ? "optimized" : "original",
-          }
-        : optimizedPrompt ?? originalPrompt;
-    const promptModes: Record<string, ClipPromptRecord> = {};
-    const modePrefix = `${shot.id}::`;
-    const promptModeNames = new Set([
-      "T2VA",
-      "I2VA",
-      "R2VA",
-      ...Object.keys(shotPrompts)
-        .filter((key) => key.startsWith(modePrefix))
-        .map((key) => key.slice(modePrefix.length)),
-      ...Object.keys(optimizedPrompts)
-        .filter((key) => key.startsWith(modePrefix))
-        .map((key) => key.slice(modePrefix.length)),
-    ]);
-    promptModeNames.forEach((mode) => {
-        const key = promptStoreKey(shot.id, mode);
-        const modeOptimized = optimizedPrompts[key]?.trim();
-        promptModes[mode] = {
-          original: shotPrompts[key] ?? "",
-          ...(modeOptimized ? { optimized: modeOptimized } : {}),
-          selected: modeOptimized ? "optimized" : "original",
-        };
-    });
-    promptModes[manifestMode] = {
-      original: originalPrompt,
-      ...(optimizedPrompt ? { optimized: optimizedPrompt } : {}),
-      selected: optimizedPrompt ? "optimized" : "original",
-    };
-    const manifestOverrides = {
-      ...restOverrides,
-      prompt: manifestPrompt,
-      prompts: promptModes,
-    };
-    const visualStyle = typeof overrideVisualStyle === "string"
-      ? overrideVisualStyle
-      : shotVisualStyles[shot.id];
-    if (visualStyle) manifestOverrides.visualStyle = visualStyle;
+    const output = Object.prototype.hasOwnProperty.call(overrides, "output")
+      ? overrides.output ?? null
+      : shotFileNames[shot.id] ?? shot.output ?? null;
+    const visualStyle =
+      overrides.visualStyle ??
+      shotVisualStyles[shot.id] ??
+      shot.visualStyle ??
+      "natural_cinematic";
     await writable.write(
       JSON.stringify(
         {
+          version: 2,
           id: shot.id,
           title: shot.title,
-          ...(manifestMode === "R2VA" && referencedSubjects.length
-            ? { references: { subjects: referencedSubjects } }
-            : {}),
-          ...manifestOverrides,
+          generation,
+          prompts: promptModes,
+          references: {
+            subjects: referencedSubjects,
+          },
+          visualStyle,
+          output,
         },
         null,
         2,
@@ -4448,7 +3711,6 @@ export default function Home() {
           token: `<${labels[kind]} ${index + 1}>`,
           name: asset.name,
           url: asset.url,
-          ready: true,
           assetKey: key,
         };
       })
@@ -4993,25 +4255,6 @@ export default function Home() {
             ).filter((name): name is string => Boolean(name)),
           }
         : undefined;
-    const legacyReference =
-      activeMode === "R2VA"
-        ? Object.entries(referenceAssets).find(
-            ([key, asset]) =>
-              key.startsWith(`${shotId}-`) &&
-              asset.comfyName &&
-              !asset.comfyName.startsWith("director-ref-"),
-          )
-        : undefined;
-    if (legacyReference) {
-      setGenerationStatus(
-        `参考素材“${legacyReference[1].name}”使用旧文件名，请重新上传后再生成`,
-      );
-      setShotStages((current) => ({
-        ...current,
-        [shotId]: "等待素材重新上传",
-      }));
-      return;
-    }
     const pendingReference =
       activeMode === "R2VA"
         ? Object.entries(referenceAssets).find(
@@ -5166,13 +4409,13 @@ export default function Home() {
 
   const pickerAssets = projectAssets.filter((asset) => {
     if (!referencePickerTarget)
-      return ["character", "scene", "clothing", "prop"].includes(asset.type);
+      return ["character", "scene", "wardrobe", "prop"].includes(asset.type);
     if (referencePickerTarget.kind === "image")
       return !["audio", "video"].includes(asset.type);
     return asset.type === referencePickerTarget.kind;
   });
   const hasPickerAssets = pickerAssets.length > 0;
-  const pickerCategoryOptions: Array<{
+  const allPickerCategoryOptions: Array<{
     type: ProjectAssetType;
     label: string;
     icon: typeof UserRound;
@@ -5191,10 +4434,10 @@ export default function Home() {
       count: pickerAssets.filter((asset) => asset.type === "scene").length,
     },
     {
-      type: "clothing",
+      type: "wardrobe",
       label: "服装",
       icon: Shirt,
-      count: pickerAssets.filter((asset) => asset.type === "clothing").length,
+      count: pickerAssets.filter((asset) => asset.type === "wardrobe").length,
     },
     {
       type: "prop",
@@ -5220,7 +4463,10 @@ export default function Home() {
       icon: Box,
       count: pickerAssets.filter((asset) => asset.type === "custom").length,
     },
-  ].filter((category) => category.count > 0);
+  ];
+  const pickerCategoryOptions = allPickerCategoryOptions.filter(
+    (category) => category.count > 0,
+  );
   const selectedPickerAssets = pickerAssets.filter(
     (asset) => asset.type === assetPickerCategory,
   );
@@ -6528,87 +5774,6 @@ export default function Home() {
                 className="h-8 px-4 text-xs"
               >
                 关闭
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-      {settingsSegmentIndex !== null && settingsSegment && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onMouseDown={() => setSettingsSegmentIndex(null)}
-        >
-          <div
-            className="w-full max-w-xl rounded-xl border border-border bg-card p-5 shadow-2xl"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-sm font-semibold">镜头语言</h2>
-                <p className="mt-1 text-[10px] text-muted-foreground">
-                  画面 {settingsSegmentIndex + 1} · {settingsSegment.start ?? 0}
-                  s - {settingsSegment.end ?? durationSeconds}s
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSettingsSegmentIndex(null)}
-                className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                aria-label="关闭镜头语言"
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {(
-                [
-                  ["lens", "镜头焦段"],
-                  ["framing", "景别"],
-                  ["camera", "运镜"],
-                ] as const
-              ).map(([key, label]) => (
-                <label key={key} className="min-w-0">
-                  <span className="field-label mb-1">{label}</span>
-                  <select
-                    value={
-                      settingsSegment.settings[key] ??
-                      promptBuilderDefaults[key]
-                    }
-                    onChange={(event) =>
-                      updatePromptBuilder(
-                        key,
-                        event.target.value,
-                        settingsSegmentIndex ?? 0,
-                      )
-                    }
-                    aria-label={label}
-                    className="select-like h-9 min-w-0 w-full appearance-none px-2 text-xs"
-                  >
-                    <option value="">未设置</option>
-                    {promptBuilderOptions[key].map(([value, optionLabel]) => (
-                      <option key={value} value={value}>
-                        {optionLabel}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => resetPromptBuilder(settingsSegmentIndex ?? 0)}
-                className="h-8 px-4 text-xs"
-              >
-                重置
-              </Button>
-              <Button
-                type="button"
-                onClick={() => setSettingsSegmentIndex(null)}
-                className="h-8 px-4 text-xs"
-              >
-                完成
               </Button>
             </div>
           </div>

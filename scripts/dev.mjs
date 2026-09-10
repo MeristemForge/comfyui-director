@@ -27,7 +27,7 @@ const helper = createServer(async (request, response) => {
   catch (error) { response.writeHead(500, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ error: error instanceof Error ? error.message : '提示词优化失败' })); }
 });
 helper.listen(3101, '127.0.0.1');
-const vinext = spawn(process.execPath, ['node_modules/vinext/dist/cli.js', 'dev'], { stdio: 'inherit', shell: false });
+const vinext = spawn(process.execPath, ['node_modules/vinext/dist/cli.js', 'dev', '--hostname', '0.0.0.0'], { stdio: 'inherit', shell: false });
 
 function shutdown() {
   helper.close();
