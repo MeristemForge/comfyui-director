@@ -34,11 +34,8 @@ import {
 type Shot = {
   id: string;
   title: string;
-  detail: string;
-  meta: string;
   state: string;
   output?: string | null;
-  visualStyle?: VisualStyleKey;
 };
 type VisualStyleKey = keyof typeof visualStylePresets;
 const visualSubjectRealismGuidance = "Whenever human subjects appear, prioritize authentic live-action facial rendering over idealized beauty-filter aesthetics. Preserve natural skin texture, fine facial detail, realistic pores, and minimal retouching. Keep facial highlights restrained and natural, with a low-shine matte-to-natural skin finish. Avoid oily sheen, wet-looking skin, glossy skin, waxy or plastic-looking skin, excessive smoothing, beauty-filter effects, over-retouched faces, and localized artificial color patches. Keep human skin tones natural, consistent, and evenly balanced while respecting the scene lighting.";
@@ -425,11 +422,10 @@ async function readProjectSourceFile(
   project: FileSystemDirectoryHandle,
   sourcePath: string,
 ) {
-  const parts = sourcePath
+  const pathParts = sourcePath
     .replaceAll("\\", "/")
     .split("/")
     .filter(Boolean);
-  const pathParts = parts;
   if (
     !pathParts.length ||
     pathParts.some((part) => part === "." || part === "..")
@@ -713,8 +709,6 @@ async function readProjectShots(
       return {
         id: clipId,
         title: clipTitle,
-        detail: `${generation.duration}s · ${generation.mode} · ${generation.resolution} · ${generation.fps}fps`,
-        meta: `${generation.aspect}${output ? " · 已归档" : ""}`,
         state: output ? "已完成" : "草稿",
         version: 2,
         output,
@@ -1265,7 +1259,7 @@ export default function Home() {
     const nextShot = shots[index];
     const settings = shotSettings[nextShot.id];
     const shotResolution =
-      settings?.resolution ?? nextShot.meta.split("·")[0].trim();
+      settings?.resolution ?? shotSettingDefaults.resolution;
     setActiveShot(index);
     activeShotIdRef.current = nextShot.id;
     setPrompt(
@@ -1292,7 +1286,7 @@ export default function Home() {
                 : "等待生成",
     );
     setDuration(
-      settings?.duration ?? `${nextShot.detail.match(/\d+/)?.[0] ?? 6} 秒`,
+      settings?.duration ?? shotSettingDefaults.duration,
     );
     setResolution(shotResolution);
     setAspect(settings?.aspect ?? "16:9");
@@ -1315,8 +1309,6 @@ export default function Home() {
     const shot = {
       id,
       title: title.trim(),
-      detail: "6s · T2VA",
-      meta: "864×480 · 16:9 · 24fps",
       state: "草稿",
     };
     setShots((current) => [...current, shot]);
@@ -1784,6 +1776,10 @@ export default function Home() {
     setSubmittingShots({});
     setKeyframes({});
     setReferenceAssets({});
+    setOptimizedPrompts({});
+    setShotVisualStyles({});
+    setPromptNotice(null);
+    setPromptMention(null);
     setPromptViewerOpen(false);
   }
   async function chooseProjectDirectory() {
@@ -1963,11 +1959,8 @@ export default function Home() {
       records.map((record) => ({
         id: record.id,
         title: record.title,
-        detail: record.detail,
-        meta: record.meta,
         state: record.state,
         output: record.output,
-        visualStyle: record.visualStyle,
       })),
     );
     const settings = Object.fromEntries(
@@ -2949,7 +2942,6 @@ export default function Home() {
       id: string;
       title: string;
       output?: string | null;
-      visualStyle?: VisualStyleKey;
     },
     overrides: ClipManifestOverrides = {},
   ) {
@@ -3130,7 +3122,6 @@ export default function Home() {
     const visualStyle =
       overrides.visualStyle ??
       shotVisualStyles[shot.id] ??
-      shot.visualStyle ??
       "natural_cinematic";
     await writable.write(
       JSON.stringify(
@@ -3309,10 +3300,9 @@ export default function Home() {
   function nextReferenceIndex(
     shotId: string,
     kind: ReferenceKind,
-    pendingKeys: string[] = [],
   ) {
     const prefix = `${shotId}-${kind}-`;
-    const indices = [...Object.keys(referenceAssets), ...pendingKeys]
+    const indices = Object.keys(referenceAssets)
       .filter((key) => key.startsWith(prefix))
       .map((key) => Number(key.slice(prefix.length)))
       .filter((index) => Number.isInteger(index) && index >= 0);
@@ -4170,13 +4160,11 @@ export default function Home() {
     const references =
       activeMode === "R2VA"
         ? {
-            images: [
-              ...Array.from({ length: profile.images }, (_, index) =>
+            images: Array.from({ length: profile.images }, (_, index) =>
               referenceComfyFile(
                 referenceAssets[referenceKey(shotId, "image", index)],
               ),
-              ).filter((name): name is string => Boolean(name)),
-            ].slice(0, profile.images),
+            ).filter((name): name is string => Boolean(name)),
             videos: Array.from({ length: profile.videos }, (_, index) =>
               referenceComfyFile(
                 referenceAssets[referenceKey(shotId, "video", index)],
@@ -4240,6 +4228,7 @@ export default function Home() {
         seed: submittedSeed,
         duration,
         resolution: availableResolution,
+        aspect,
         fps,
         turbo: turboMode,
         mode: activeMode,
