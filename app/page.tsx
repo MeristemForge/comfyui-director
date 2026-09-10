@@ -847,6 +847,9 @@ export default function Home() {
       ? [{ name: projectDirectoryName }]
       : [];
   const activeShotIdRef = useRef<string | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
+  const saveQueueRef = useRef(Promise.resolve());
+  const referenceUploadTokensRef = useRef<Record<string, number>>({});
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeTask = taskShot ? shotTasks[taskShot.id] : undefined;
   const activeSubmitting = taskShot
@@ -992,45 +995,58 @@ export default function Home() {
   }, [storageReady, projectDirectory]);
 
   useEffect(() => {
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
     if (!projectDirectory || !storageReady || !shots.length) return;
-    void (async () => {
-      for (const shot of shots) {
-        const settings = shotSettings[shot.id] ?? shotSettingDefaults;
-        const modeKey = promptStoreKey(shot.id, settings.mode);
-        await writeClipManifest(shot, {
-          generation: {
-            mode: settings.mode,
-            duration: Number.parseFloat(settings.duration) || 6,
-            resolution: settings.resolution,
-            aspect: settings.aspect,
-            fps: Number.parseInt(settings.fps, 10) || 24,
-            model: settings.model,
-            turbo: settings.turbo,
-            seed: settings.seed,
-            seedMode: settings.seedMode,
-            ...(shotTasks[shot.id]
-              ? { seed: shotTasks[shot.id].seed, seedMode: shotTasks[shot.id].seedMode, steps: shotTasks[shot.id].steps }
-              : {}),
-            ...(settings.mode === "I2VA"
-              ? {
-                  keyframeMode:
-                    shot.id === taskShot?.id
-                      ? keyframeMode
-                      : settings.keyframeMode,
-                }
-              : {}),
-          },
-          promptOriginal: shotPrompts[modeKey] ??
-            (shot.id === taskShot?.id ? prompt : ""),
-          promptOptimized: optimizedPrompts[modeKey],
-          output: shotVideos[shot.id] || shot.output
-            ? (shotFileNames[shot.id] ?? shot.output ??
-              `shot-${shot.id}-${safeFileStem(shot.title)}.mp4`)
-            : null,
-        });
-      }
-      await writeProjectManifest();
-    })().catch(() => undefined);
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      const snapshot = {
+        projectDirectory,
+        shot: taskShot,
+        shots,
+        shotSettings,
+        promptSubjects,
+        shotPrompts,
+        optimizedPrompts,
+        keyframeMode,
+        shotTasks,
+        shotFileNames,
+      };
+      saveQueueRef.current = saveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          for (const shot of snapshot.shots) {
+            const settings = snapshot.shotSettings[shot.id] ?? shotSettingDefaults;
+            const modeKey = promptStoreKey(shot.id, settings.mode);
+            await writeClipManifest(shot, {
+              generation: {
+                mode: settings.mode,
+                duration: Number.parseFloat(settings.duration) || 6,
+                resolution: settings.resolution,
+                aspect: settings.aspect,
+                fps: Number.parseInt(settings.fps, 10) || 24,
+                model: settings.model,
+                turbo: settings.turbo,
+                seed: settings.seed,
+                seedMode: settings.seedMode,
+                ...(snapshot.shotTasks[shot.id]
+                  ? { seed: snapshot.shotTasks[shot.id].seed, seedMode: snapshot.shotTasks[shot.id].seedMode, steps: snapshot.shotTasks[shot.id].steps }
+                  : {}),
+                ...(settings.mode === "I2VA"
+                  ? { keyframeMode: shot.id === snapshot.shot?.id ? snapshot.keyframeMode : settings.keyframeMode }
+                  : {}),
+              },
+              promptOriginal: snapshot.shotPrompts[modeKey] ??
+                (shot.id === snapshot.shot?.id ? prompt : ""),
+              promptOptimized: snapshot.optimizedPrompts[modeKey],
+              output: shot.output ?? null,
+            });
+          }
+        })
+        .catch(() => undefined);
+    }, 500);
+    return () => {
+      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    };
   }, [
     projectDirectory,
     storageReady,
@@ -1039,10 +1055,9 @@ export default function Home() {
     promptSubjects,
     shotPrompts,
     optimizedPrompts,
-    shotVideos,
-    shotFileNames,
     keyframeMode,
-    referenceAssets,
+    shotTasks,
+    shotFileNames,
   ]);
 
   useEffect(() => {
@@ -1664,7 +1679,7 @@ export default function Home() {
         ([key, existing]) =>
           key.startsWith(`${shotId}-${kind}-`) &&
           existing.kind === kind &&
-          existing.name.trim().toLowerCase() === file.name.trim().toLowerCase(),
+          existing.sourcePath === `资产/${folderName}/${asset.name}`,
       )?.[0];
       const key = existingKey ?? referenceKey(shotId, kind, nextReferenceIndex(shotId, kind));
       if (!existingKey) {
@@ -3431,6 +3446,8 @@ export default function Home() {
     event.target.value = "";
     if (!file || !taskShot) return;
     const key = referenceKey(taskShot.id, kind, index);
+    const uploadToken = (referenceUploadTokensRef.current[key] ?? 0) + 1;
+    referenceUploadTokensRef.current[key] = uploadToken;
     const previousAsset = referenceAssets[key];
     const url = URL.createObjectURL(file);
     setReferenceAssets((current) => ({
@@ -3443,8 +3460,12 @@ export default function Home() {
       let backupFailed = false;
       try {
         sourcePath = await saveReferenceSourceFile(taskShot, file);
-      } catch {
-        backupFailed = true;
+        } catch {
+          backupFailed = true;
+        }
+      if (referenceUploadTokensRef.current[key] !== uploadToken) {
+        if (sourcePath) void deleteReferenceSourceFile(sourcePath);
+        return;
       }
       if (
         sourcePath &&
@@ -3527,6 +3548,8 @@ export default function Home() {
   function removeReference(kind: ReferenceKind, index: number) {
     if (!taskShot) return;
     const key = referenceKey(taskShot.id, kind, index);
+    referenceUploadTokensRef.current[key] =
+      (referenceUploadTokensRef.current[key] ?? 0) + 1;
     const asset = referenceAssets[key];
     if (asset?.url.startsWith("blob:")) URL.revokeObjectURL(asset.url);
     void deleteReferenceSourceFile(asset?.sourcePath);
@@ -5831,8 +5854,6 @@ export default function Home() {
     </main>
   );
 }
-
-
 
 
 
