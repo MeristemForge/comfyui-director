@@ -3036,6 +3036,35 @@ export default function Home() {
           references: child.references,
         }))];
       });
+    const usedAssetKeys = new Set(
+      subjects.flatMap((subject) =>
+        subject.references.map((reference) => reference.assetKey),
+      ),
+    );
+    const unassignedPrefix = `${shot.id}-`;
+    Object.entries(referenceAssets)
+      .filter(([assetKey]) => assetKey.startsWith(unassignedPrefix) && !usedAssetKeys.has(assetKey))
+      .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+      .forEach(([assetKey, asset]) => {
+        const role: ReferenceRole =
+          asset.kind === "video" ? "video" : asset.kind === "audio" ? "audio" : "composite";
+        const serialized = serializeReference(assetKey, role);
+        if (!serialized) return;
+        const name =
+          parseProjectAssetName(asset.name).name.trim() || originalFileStem(asset.name);
+        const existing = subjects.find(
+          (subject) => subject.name.trim().toLowerCase() === name.toLowerCase(),
+        );
+        if (existing) {
+          existing.references.push(serialized);
+          return;
+        }
+        subjects.push({
+          subjectId: `subject-${shot.id}-${safeFileStem(name)}`,
+          name,
+          references: [serialized],
+        });
+      });
     const savedSettings = {
       ...shotSettingDefaults,
       ...(shotSettings[shot.id] ?? {}),
@@ -3326,6 +3355,37 @@ export default function Home() {
     }));
   }
 
+  async function saveReferenceSourceFile(
+    shot: { id: string; title: string },
+    file: File,
+  ) {
+    if (!projectDirectory) return undefined;
+    const clips = await projectDirectory.getDirectoryHandle("片段", {
+      create: true,
+    });
+    const clipDirectory = await clips.getDirectoryHandle(
+      `${shot.id}-${safeFileStem(shot.title)}`,
+      { create: true },
+    );
+    const referenceDirectory = await clipDirectory.getDirectoryHandle("引用", {
+      create: true,
+    });
+    const extension = file.name.match(/\.[^.]+$/)?.[0] ?? "";
+    const requestedName =
+      file.name.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").trim() ||
+      `reference${extension}`;
+    const targetName = await uniqueProjectAssetFileName(
+      referenceDirectory,
+      requestedName,
+    );
+    const handle = await referenceDirectory.getFileHandle(targetName, {
+      create: true,
+    });
+    const writable = await handle.createWritable();
+    await writable.write(await file.arrayBuffer());
+    await writable.close();
+    return `片段/${shot.id}-${safeFileStem(shot.title)}/引用/${targetName}`;
+  }
   async function uploadReference(
     event: React.ChangeEvent<HTMLInputElement>,
     kind: ReferenceKind,
@@ -3341,32 +3401,53 @@ export default function Home() {
       [key]: { name: file.name, url, kind },
     }));
     try {
-      const form = new FormData();
-      form.append("image", file, file.name);
-      form.append("comfy_url", comfyUrl);
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: form,
-      });
-      const uploaded = (await response.json().catch(() => ({}))) as {
-        name?: string;
-        subfolder?: string;
-        error?: string;
-      };
-      if (!response.ok || !uploaded.name)
-        throw new Error(
-          uploaded.error ?? `上传参考素材失败（HTTP ${response.status}）`,
-        );
+      const uploaded = await uploadReferenceFile(file, kind, comfyUrl);
+      let sourcePath: string | undefined;
+      try {
+        sourcePath = await saveReferenceSourceFile(taskShot, file);
+      } catch {
+        sourcePath = undefined;
+      }
       setReferenceAssets((current) => ({
         ...current,
         [key]: {
           name: file.name,
           url,
-          comfyName: uploaded.name,
-          comfySubfolder: uploaded.subfolder || undefined,
-          kind,
+          ...uploaded,
+          ...(sourcePath ? { sourcePath } : {}),
         },
       }));
+      const parsedName =
+        parseProjectAssetName(file.name).name.trim() || originalFileStem(file.name);
+      const role: ReferenceRole =
+        kind === "video" ? "video" : kind === "audio" ? "audio" : "composite";
+      setPromptSubjects((current) => {
+        const subjects = [...(current[taskShot.id] ?? [])];
+        const existingIndex = subjects.findIndex(
+          (subject) =>
+            subject.name.trim().toLowerCase() === parsedName.toLowerCase(),
+        );
+        if (existingIndex >= 0) {
+          const existing = subjects[existingIndex];
+          subjects[existingIndex] = {
+            ...existing,
+            assetKeys: [...new Set([...existing.assetKeys, key])],
+            assetRoles: { ...existing.assetRoles, [key]: role },
+          };
+          return { ...current, [taskShot.id]: subjects };
+        }
+        return {
+          ...current,
+          [taskShot.id]: [
+            ...subjects,
+            {
+              name: parsedName,
+              assetKeys: [key],
+              assetRoles: { [key]: role },
+            },
+          ],
+        };
+      });
     } catch (error) {
       setGenerationStatus(
         error instanceof Error
