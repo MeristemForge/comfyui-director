@@ -716,12 +716,13 @@ async function readProjectShots(
       let outputAvailable = false;
       if (output) {
         const clipDirectoryPath = clipPath.split("/").slice(0, -1).join("/");
-        outputAvailable = Boolean(
-          await readProjectSourceFile(
-            handle,
-            `${clipDirectoryPath}/${output}`,
-          ),
-        );
+        try {
+          outputAvailable = Boolean(
+            await readProjectSourceFile(handle, `${clipDirectoryPath}/${output}`),
+          );
+        } catch {
+          outputAvailable = false;
+        }
       }
       const persistedKeyframes = data.keyframes;
       if (
@@ -1085,6 +1086,34 @@ export default function Home() {
     referenceAssets,
     keyframes,
   ]);
+
+  useEffect(() => {
+    if (!projectDirectory || !storageReady) return;
+    let disposed = false;
+    const hydrate = async () => {
+      for (const [key, frame] of Object.entries(keyframes)) {
+        if (disposed || !frame.sourcePath || !frame.comfyName) continue;
+        if (await isReferenceAssetAvailable(frame, comfyUrl)) continue;
+        try {
+          const source = await readProjectSourceFile(projectDirectory, frame.sourcePath);
+          if (!source) continue;
+          const uploaded = await uploadReferenceFile(source, "image", comfyUrl);
+          if (disposed) return;
+          setKeyframes((current) =>
+            current[key]?.sourcePath === frame.sourcePath
+              ? { ...current, [key]: { ...current[key], ...uploaded, url: referenceAssetUrl(uploaded, comfyUrl) } }
+              : current,
+          );
+        } catch {
+          if (!disposed) setGenerationStatus("关键帧源文件无法重新上传");
+        }
+      }
+    };
+    void hydrate();
+    return () => {
+      disposed = true;
+    };
+  }, [projectDirectory, storageReady]);
 
   useEffect(() => {
     activeShotIdRef.current = taskShot?.id ?? null;
@@ -1489,6 +1518,20 @@ export default function Home() {
           };
         });
         return nextAssets;
+      });
+      setKeyframes((current) => {
+        const nextFrames = { ...current };
+        const shotPrefix = `${shot.id}-`;
+        Object.entries(current).forEach(([key, frame]) => {
+          if (!key.startsWith(shotPrefix) || !frame.sourcePath) return;
+          const normalized = frame.sourcePath.replaceAll("\\", "/");
+          if (!normalized.startsWith(`${oldFolder}/`)) return;
+          nextFrames[key] = {
+            ...frame,
+            sourcePath: `${newFolder}/${normalized.slice(oldFolder.length + 1)}`,
+          };
+        });
+        return nextFrames;
       });
     }
     const next = shots.map((item, itemIndex) =>
@@ -2075,7 +2118,7 @@ export default function Home() {
             ["首帧", record.keyframes?.first],
             ["尾帧", record.keyframes?.last],
           ] as const)
-            .filter((entry): entry is [string, PersistedKeyframe] => Boolean(entry[1]))
+            .flatMap(([label, frame]) => frame ? [[label, frame] as const] : [])
             .map(([label, frame]) => [
               `${record.id}-${label}`,
               {
@@ -3498,6 +3541,24 @@ export default function Home() {
       if (!(error instanceof DOMException && error.name === "NotFoundError")) return;
     }
   }
+  async function deleteKeyframeSourceFile(sourcePath?: string) {
+    if (
+      !projectDirectory ||
+      !sourcePath ||
+      !/^片段\/[^/]+\/关键帧\//.test(sourcePath.replaceAll("\\", "/"))
+    )
+      return;
+    const parts = sourcePath.replaceAll("\\", "/").split("/").filter(Boolean);
+    const fileName = parts.pop();
+    if (!fileName) return;
+    try {
+      let directory: FileSystemDirectoryHandle = projectDirectory;
+      for (const part of parts) directory = await directory.getDirectoryHandle(part);
+      await (directory as WritableDirectoryHandle).removeEntry?.(fileName);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) return;
+    }
+  }
   async function saveReferenceSourceFile(
     shot: { id: string; title: string },
     file: File,
@@ -4208,6 +4269,7 @@ export default function Home() {
       const url = URL.createObjectURL(blob);
       const key = `${nextShot.id}-首帧`;
       const projectEpoch = projectEpochRef.current;
+      const previousFrame = keyframes[key];
       setKeyframes((current) => ({
         ...current,
         [key]: { name: fileName, url },
@@ -4217,9 +4279,9 @@ export default function Home() {
         [nextShot.id]: {
           ...(current[nextShot.id] ?? shotSettingDefaults),
           mode: "I2VA",
+          keyframeMode: "first",
         },
       }));
-      setKeyframeMode("first");
       const form = new FormData();
       form.append("image", new File([blob], fileName, { type: "image/png" }));
       form.append("comfy_url", comfyUrl);
@@ -4238,6 +4300,8 @@ export default function Home() {
         new File([blob], fileName, { type: "image/png" }),
         "首帧",
       );
+      if (previousFrame?.sourcePath && previousFrame.sourcePath !== sourcePath)
+        void deleteKeyframeSourceFile(previousFrame.sourcePath);
       setKeyframes((current) => ({
         ...current,
         [key]: { name: fileName, url, comfyName: uploaded.name, sourcePath },
@@ -5656,11 +5720,13 @@ export default function Home() {
                               event.preventDefault();
                               event.stopPropagation();
                               const key = shots[activeShot].id + "-" + label;
+                              const previousFrame = keyframes[key];
                               setKeyframes((current) => {
                                 const next = { ...current };
                                 delete next[key];
                                 return next;
                               });
+                              void deleteKeyframeSourceFile(previousFrame?.sourcePath);
                             }}
                           >
                             <X className="size-3" />
@@ -5693,20 +5759,12 @@ export default function Home() {
                             const currentShot = shots[activeShot];
                             const frameLabel = label as "首帧" | "尾帧";
                             const key = `${currentShot.id}-${frameLabel}`;
+                            const previousFrame = keyframes[key];
                             const url = URL.createObjectURL(file);
-                            setKeyframes((current) => ({
-                              ...current,
-                              [key]: { name: file.name, url },
-                            }));
                             const form = new FormData();
                             form.append("image", file, file.name);
                             form.append("comfy_url", comfyUrl);
                             try {
-                              const sourcePath = await saveKeyframeSourceFile(
-                                currentShot,
-                                file,
-                                frameLabel,
-                              );
                               const response = await fetch("/api/upload", {
                                 method: "POST",
                                 body: form,
@@ -5715,6 +5773,14 @@ export default function Home() {
                                 .json()
                                 .catch(() => ({}))) as { name?: string };
                               if (response.ok && uploaded.name)
+                                {
+                                const sourcePath = await saveKeyframeSourceFile(
+                                  currentShot,
+                                  file,
+                                  frameLabel,
+                                );
+                                if (previousFrame?.sourcePath && previousFrame.sourcePath !== sourcePath)
+                                  void deleteKeyframeSourceFile(previousFrame.sourcePath);
                                 setKeyframes((current) => ({
                                   ...current,
                                   [key]: {
@@ -5724,18 +5790,16 @@ export default function Home() {
                                     sourcePath,
                                   },
                                 }));
+                                }
                               else {
                                 URL.revokeObjectURL(url);
-                                setKeyframes((current) => {
-                                  const next = { ...current };
-                                  delete next[key];
-                                  return next;
-                                });
+                                if (previousFrame) setKeyframes((current) => ({ ...current, [key]: previousFrame }));
                                 setGenerationStatus("关键帧上传失败");
                               }
                             } catch (error) {
                               URL.revokeObjectURL(url);
-                              setKeyframes((current) => {
+                              if (previousFrame) setKeyframes((current) => ({ ...current, [key]: previousFrame }));
+                              else setKeyframes((current) => {
                                 const next = { ...current };
                                 delete next[key];
                                 return next;
