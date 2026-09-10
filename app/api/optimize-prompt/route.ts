@@ -4,7 +4,7 @@ type OptimizeBody = {
   prompt?: string;
   mode?: string;
   duration?: number | string;
-  visualStyle?: { key?: string; label?: string; prompt?: string } | string;
+  visualStyle?: string;
   referenceMapping?: Array<{
     picture?: string;
     subject?: string;
@@ -47,9 +47,7 @@ export async function POST(request: Request) {
     const referenceContext = mappings
       ? `\n\nReference inputs below correspond to the actual H3 input slots. Keep Picture/Video/Audio ordinals unchanged and use only the listed inputs. Infer subject grouping, subject names, reference roles, and relationships from the normalized filenames and the user's draft:\n${mappings}`
       : "";
-    const style = typeof body.visualStyle === "object" && body.visualStyle
-      ? body.visualStyle.prompt?.trim()
-      : typeof body.visualStyle === "string" ? body.visualStyle.trim() : "";
+    const style = typeof body.visualStyle === "string" ? body.visualStyle.trim() : "";
     const styleContext = style
       ? `\n\nVisual style preset:\n${style}\nApply this visual style consistently throughout the target clip while preserving realistic subject identity and scene requirements.`
       : "";

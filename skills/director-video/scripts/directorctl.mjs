@@ -327,7 +327,6 @@ async function uploadReference(directorUrl, comfyUrl, asset) {
   const bytes = await readFile(asset.absolute);
   const form = new FormData();
   form.append("image", new Blob([bytes], { type: mimeType(asset.absolute) }), asset.name);
-  form.append("kind", inferKind(asset.absolute));
   form.append("comfy_url", comfyUrl);
   const result = await apiFetch(fileUrl(directorUrl, "/api/upload"), { method: "POST", body: form });
   if (!result.name) fail(`上传资产失败：${asset.sourcePath}`);
@@ -410,7 +409,13 @@ async function render(project, args, urls) {
     shot_id: prepared.target.clip.id,
     shot_title: prepared.target.clip.title,
     prompt: promptOverride || prompt,
-    ...options,
+    mode,
+    duration: options.duration,
+    resolution: options.resolution,
+    aspect: options.aspect,
+    fps: options.fps,
+    turbo: options.turbo,
+    seed: options.seed,
     client_id: `directorctl-${process.pid}`,
     comfy_url: urls.comfy,
     keyframe_mode: mode === "I2VA" ? options.keyframeMode : undefined,
@@ -426,7 +431,7 @@ async function render(project, args, urls) {
   const deadline = Date.now() + (Number(args.timeout || DEFAULT_TIMEOUT_SECONDS) * 1000);
   let status;
   while (Date.now() < deadline) {
-    status = await apiFetch(fileUrl(urls.director, `/api/generate/status?id=${encodeURIComponent(submitted.prompt_id)}&shot=${encodeURIComponent(prepared.target.clip.id)}&seed=${encodeURIComponent(options.seed)}&seed_mode=${encodeURIComponent(options.seedMode)}&comfy_url=${encodeURIComponent(urls.comfy)}`), {});
+    status = await apiFetch(fileUrl(urls.director, `/api/generate/status?id=${encodeURIComponent(submitted.prompt_id)}&comfy_url=${encodeURIComponent(urls.comfy)}`), {});
     if (status.status === "completed") break;
     if (status.status === "error") fail(status.error || "视频生成失败", status);
     await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -435,7 +440,7 @@ async function render(project, args, urls) {
   const requestedOutputName = `shot-${prepared.target.clip.id}-${safeStem(prepared.target.clip.title)}.mp4`;
   let finalized;
   try {
-    finalized = await apiFetchWithRetry(fileUrl(urls.director, "/api/output/finalize"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shot_id: prepared.target.clip.id, shot_title: prepared.target.clip.title, file_name: requestedOutputName, source: status.source, source_subfolder: status.source_subfolder || "", comfy_url: urls.comfy, metadata: { prompt_id: submitted.prompt_id, seed: options.seed, mode, duration: options.duration, resolution: options.resolution, fps: options.fps, generated_at: new Date().toISOString() } }) });
+    finalized = await apiFetchWithRetry(fileUrl(urls.director, "/api/output/finalize"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shot_id: prepared.target.clip.id, shot_title: prepared.target.clip.title, source: status.source, source_subfolder: status.source_subfolder || "", comfy_url: urls.comfy }) });
   } catch (error) {
     // ComfyUI can keep the output handle open on Windows. The proxy can still
     // download a completed file even when the server cannot rename it.
@@ -456,7 +461,7 @@ async function render(project, args, urls) {
     fps: options.fps,
     model: options.model,
     turbo: options.turbo,
-    seed: String(status.noise_seed ?? options.seed),
+    seed: String(options.seed),
     seedMode: options.seedMode,
     ...(mode === "I2VA" ? { keyframeMode: options.keyframeMode } : {}),
   };

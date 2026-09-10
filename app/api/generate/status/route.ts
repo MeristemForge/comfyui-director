@@ -28,9 +28,6 @@ function findVideoOutput(item: { outputs?: Record<string, unknown> }) {
 
 export async function GET(request: Request) {
   const id = new URL(request.url).searchParams.get('id');
-  const shot = new URL(request.url).searchParams.get('shot') ?? 'unknown';
-  const seed = new URL(request.url).searchParams.get('seed');
-  const seedMode = new URL(request.url).searchParams.get('seed_mode') ?? 'fixed';
   const comfyUrl = normalizeComfyUrl(new URL(request.url).searchParams.get('comfy_url'));
   if (!id) return Response.json({ error: '缺少任务 ID' }, { status: 400 });
   try {
@@ -62,6 +59,6 @@ export async function GET(request: Request) {
     // The local Worker runtime cannot write arbitrary Windows paths. Return a
     // same-origin proxy URL; the browser saves it via the selected directory handle.
     const url = `/api/video?filename=${encodeURIComponent(output.filename)}&subfolder=${encodeURIComponent(output.subfolder ?? '')}&type=${encodeURIComponent(output.type ?? 'output')}&comfy_url=${encodeURIComponent(comfyUrl)}`;
-    return Response.json({ status: 'completed', url, source: output.filename, source_subfolder: output.subfolder ?? '', shot, noise_seed: seed, seed_mode: seedMode });
+    return Response.json({ status: 'completed', url, source: output.filename, source_subfolder: output.subfolder ?? '' });
   } catch (error) { return Response.json({ status: 'error', error: error instanceof Error ? error.message : '状态查询失败' }, { status: 500 }); }
 }

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Clapperboard, File, Folder, FolderOpen, Pencil, Plus, Trash2 } from 'lucide-react';
 
-export type ProjectTreeShot = { id: string; title: string; detail: string; state: string };
+type ProjectTreeShot = { id: string; title: string; detail: string; state: string };
 export type ProjectTreeAsset = { name: string; type: 'character' | 'scene' | 'wardrobe' | 'prop' | 'video' | 'audio' | 'custom'; thumbnail?: string };
 type Props = { assets?: ProjectTreeAsset[]; outputFiles?: string[] | null; shots: ProjectTreeShot[]; activeShot: number; onSelectShot: (i: number) => void; onAddShot?: () => void; onAddAsset?: () => void; onDeleteAsset?: (asset: ProjectTreeAsset) => void; onRenameShot?: (i: number) => void; onDeleteShot?: (i: number) => void; projects?: { name: string }[]; activeProjectName?: string; onSelectProject?: (n: string) => void; onRemoveProject?: (n: string) => void };
 

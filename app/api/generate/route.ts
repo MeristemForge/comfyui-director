@@ -77,13 +77,12 @@ export async function POST(request: Request) {
         return id;
       };
       for (const key of Object.keys(videoNode.inputs ?? {})) {
-        if (/^(ref_images\.ref_image_|ref_videos\.ref_video_|ref_video_audios\.ref_video_audio_|ref_audios\.ref_audio_)/.test(key)) delete videoNode.inputs![key];
+        if (/^(ref_images\.ref_image_|ref_videos\.ref_video_|ref_audios\.ref_audio_)/.test(key)) delete videoNode.inputs![key];
       }
       const images = Array.isArray(body.images) ? body.images.filter((value: unknown): value is string => typeof value === 'string' && value.trim()) : [];
       const videos = Array.isArray(body.videos) ? body.videos.filter((value: unknown): value is string => typeof value === 'string' && value.trim()) : [];
-      const videoAudios = Array.isArray(body.video_audios) ? body.video_audios.filter((value: unknown): value is string => typeof value === 'string' && value.trim()) : [];
       const audios = Array.isArray(body.audios) ? body.audios.filter((value: unknown): value is string => typeof value === 'string' && value.trim()) : [];
-      if (images.length > 9 || videos.length > 3 || videoAudios.length > 3 || audios.length > 3) return Response.json({ error: 'R2VA 参考素材数量超过 H3 限制' }, { status: 400 });
+      if (images.length > 9 || videos.length > 3 || audios.length > 3) return Response.json({ error: 'R2VA 参考素材数量超过 H3 限制' }, { status: 400 });
       images.forEach((filename, index) => {
         const loaderId = addNode('LoadImage', { image: filename });
         videoNode.inputs![`ref_images.ref_image_${index}`] = [loaderId, 0];
@@ -92,10 +91,6 @@ export async function POST(request: Request) {
         const loaderId = addNode('LoadVideo', { file: filename });
         const componentsId = addNode('GetVideoComponents', { video: [loaderId, 0] });
         videoNode.inputs![`ref_videos.ref_video_${index}`] = [componentsId, 0];
-      });
-      videoAudios.forEach((filename, index) => {
-        const loaderId = addNode('LoadAudio', { audio: filename });
-        videoNode.inputs![`ref_video_audios.ref_video_audio_${index}`] = [loaderId, 0];
       });
       audios.forEach((filename, index) => {
         const loaderId = addNode('LoadAudio', { audio: filename });

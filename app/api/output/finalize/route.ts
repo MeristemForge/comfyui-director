@@ -54,11 +54,9 @@ export async function POST(request: Request) {
     const body = await request.json() as {
       shot_id?: unknown;
       shot_title?: unknown;
-      file_name?: unknown;
       source?: unknown;
       source_subfolder?: unknown;
       comfy_url?: unknown;
-      metadata?: unknown;
     };
     const shotId = safeName(String(body.shot_id ?? 'unknown'), 'unknown');
     const title = safeName(String(body.shot_title ?? ''), `未命名镜头 ${shotId}`);

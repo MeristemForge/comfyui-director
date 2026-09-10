@@ -15,9 +15,7 @@ import {
   FolderOpen,
   ImagePlus,
   MapPinned,
-  MoreHorizontal,
   Package,
-  Play,
   Plus,
   RotateCcw,
   Settings,
@@ -82,8 +80,6 @@ const assetUsageOptions: Record<ProjectAssetType, readonly string[]> = {
   audio: ["声音参考", "环境音", "音乐参考"],
   custom: [],
 };
-const initialShots: Shot[] = [];
-const shotPromptDefaults: Record<string, string> = {};
 const modelProfiles = {
   H3: {
     modes: ["T2VA", "I2VA", "R2VA"],
@@ -267,24 +263,10 @@ type ShotTask = {
   promptId: string;
   seed: string;
   seedMode: "fixed" | "random";
-  prompt: string;
   title: string;
   fileName: string;
-  duration: string;
-  resolution: string;
-  aspect: string;
-  fps: string;
-  mode: string;
-  model: keyof typeof modelProfiles;
-  turbo: boolean;
   steps: number;
   startedAt: number;
-  keyframeMode?: KeyframeMode;
-  inputImage?: string;
-  lastImage?: string;
-  referenceImages?: string[];
-  referenceVideos?: string[];
-  referenceAudios?: string[];
 };
 type ReferenceKind = "image" | "video" | "audio";
 type ReferenceAsset = {
@@ -468,7 +450,6 @@ async function uploadReferenceFile(
 ) {
   const form = new FormData();
   form.append("image", file, file.name);
-  form.append("kind", kind);
   form.append("comfy_url", comfyUrl);
   const response = await fetch("/api/upload", { method: "POST", body: form });
   const uploaded = (await response.json().catch(() => ({}))) as {
@@ -748,7 +729,7 @@ async function readProjectShots(
 
 export default function Home() {
   const [activeShot, setActiveShot] = useState(0);
-  const [shots, setShots] = useState(initialShots);
+  const [shots, setShots] = useState<Shot[]>([]);
   const [mode, setMode] = useState<GenerationMode>("T2VA");
   const [model, setModel] = useState<keyof typeof modelProfiles>("H3");
   const [turboMode, setTurboMode] = useState(true);
@@ -757,7 +738,7 @@ export default function Home() {
   const [shotVisualStyles, setShotVisualStyles] = useState<Record<string, VisualStyleKey>>({});
   const [railWidth, setRailWidth] = useState(220);
   const [panelWidth, setPanelWidth] = useState(420);
-  const [, setGenerationStatus] = useState("等待生成");
+  const [generationStatus, setGenerationStatus] = useState("等待生成");
   const [shotTasks, setShotTasks] = useState<Record<string, ShotTask>>({});
   const [generationDurations, setGenerationDurations] = useState<
     Record<string, number>
@@ -846,28 +827,10 @@ export default function Home() {
   const [newAssetUsage, setNewAssetUsage] = useState("");
   const [newAssetDescription, setNewAssetDescription] = useState("");
   const [newAssetFile, setNewAssetFile] = useState<File | null>(null);
-  const [shotPrompts, setShotPrompts] =
-    useState<Record<string, string>>(shotPromptDefaults);
+  const [shotPrompts, setShotPrompts] = useState<Record<string, string>>({});
   const [shotSettings, setShotSettings] = useState<
     Record<string, ShotSettings>
-  >(() =>
-    Object.fromEntries(
-      shots.map((shot) => [
-        shot.id,
-        {
-          ...shotSettingDefaults,
-          duration: `${shot.detail.match(/\d+/)?.[0] ?? 6} 秒`,
-          mode: (shot.detail.match(/T2VA|I2VA|R2VA/)?.[0] ??
-            "T2VA") as GenerationMode,
-          aspect: shot.id === "02" ? "2.35:1" : "16:9",
-          resolution: shot.meta
-            .split("·")[0]
-            .trim()
-            .replace(/\s*×\s*/, " × "),
-        },
-      ]),
-    ),
-  );
+  >({});
   const [storageReady, setStorageReady] = useState(false);
   const [comfyConnected, setComfyConnected] = useState<boolean | null>(null);
   const [comfyUrl, setComfyUrl] = useState("http://127.0.0.1:8188");
@@ -3246,44 +3209,12 @@ export default function Home() {
       return;
     }
     try {
-      const elapsedMilliseconds = Date.now() - task.startedAt;
-      const metadata = {
-        id: shotId,
-        file: task.fileName,
-        shot_title: task.title,
-        source,
-        source_subfolder: sourceSubfolder ?? "",
-        script: task.prompt,
-        seed: task.seed,
-        noise_seed: task.seed,
-        seed_mode: task.seedMode,
-        prompt_id: task.promptId,
-        model: task.model,
-        mode: task.mode,
-        turbo: task.turbo,
-        steps: task.steps,
-        keyframe_mode: task.mode === "I2VA" ? task.keyframeMode : undefined,
-        input_image: task.inputImage ?? null,
-        last_image: task.lastImage ?? null,
-        reference_images: task.referenceImages ?? [],
-        reference_videos: task.referenceVideos ?? [],
-        reference_audios: task.referenceAudios ?? [],
-        generation_duration_ms: elapsedMilliseconds,
-        generation_duration: formatElapsed(elapsedMilliseconds),
-        duration: task.duration,
-        resolution: task.resolution,
-        aspect: task.aspect,
-        fps: task.fps,
-        generated_at: new Date().toISOString(),
-      };
       const payload = JSON.stringify({
         shot_id: shotId,
         shot_title: task.title,
-        file_name: task.fileName,
         source,
         source_subfolder: sourceSubfolder ?? "",
         comfy_url: comfyUrl,
-        metadata,
       });
       let finalUrl = url;
       const sourceName = source.split(/[\\/]/).pop() ?? "";
@@ -3426,7 +3357,6 @@ export default function Home() {
     try {
       const form = new FormData();
       form.append("image", file, file.name);
-      form.append("kind", kind);
       form.append("comfy_url", comfyUrl);
       const response = await fetch("/api/upload", {
         method: "POST",
@@ -3912,7 +3842,7 @@ export default function Home() {
           duration: Number.parseFloat(duration) || 6,
           referenceMapping,
           visualStyle: shotVisualStyles[taskShot.id]
-            ? { key: shotVisualStyles[taskShot.id], ...visualStylePresets[shotVisualStyles[taskShot.id]] }
+            ? visualStylePresets[shotVisualStyles[taskShot.id]].prompt
             : undefined,
           executablePath: llmExecutablePath.trim(),
         }),
@@ -4089,14 +4019,13 @@ export default function Home() {
         tasks.map(async ([shotId, task]) => {
           try {
             const result = (await fetch(
-              `/api/generate/status?id=${encodeURIComponent(task.promptId)}&shot=${encodeURIComponent(shotId)}&seed=${encodeURIComponent(task.seed)}&seed_mode=${task.seedMode}&comfy_url=${encodeURIComponent(comfyUrl)}`,
+              `/api/generate/status?id=${encodeURIComponent(task.promptId)}&comfy_url=${encodeURIComponent(comfyUrl)}`,
             ).then((response) => response.json())) as {
               status?: string;
               position?: number;
               url?: string;
               source?: string;
               source_subfolder?: string;
-              noise_seed?: string | number;
               error?: string;
             };
             if (disposed) return;
@@ -4146,16 +4075,10 @@ export default function Home() {
               );
               if (activeShotIdRef.current === shotId)
                 setGenerationStatus("整理输出并写入镜头脚本");
-              const actualSeed =
-                result.noise_seed === undefined ||
-                result.noise_seed === null ||
-                String(result.noise_seed).trim() === ""
-                  ? task.seed
-                  : String(result.noise_seed);
               void saveVideoToDirectory(
                 result.url,
                 shotId,
-                { ...task, seed: actualSeed },
+                task,
                 result.source,
                 result.source_subfolder,
               );
@@ -4243,16 +4166,6 @@ export default function Home() {
       },
     }));
     const startedAt = Date.now();
-    const taskSettings = shotSettings[shotId] ?? {
-      ...shotSettingDefaults,
-      duration,
-      resolution: availableResolution,
-      aspect,
-      fps,
-      mode: activeMode,
-      model,
-      turbo: turboMode,
-    };
     const fileName = `shot-${shotId}-${safeFileStem(taskShot.title)}.mp4`;
     const references =
       activeMode === "R2VA"
@@ -4328,7 +4241,6 @@ export default function Home() {
         duration,
         resolution: availableResolution,
         fps,
-        model,
         turbo: turboMode,
         mode: activeMode,
         keyframe_mode: activeMode === "I2VA" ? keyframeMode : undefined,
@@ -4376,27 +4288,10 @@ export default function Home() {
             promptId: result.prompt_id as string,
             seed: submittedSeed,
             seedMode,
-            prompt: generationPrompt,
             title: taskShot.title,
             fileName,
-            duration: taskSettings.duration,
-            resolution: taskSettings.resolution,
-            aspect: taskSettings.aspect,
-            fps: taskSettings.fps,
-            mode: taskSettings.mode,
-            model: taskSettings.model,
-            turbo: taskSettings.turbo,
             steps: turboMode ? 4 : 20,
             startedAt,
-            ...(activeMode === "I2VA" ? { keyframeMode } : {}),
-            inputImage: firstFrameName,
-            lastImage:
-              activeMode === "I2VA"
-                ? keyframes[`${shotId}-尾帧`]?.comfyName
-                : undefined,
-            referenceImages: references?.images,
-            referenceVideos: references?.videos,
-            referenceAudios: references?.audios,
           },
         }));
         if (activeShotIdRef.current === shotId)
@@ -4603,6 +4498,14 @@ export default function Home() {
                     ? "从左侧项目树的“片段”节点添加第一个片段"
                     : "项目中的角色、服装、道具、场景、片段和输出会显示在左侧项目树中"}
                 </p>
+                {generationStatus !== "等待生成" && (
+                  <output
+                    aria-live="polite"
+                    className="mt-3 block max-w-md text-[10px] leading-4 text-zinc-400"
+                  >
+                    {generationStatus}
+                  </output>
+                )}
                 <Button
                   onClick={() =>
                     void (projectDirectory
@@ -4951,14 +4854,6 @@ export default function Home() {
                   : ""}
               </p>
             </div>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="text-zinc-400 hover:bg-white/8"
-              aria-label="更多操作"
-            >
-              <MoreHorizontal />
-            </Button>
           </div>
           <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center overflow-hidden p-3">
             <div className="video-frame group relative aspect-video h-full max-h-[calc(100%-6rem)] w-auto max-w-full flex-none overflow-hidden rounded-md border border-white/10 bg-[#0e1117] shadow-2xl">
@@ -4975,12 +4870,7 @@ export default function Home() {
                 />
               ) : (
                 <div className="absolute inset-0 grid place-items-center">
-                  <button
-                    className="grid size-14 place-items-center rounded-full border border-white/15 bg-black/45 text-white backdrop-blur transition hover:scale-105 hover:bg-black/60"
-                    aria-label="播放视频"
-                  >
-                    <Play className="ml-0.5 size-5 fill-current" />
-                  </button>
+                  <Film className="size-7 text-zinc-700" aria-hidden="true" />
                 </div>
               )}
             </div>
@@ -5516,7 +5406,6 @@ export default function Home() {
                             }));
                             const form = new FormData();
                             form.append("image", file, file.name);
-                            form.append("kind", "image");
                             form.append("comfy_url", comfyUrl);
                             try {
                               const response = await fetch("/api/upload", {
@@ -5606,6 +5495,13 @@ export default function Home() {
             )}
           </div>
           <div className="sticky bottom-0 z-20 border-t border-border bg-card/95 p-4 backdrop-blur">
+            <output
+              aria-live="polite"
+              className="mb-2 block truncate text-center text-[10px] text-muted-foreground"
+              title={generationStatus}
+            >
+              {generationStatus}
+            </output>
             <Button
               onClick={toggleGeneration}
               className="h-10 w-full bg-[#f4bd50] font-semibold text-[#17120a] hover:bg-[#ffd070]"
