@@ -303,7 +303,6 @@ type ClipGeneration = ClipGenerationBase &
   );
 type ClipPrompts = Record<GenerationMode, ClipPromptRecord>;
 type ProjectShotRecord = Shot & {
-  version: 2;
   output: string | null;
   references: { subjects: PersistedPromptSubject[] };
   generation: ClipGeneration;
@@ -626,7 +625,9 @@ async function readProjectShots(
       const clipPath = clip.path;
       const source = await readProjectSourceFile(handle, clipPath);
       if (!source) throw new Error(`片段 ${clipId} 的路径无效`);
-      const data = JSON.parse(await source.text()) as Partial<ProjectShotRecord>;
+      const data = JSON.parse(await source.text()) as Partial<ProjectShotRecord> & {
+        version?: unknown;
+      };
       if (data.version !== 2)
         throw new Error(`片段 ${clipId} 不是 version 2 格式`);
       if (data.id !== clipId || data.title !== clipTitle)
@@ -710,7 +711,6 @@ async function readProjectShots(
         id: clipId,
         title: clipTitle,
         state: output ? "已完成" : "草稿",
-        version: 2,
         output,
         generation,
         references: data.references,

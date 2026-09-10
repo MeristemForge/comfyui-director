@@ -96,8 +96,6 @@ export async function POST(request: Request) {
         const loaderId = addNode('LoadAudio', { audio: filename });
         videoNode.inputs![`ref_audios.ref_audio_${index}`] = [loaderId, 0];
       });
-    } else if (imageNode && body.image) {
-      imageNode.inputs!.image = String(body.image);
     }
     videoNode.inputs!.prompt = String(body.prompt ?? '');
     videoNode.inputs!.width = width; videoNode.inputs!.height = height;
