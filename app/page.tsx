@@ -850,6 +850,7 @@ export default function Home() {
   const saveTimerRef = useRef<number | null>(null);
   const saveQueueRef = useRef(Promise.resolve());
   const referenceUploadTokensRef = useRef<Record<string, number>>({});
+  const projectEpochRef = useRef(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeTask = taskShot ? shotTasks[taskShot.id] : undefined;
   const activeSubmitting = taskShot
@@ -1058,6 +1059,7 @@ export default function Home() {
     keyframeMode,
     shotTasks,
     shotFileNames,
+    referenceAssets,
   ]);
 
   useEffect(() => {
@@ -1794,6 +1796,8 @@ export default function Home() {
     return task ? elapsedNow - task.startedAt : generationDurations[shotId];
   }
   function resetProjectEditorState() {
+    projectEpochRef.current += 1;
+    referenceUploadTokensRef.current = {};
     setShots([]);
     setActiveShot(0);
     setPrompt("");
@@ -1830,6 +1834,14 @@ export default function Home() {
       if (permission !== "granted") {
         setGenerationStatus("没有项目目录写入权限");
         return;
+      }
+      try {
+        await directory.getFileHandle("script.json");
+        setGenerationStatus("该目录已经是项目，请使用“导入项目”打开，避免覆盖现有内容");
+        return;
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "NotFoundError"))
+          throw error;
       }
       const assets = await directory.getDirectoryHandle("资产", {
         create: true,
@@ -3307,15 +3319,22 @@ export default function Home() {
         );
         if (archivedToProject) {
           await writeClipManifest(targetShot, { output: finalName });
-          await fetch("/api/output/cleanup", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              filename: finalName,
-              subfolder: "director",
-              comfy_url: comfyUrl,
-            }),
-          });
+          try {
+            const cleanupResponse = await fetch("/api/output/cleanup", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                filename: finalName,
+                subfolder: "director",
+                comfy_url: comfyUrl,
+              }),
+            });
+            if (!cleanupResponse.ok && activeShotIdRef.current === shotId)
+              setGenerationStatus("视频已归档，但 ComfyUI 临时文件清理失败");
+          } catch {
+            if (activeShotIdRef.current === shotId)
+              setGenerationStatus("视频已归档，但 ComfyUI 临时文件清理失败");
+          }
         }
       } catch {
         archiveFailed = true;
@@ -3374,18 +3393,32 @@ export default function Home() {
     subjects: PromptSubject[],
     remap: (assetKey: string) => string | null,
   ) {
-    return subjects.map((subject) => ({
-      ...subject,
-      assetKeys: subject.assetKeys
-        .map(remap)
-        .filter((assetKey): assetKey is string => Boolean(assetKey)),
-      children: subject.children?.map((child) => ({
-        ...child,
-        assetKeys: child.assetKeys
-          .map(remap)
-          .filter((assetKey): assetKey is string => Boolean(assetKey)),
-      })),
-    }));
+    const remapSubject = (subject: PromptSubject): PromptSubject => {
+      const assetKeys = subject.assetKeys
+        .map((assetKey) => ({ oldKey: assetKey, newKey: remap(assetKey) }))
+        .filter((entry): entry is { oldKey: string; newKey: string } => Boolean(entry.newKey));
+      return {
+        ...subject,
+        assetKeys: assetKeys.map((entry) => entry.newKey),
+        assetRoles: Object.fromEntries(
+          assetKeys
+            .map((entry) => [entry.newKey, subject.assetRoles?.[entry.oldKey]])
+            .filter((entry): entry is [string, ReferenceRole] => Boolean(entry[1])),
+        ),
+        children: subject.children?.map(remapSubject),
+      };
+    };
+    return subjects.map(remapSubject);
+  }
+
+  function invalidateReferenceUploads(shotId: string, kind: ReferenceKind) {
+    const prefix = `${shotId}-${kind}-`;
+    Object.keys(referenceUploadTokensRef.current)
+      .filter((key) => key.startsWith(prefix))
+      .forEach((key) => {
+        referenceUploadTokensRef.current[key] =
+          (referenceUploadTokensRef.current[key] ?? 0) + 1;
+      });
   }
 
   function isClipReferenceSourcePath(sourcePath?: string) {
@@ -3445,6 +3478,7 @@ export default function Home() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file || !taskShot) return;
+    const projectEpoch = projectEpochRef.current;
     const key = referenceKey(taskShot.id, kind, index);
     const uploadToken = (referenceUploadTokensRef.current[key] ?? 0) + 1;
     referenceUploadTokensRef.current[key] = uploadToken;
@@ -3463,7 +3497,10 @@ export default function Home() {
         } catch {
           backupFailed = true;
         }
-      if (referenceUploadTokensRef.current[key] !== uploadToken) {
+      if (
+        projectEpoch !== projectEpochRef.current ||
+        referenceUploadTokensRef.current[key] !== uploadToken
+      ) {
         if (sourcePath) void deleteReferenceSourceFile(sourcePath);
         return;
       }
@@ -3530,6 +3567,13 @@ export default function Home() {
           : `已添加参考素材“${file.name}”`,
       );
     } catch (error) {
+      if (
+        projectEpoch !== projectEpochRef.current ||
+        referenceUploadTokensRef.current[key] !== uploadToken
+      ) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       URL.revokeObjectURL(url);
       setReferenceAssets((current) => {
         const next = { ...current };
@@ -3547,6 +3591,7 @@ export default function Home() {
 
   function removeReference(kind: ReferenceKind, index: number) {
     if (!taskShot) return;
+    invalidateReferenceUploads(taskShot.id, kind);
     const key = referenceKey(taskShot.id, kind, index);
     referenceUploadTokensRef.current[key] =
       (referenceUploadTokensRef.current[key] ?? 0) + 1;
@@ -3598,6 +3643,7 @@ export default function Home() {
     toIndex: number,
   ) {
     if (!taskShot || fromIndex === toIndex) return;
+    invalidateReferenceUploads(taskShot.id, kind);
     setReferenceAssets((current) => {
       const prefix = `${taskShot.id}-${kind}-`;
       const entries = Object.entries(current)
@@ -5854,11 +5900,5 @@ export default function Home() {
     </main>
   );
 }
-
-
-
-
-
-
 
 
