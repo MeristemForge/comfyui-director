@@ -874,6 +874,9 @@ export default function Home() {
   const saveTimerRef = useRef<number | null>(null);
   const saveQueueRef = useRef(Promise.resolve());
   const referenceUploadTokensRef = useRef<Record<string, number>>({});
+  const keyframeUploadTokensRef = useRef<Record<string, number>>({});
+  const keyframesRef = useRef(keyframes);
+  keyframesRef.current = keyframes;
   const projectEpochRef = useRef(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeTask = taskShot ? shotTasks[taskShot.id] : undefined;
@@ -1090,22 +1093,32 @@ export default function Home() {
   useEffect(() => {
     if (!projectDirectory || !storageReady) return;
     let disposed = false;
+    const projectEpoch = projectEpochRef.current;
     const hydrate = async () => {
       for (const [key, frame] of Object.entries(keyframes)) {
-        if (disposed || !frame.sourcePath || !frame.comfyName) continue;
-        if (await isReferenceAssetAvailable(frame, comfyUrl)) continue;
+        if (disposed || !frame.sourcePath) continue;
+        const token = keyframeUploadTokensRef.current[key];
+        const isCurrent = () => !disposed &&
+          projectEpochRef.current === projectEpoch &&
+          keyframeUploadTokensRef.current[key] === token &&
+          keyframesRef.current[key] === frame;
         try {
+          if (frame.comfyName && (await isReferenceAssetAvailable(frame, comfyUrl))) continue;
+          if (!isCurrent()) continue;
           const source = await readProjectSourceFile(projectDirectory, frame.sourcePath);
-          if (!source) continue;
+          if (!source || !isCurrent()) continue;
           const uploaded = await uploadReferenceFile(source, "image", comfyUrl);
-          if (disposed) return;
+          if (!isCurrent()) continue;
+          const restored = { ...frame, ...uploaded, url: referenceAssetUrl(uploaded, comfyUrl) };
+          keyframesRef.current = { ...keyframesRef.current, [key]: restored };
           setKeyframes((current) =>
-            current[key]?.sourcePath === frame.sourcePath
-              ? { ...current, [key]: { ...current[key], ...uploaded, url: referenceAssetUrl(uploaded, comfyUrl) } }
+            current[key] === frame
+              ? { ...current, [key]: restored }
               : current,
           );
+          if (frame.url.startsWith("blob:")) URL.revokeObjectURL(frame.url);
         } catch {
-          if (!disposed) setGenerationStatus("关键帧源文件无法重新上传");
+          if (isCurrent()) setGenerationStatus("关键帧源文件无法重新上传");
         }
       }
     };
@@ -1113,7 +1126,7 @@ export default function Home() {
     return () => {
       disposed = true;
     };
-  }, [projectDirectory, storageReady]);
+  }, [projectDirectory, storageReady, comfyUrl]);
 
   useEffect(() => {
     activeShotIdRef.current = taskShot?.id ?? null;
@@ -1162,74 +1175,40 @@ export default function Home() {
   }, [storageReady, taskShot?.id, shotVideos, shotSettings]);
 
   useEffect(() => {
-    if (!storageReady) return;
+    if (!storageReady || !projectDirectory) return;
     const candidates = shots
       .filter(
         (shot) =>
           (shot.state === "已完成" || shot.state === "文件缺失") &&
           !shotTasks[shot.id] &&
-          shotVideos[shot.id],
+          shot.output,
       )
       .map((shot) => {
-        const stableFileName = `shot-${shot.id}-${safeFileStem(shot.title)}.mp4`;
         return {
           id: shot.id,
           state: shot.state,
-          url: shotVideos[shot.id]!,
-          stableFileName,
-          fallbackUrl: `/api/video?filename=${encodeURIComponent(stableFileName)}&subfolder=director&comfy_url=${encodeURIComponent(comfyUrl)}`,
+          sourcePath: `片段/${shot.id}-${safeFileStem(shot.title)}/${shot.output}`,
         };
       });
     if (!candidates.length) return;
     let disposed = false;
-    const probe = async (url: string) => {
-      let result: "exists" | "missing" | "unknown" = "unknown";
-      try {
-        const response = await fetch(url, {
-          cache: "no-store",
-          headers: { Range: "bytes=0-0" },
-          signal: AbortSignal.timeout(2500),
-        });
-        result = response.ok
-          ? "exists"
-          : response.status === 404
-            ? "missing"
-            : "unknown";
-        await response.body?.cancel();
-      } catch {
-        result = "unknown";
-      }
-      return result;
-    };
+    const epoch = projectEpochRef.current;
     const verify = async ({
       id,
       state,
-      url,
-      stableFileName,
-      fallbackUrl,
+      sourcePath,
     }: (typeof candidates)[number]) => {
-      let result = await probe(url);
-      let resolvedUrl = url;
-      if (result === "missing" && fallbackUrl !== url) {
-        const fallbackResult = await probe(fallbackUrl);
-        if (fallbackResult === "exists") {
-          result = fallbackResult;
-          resolvedUrl = fallbackUrl;
-          setShotFileNames((current) =>
-            current[id] === stableFileName
-              ? current
-              : { ...current, [id]: stableFileName },
-          );
-          setShotVideos((current) =>
-            current[id] === fallbackUrl
-              ? current
-              : { ...current, [id]: fallbackUrl },
-          );
-        }
+      let file: File | null = null;
+      try {
+        file = await readProjectSourceFile(projectDirectory, sourcePath);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "NotFoundError")) return;
       }
-      if (disposed || result === "unknown") return;
-      if (result === "exists") {
+      if (disposed || epoch !== projectEpochRef.current) return;
+      if (file) {
         if (state === "文件缺失") {
+          const resolvedUrl = URL.createObjectURL(file);
+          setShotVideos((current) => ({ ...current, [id]: resolvedUrl }));
           setShots((items) => {
             let changed = false;
             const next = items.map((item) =>
@@ -1279,7 +1258,7 @@ export default function Home() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [storageReady, shots, shotVideos, shotFileNames, shotTasks]);
+  }, [storageReady, projectDirectory, shots, shotTasks]);
 
   useEffect(() => {
     if (!Object.keys(shotTasks).length) return;
@@ -1875,6 +1854,9 @@ export default function Home() {
   function resetProjectEditorState() {
     projectEpochRef.current += 1;
     referenceUploadTokensRef.current = {};
+    keyframeUploadTokensRef.current = {};
+    keyframesRef.current = {};
+    setPromptOptimizing({});
     setShots([]);
     setActiveShot(0);
     setPrompt("");
@@ -3076,18 +3058,19 @@ export default function Home() {
     },
     overrides: ClipManifestOverrides = {},
   ) {
-    if (!projectDirectory) return;
+    if (!projectDirectory) throw new Error("请先选择项目目录");
     const writableProjectDirectory = projectDirectory as WritableDirectoryHandle;
     const permission = writableProjectDirectory.queryPermission
       ? await writableProjectDirectory.queryPermission({ mode: "readwrite" })
       : "granted";
-    if (permission !== "granted" && writableProjectDirectory.requestPermission) {
-      const requested = await writableProjectDirectory.requestPermission({
+    if (permission !== "granted") {
+      const requested = await writableProjectDirectory.requestPermission?.({
         mode: "readwrite",
       });
       if (requested !== "granted") {
-        setGenerationStatus("项目目录写入权限已失效，请重新选择项目目录");
-        return;
+        const message = "项目目录写入权限已失效，请重新选择项目目录";
+        setGenerationStatus(message);
+        throw new Error(message);
       }
     }
     const clips = await projectDirectory.getDirectoryHandle("片段", {
@@ -3320,7 +3303,7 @@ export default function Home() {
     videoUrl: string,
     fileName: string,
   ) {
-    if (!projectDirectory || !videoUrl) return false;
+    if (!projectDirectory || !videoUrl) return null;
     const response = await fetch(videoUrl);
     if (!response.ok)
       throw new Error(`读取生成视频失败（HTTP ${response.status}）`);
@@ -3344,7 +3327,7 @@ export default function Home() {
     const writable = await file.createWritable();
     await writable.write(blob);
     await writable.close();
-    return true;
+    return await file.getFile();
   }
   async function loadArchivedShotVideo(shot: Shot) {
     if (!projectDirectory) return null;
@@ -3366,6 +3349,7 @@ export default function Home() {
     source?: string,
     sourceSubfolder?: string,
   ) {
+    const epoch = projectEpochRef.current;
     if (!source) {
       if (activeShotIdRef.current === shotId)
         setGenerationStatus("已完成，但未找到 ComfyUI 输出文件");
@@ -3408,19 +3392,27 @@ export default function Home() {
         // A remote ComfyUI output may not be available on the local filesystem.
         // The proxy URL can still be fetched and copied into the project clip.
       }
+      if (epoch !== projectEpochRef.current) return;
       setShotFileNames((current) => ({ ...current, [shotId]: finalName }));
       setShotVideos((current) => ({ ...current, [shotId]: finalUrl }));
       let archivedToProject = false;
       let archiveFailed = false;
+      let cleanupFailed = false;
       try {
         const targetShot = { id: shotId, title: task.title };
-        archivedToProject = await archiveShotVideo(
+        const archivedFile = await archiveShotVideo(
           targetShot,
           finalUrl,
           finalName,
         );
-        if (archivedToProject) {
+        if (epoch !== projectEpochRef.current) return;
+        if (archivedFile) {
           await writeClipManifest(targetShot, { output: finalName });
+          if (epoch !== projectEpochRef.current) return;
+          archivedToProject = true;
+          finalUrl = URL.createObjectURL(archivedFile);
+          setShotVideos((current) => ({ ...current, [shotId]: finalUrl }));
+          if (activeShotIdRef.current === shotId) setVideoUrl(finalUrl);
           try {
             const cleanupResponse = await fetch("/api/output/cleanup", {
               method: "POST",
@@ -3431,17 +3423,17 @@ export default function Home() {
                 comfy_url: comfyUrl,
               }),
             });
-            if (!cleanupResponse.ok && activeShotIdRef.current === shotId)
-              setGenerationStatus("视频已归档，但 ComfyUI 临时文件清理失败");
+            cleanupFailed = !cleanupResponse.ok;
           } catch {
-            if (activeShotIdRef.current === shotId)
-              setGenerationStatus("视频已归档，但 ComfyUI 临时文件清理失败");
+            cleanupFailed = true;
           }
         }
       } catch {
+        if (epoch !== projectEpochRef.current) return;
         archiveFailed = true;
         setGenerationStatus("视频已生成，但归档到项目片段目录失败");
       }
+      if (epoch !== projectEpochRef.current) return;
       const persisted = archivedToProject && !archiveFailed;
       setShotStages((current) => ({
         ...current,
@@ -3458,11 +3450,14 @@ export default function Home() {
         setVideoUrl(finalUrl);
         setGenerationStatus(
           persisted
-            ? "已完成，视频已复制到当前项目片段"
+            ? cleanupFailed
+              ? "视频已归档，但 ComfyUI 临时文件清理失败"
+              : "已完成，视频已复制到当前项目片段"
             : "生成完成，但归档到项目片段目录失败",
         );
       }
     } catch (error) {
+      if (epoch !== projectEpochRef.current) return;
       setShotStages((current) => ({ ...current, [shotId]: "整理输出失败" }));
       if (activeShotIdRef.current === shotId)
         setGenerationStatus(
@@ -3595,7 +3590,7 @@ export default function Home() {
     file: File,
     label: "首帧" | "尾帧",
   ) {
-    if (!projectDirectory) return undefined;
+    if (!projectDirectory) throw new Error("请先选择项目目录");
     const clips = await projectDirectory.getDirectoryHandle("片段", { create: true });
     const clipDirectory = await clips.getDirectoryHandle(
       `${shot.id}-${safeFileStem(shot.title)}`,
@@ -3603,12 +3598,69 @@ export default function Home() {
     );
     const frameDirectory = await clipDirectory.getDirectoryHandle("关键帧", { create: true });
     const extension = file.name.match(/\.[^.]+$/)?.[0] ?? ".png";
-    const targetName = `${label}${extension}`;
+    const targetName = `${label}-${crypto.randomUUID()}${extension}`;
     const handle = await frameDirectory.getFileHandle(targetName, { create: true });
-    const writable = await handle.createWritable();
-    await writable.write(await file.arrayBuffer());
-    await writable.close();
+    try {
+      const writable = await handle.createWritable();
+      try {
+        await writable.write(await file.arrayBuffer());
+        await writable.close();
+      } catch (error) {
+        await writable.abort().catch(() => undefined);
+        throw error;
+      }
+    } catch (error) {
+      await frameDirectory.removeEntry(targetName).catch(() => undefined);
+      throw error;
+    }
     return `片段/${shot.id}-${safeFileStem(shot.title)}/关键帧/${targetName}`;
+  }
+  function beginKeyframeUpload(key: string) {
+    const epoch = projectEpochRef.current;
+    const token = (keyframeUploadTokensRef.current[key] ?? 0) + 1;
+    keyframeUploadTokensRef.current[key] = token;
+    return {
+      isCurrent: () =>
+        epoch === projectEpochRef.current &&
+        token === keyframeUploadTokensRef.current[key],
+    };
+  }
+  async function uploadKeyframe(
+    shot: { id: string; title: string },
+    file: File,
+    label: "首帧" | "尾帧",
+    request = beginKeyframeUpload(`${shot.id}-${label}`),
+  ) {
+    const key = `${shot.id}-${label}`;
+    let sourcePath: string | undefined;
+    let previewUrl: string | undefined;
+    let committed = false;
+    try {
+      if (!request.isCurrent()) return false;
+      const uploaded = await uploadReferenceFile(file, "image", comfyUrl);
+      if (!request.isCurrent()) return false;
+      sourcePath = await saveKeyframeSourceFile(shot, file, label);
+      if (!request.isCurrent()) return false;
+      previewUrl = URL.createObjectURL(file);
+      const previousFrame = keyframesRef.current[key];
+      const frame = { name: file.name, url: previewUrl, sourcePath, ...uploaded };
+      keyframesRef.current = { ...keyframesRef.current, [key]: frame };
+      setKeyframes((current) => ({ ...current, [key]: frame }));
+      committed = true;
+      if (previousFrame?.sourcePath && previousFrame.sourcePath !== sourcePath)
+        void deleteKeyframeSourceFile(previousFrame.sourcePath);
+      if (previousFrame?.url.startsWith("blob:")) URL.revokeObjectURL(previousFrame.url);
+      return true;
+    } catch (error) {
+      if (request.isCurrent())
+        setGenerationStatus(error instanceof Error ? error.message : "关键帧上传失败");
+      return false;
+    } finally {
+      if (!committed) {
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        if (sourcePath) await deleteKeyframeSourceFile(sourcePath);
+      }
+    }
   }
   async function uploadReference(
     event: React.ChangeEvent<HTMLInputElement>,
@@ -4237,6 +4289,7 @@ export default function Home() {
       setGenerationStatus("视频尚未加载完成，无法截取当前帧");
       return;
     }
+    const request = beginKeyframeUpload(`${nextShot.id}-首帧`);
     try {
       video.pause();
       if (video.seeking) {
@@ -4266,14 +4319,13 @@ export default function Home() {
       );
       const sourceShotId = shots[activeShot].id;
       const fileName = `continuity-${sourceShotId}-to-${nextShot.id}-${Math.round(video.currentTime * 1000)}.png`;
-      const url = URL.createObjectURL(blob);
-      const key = `${nextShot.id}-首帧`;
-      const projectEpoch = projectEpochRef.current;
-      const previousFrame = keyframes[key];
-      setKeyframes((current) => ({
-        ...current,
-        [key]: { name: fileName, url },
-      }));
+      const committed = await uploadKeyframe(
+        nextShot,
+        new File([blob], fileName, { type: "image/png" }),
+        "首帧",
+        request,
+      );
+      if (!committed || !request.isCurrent()) return;
       setShotSettings((current) => ({
         ...current,
         [nextShot.id]: {
@@ -4282,33 +4334,11 @@ export default function Home() {
           keyframeMode: "first",
         },
       }));
-      const form = new FormData();
-      form.append("image", new File([blob], fileName, { type: "image/png" }));
-      form.append("comfy_url", comfyUrl);
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: form,
-      });
-      const uploaded = (await response.json()) as { name?: string };
-      if (!response.ok || !uploaded.name) throw new Error("上传首帧失败");
-      if (projectEpoch !== projectEpochRef.current) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      const sourcePath = await saveKeyframeSourceFile(
-        nextShot,
-        new File([blob], fileName, { type: "image/png" }),
-        "首帧",
-      );
-      if (previousFrame?.sourcePath && previousFrame.sourcePath !== sourcePath)
-        void deleteKeyframeSourceFile(previousFrame.sourcePath);
-      setKeyframes((current) => ({
-        ...current,
-        [key]: { name: fileName, url, comfyName: uploaded.name, sourcePath },
-      }));
       setGenerationStatus(`已将当前帧设为片段 ${nextShot.id} 首帧`);
     } catch {
-      setGenerationStatus("提取或上传当前帧失败");
+      if (request.isCurrent()) {
+        setGenerationStatus("提取或上传当前帧失败");
+      }
     }
   }
 
@@ -4506,11 +4536,11 @@ export default function Home() {
     const submittedSeed =
       seedMode === "random"
         ? String(
-            Math.floor(Math.random() * 9000000000000000) + 1000000000000000,
+            Math.floor(Math.random() * (Number.MAX_SAFE_INTEGER - 1000000000000000)) + 1000000000000000,
           )
         : seed.trim() ||
           String(
-            Math.floor(Math.random() * 9000000000000000) + 1000000000000000,
+            Math.floor(Math.random() * (Number.MAX_SAFE_INTEGER - 1000000000000000)) + 1000000000000000,
           );
     setShotSettings((current) => ({
       ...current,
@@ -5532,7 +5562,7 @@ export default function Home() {
                   <input
                     id="seed"
                     value={seed}
-                    disabled={seedMode === "fixed"}
+                    disabled={seedMode === "random"}
                     onChange={(event) =>
                       (() => {
                         const value = event.target.value.replace(/\D/g, "");
@@ -5552,8 +5582,10 @@ export default function Home() {
                       if (nextMode === "random")
                         (() => {
                           const value = String(
-                            Math.floor(Math.random() * 9000000000000000) +
-                              1000000000000000,
+                            Math.floor(
+                              Math.random() *
+                                (Number.MAX_SAFE_INTEGER - 1000000000000000),
+                            ) + 1000000000000000,
                           );
                           setSeed(value);
                           updateSetting("seed", value);
@@ -5721,12 +5753,17 @@ export default function Home() {
                               event.stopPropagation();
                               const key = shots[activeShot].id + "-" + label;
                               const previousFrame = keyframes[key];
+                              keyframeUploadTokensRef.current[key] =
+                                (keyframeUploadTokensRef.current[key] ?? 0) + 1;
+                              keyframesRef.current = { ...keyframesRef.current };
+                              delete keyframesRef.current[key];
                               setKeyframes((current) => {
                                 const next = { ...current };
                                 delete next[key];
                                 return next;
                               });
                               void deleteKeyframeSourceFile(previousFrame?.sourcePath);
+                              if (previousFrame?.url.startsWith("blob:")) URL.revokeObjectURL(previousFrame.url);
                             }}
                           >
                             <X className="size-3" />
@@ -5755,59 +5792,11 @@ export default function Home() {
                           className="hidden"
                           onChange={async (event) => {
                             const file = event.target.files?.[0];
+                            event.target.value = "";
                             if (!file) return;
                             const currentShot = shots[activeShot];
                             const frameLabel = label as "首帧" | "尾帧";
-                            const key = `${currentShot.id}-${frameLabel}`;
-                            const previousFrame = keyframes[key];
-                            const url = URL.createObjectURL(file);
-                            const form = new FormData();
-                            form.append("image", file, file.name);
-                            form.append("comfy_url", comfyUrl);
-                            try {
-                              const response = await fetch("/api/upload", {
-                                method: "POST",
-                                body: form,
-                              });
-                              const uploaded = (await response
-                                .json()
-                                .catch(() => ({}))) as { name?: string };
-                              if (response.ok && uploaded.name)
-                                {
-                                const sourcePath = await saveKeyframeSourceFile(
-                                  currentShot,
-                                  file,
-                                  frameLabel,
-                                );
-                                if (previousFrame?.sourcePath && previousFrame.sourcePath !== sourcePath)
-                                  void deleteKeyframeSourceFile(previousFrame.sourcePath);
-                                setKeyframes((current) => ({
-                                  ...current,
-                                  [key]: {
-                                    name: file.name,
-                                    url,
-                                    comfyName: uploaded.name,
-                                    sourcePath,
-                                  },
-                                }));
-                                }
-                              else {
-                                URL.revokeObjectURL(url);
-                                if (previousFrame) setKeyframes((current) => ({ ...current, [key]: previousFrame }));
-                                setGenerationStatus("关键帧上传失败");
-                              }
-                            } catch (error) {
-                              URL.revokeObjectURL(url);
-                              if (previousFrame) setKeyframes((current) => ({ ...current, [key]: previousFrame }));
-                              else setKeyframes((current) => {
-                                const next = { ...current };
-                                delete next[key];
-                                return next;
-                              });
-                              setGenerationStatus(
-                                error instanceof Error ? error.message : "关键帧上传失败",
-                              );
-                            }
+                            await uploadKeyframe(currentShot, file, frameLabel);
                           }}
                         />
                       </label>
