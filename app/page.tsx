@@ -1062,7 +1062,7 @@ export default function Home() {
       normalizePrompt(shotPrompts[promptStoreKey(taskShot.id, settings.mode)]),
     );
     setPromptNotice(null);
-    setVideoUrl(shotVideos[taskShot.id] ?? (taskShot as typeof taskShot & { output?: string }).output ?? null);
+    setVideoUrl(shotVideos[taskShot.id] ?? taskShot.output ?? null);
     void loadArchivedShotVideo(taskShot).then((url) => {
       if (url && activeShotIdRef.current === taskShot.id) setVideoUrl(url);
     });
@@ -2091,12 +2091,11 @@ export default function Home() {
         setProjectDirectories(next);
         void saveProjectDirectoryHandles(next).catch(() => undefined);
         if (projectDirectory?.name === name) {
+          resetProjectEditorState();
           setProjectDirectory(null);
           setProjectDirectoryName("未选择项目目录");
           setProjectAssets([]);
           setProjectOutputFiles(null);
-          setShots([]);
-          setActiveShot(0);
           void clearProjectDirectoryHandle().catch(() => undefined);
         }
         setGenerationStatus(`项目“${name}”已在电脑上删除，已从列表移除`);
@@ -2354,12 +2353,11 @@ export default function Home() {
     }
     const nextHandle = next[0];
     if (!nextHandle) {
+      resetProjectEditorState();
       setProjectDirectory(null);
       setProjectDirectoryName("未选择项目目录");
       setProjectAssets([]);
       setProjectOutputFiles(null);
-      setShots([]);
-      setActiveShot(0);
       await clearProjectDirectoryHandle().catch(() => undefined);
       setProjectDeleteCandidate(null);
       setGenerationStatus(`项目“${name}”已从导演台移除，磁盘文件未改动`);
@@ -2470,8 +2468,6 @@ export default function Home() {
           setProjectDirectoryName("未选择项目目录");
           setProjectAssets([]);
           setProjectOutputFiles(null);
-          setShots([]);
-          setActiveShot(0);
           void clearProjectDirectoryHandle();
           setGenerationStatus(`已删除项目“${name}”`);
         }
@@ -3174,9 +3170,9 @@ export default function Home() {
     await writable.close();
     return true;
   }
-  async function loadArchivedShotVideo(shot: { id: string; title: string }) {
+  async function loadArchivedShotVideo(shot: Shot) {
     if (!projectDirectory) return null;
-    const fileName = shotFileNames[shot.id] ?? (shot as typeof shot & { output?: string }).output;
+    const fileName = shotFileNames[shot.id] ?? shot.output;
     if (!fileName) return null;
     try {
       const clips = await projectDirectory.getDirectoryHandle("片段");
