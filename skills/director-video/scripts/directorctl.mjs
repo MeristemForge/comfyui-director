@@ -138,7 +138,7 @@ function validateClipManifest(manifest, clip) {
     typeof generation.turbo !== "boolean" ||
     typeof generation.seed !== "string" || !generation.seed.trim() ||
     !["fixed", "random"].includes(generation.seedMode) ||
-    !["first", "last", "first_last"].includes(generation.keyframeMode) ||
+    (generation.mode === "I2VA" && !["first", "last", "first_last"].includes(generation.keyframeMode)) ||
     (generation.steps !== undefined && (!Number.isInteger(generation.steps) || generation.steps <= 0))
   ) fail(`片段 ${clip.id} 的 generation 不完整`);
   if (!manifest.prompts || !GENERATION_MODES.every((mode) => {
@@ -377,8 +377,9 @@ async function prepare(project, args, urls) {
 function generationOptions(manifest, args) {
   const generation = manifest.generation;
   if (!generation) fail("clip.json 缺少 generation");
+  const mode = args.mode || generation.mode;
   return {
-    mode: args.mode || generation.mode,
+    mode,
     duration: Number(args.duration ?? generation.duration),
     resolution: args.resolution || generation.resolution,
     aspect: args.aspect || generation.aspect,
@@ -387,7 +388,9 @@ function generationOptions(manifest, args) {
     turbo: args.turbo === undefined ? generation.turbo : args.turbo !== "false",
     seed: args.seed ?? generation.seed,
     seedMode: args.seed_mode || generation.seedMode,
-    keyframeMode: args.keyframe_mode || generation.keyframeMode,
+    ...(mode === "I2VA"
+      ? { keyframeMode: args.keyframe_mode || generation.keyframeMode || "first" }
+      : {}),
   };
 }
 
@@ -410,7 +413,7 @@ async function render(project, args, urls) {
     ...options,
     client_id: `directorctl-${process.pid}`,
     comfy_url: urls.comfy,
-    keyframe_mode: options.keyframeMode,
+    keyframe_mode: mode === "I2VA" ? options.keyframeMode : undefined,
     images: references.images.slice(0, REFERENCE_LIMITS.image),
     videos: references.videos.slice(0, REFERENCE_LIMITS.video),
     audios: references.audios.slice(0, REFERENCE_LIMITS.audio),
@@ -445,7 +448,18 @@ async function render(project, args, urls) {
   if (!videoResponse.ok || !videoResponse.body) fail(`无法下载生成的视频（HTTP ${videoResponse.status}）`);
   await writeFile(outputPath, Buffer.from(await videoResponse.arrayBuffer()));
   prepared.target.manifest.output = outputName;
-  prepared.target.manifest.generation = { ...prepared.target.manifest.generation, mode, duration: options.duration, resolution: options.resolution, aspect: options.aspect, fps: options.fps, model: options.model, turbo: options.turbo, seed: String(status.noise_seed ?? options.seed), seedMode: options.seedMode, keyframeMode: options.keyframeMode };
+  prepared.target.manifest.generation = {
+    mode,
+    duration: options.duration,
+    resolution: options.resolution,
+    aspect: options.aspect,
+    fps: options.fps,
+    model: options.model,
+    turbo: options.turbo,
+    seed: String(status.noise_seed ?? options.seed),
+    seedMode: options.seedMode,
+    ...(mode === "I2VA" ? { keyframeMode: options.keyframeMode } : {}),
+  };
   await writeJson(prepared.target.manifestPath, prepared.target.manifest);
   return { ...result, status: "completed", output: relativeProjectPath(path.relative(project.root, outputPath)), filename: outputName, source: status.source, finalized };
 }

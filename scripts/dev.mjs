@@ -31,7 +31,6 @@ const vinext = spawn(process.execPath, ['node_modules/vinext/dist/cli.js', 'dev'
 
 function shutdown() {
   helper.close();
-  helper.close();
   vinext.kill();
 }
 process.on('SIGINT', shutdown);

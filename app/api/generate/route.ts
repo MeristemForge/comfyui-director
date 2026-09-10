@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     }
 
     const node = (type: string) => Object.values(normalized).find((item) => item.class_type === type);
-    const turbo = Boolean(body.turbo) || body.model === 'H3-加速';
+    const turbo = Boolean(body.turbo);
     const turboSwitch = node('PrimitiveBoolean');
     if (turboSwitch) turboSwitch.inputs!.value = turbo;
     const stepNodes = Object.values(normalized).filter((item) => item.class_type === 'PrimitiveInt');

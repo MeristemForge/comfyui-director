@@ -3,9 +3,9 @@
 import { useState } from 'react';
 import { Clapperboard, File, Folder, FolderOpen, Pencil, Plus, Trash2 } from 'lucide-react';
 
-export type ProjectTreeShot = { id: string; title: string; detail: string; meta?: string; state: string };
+export type ProjectTreeShot = { id: string; title: string; detail: string; state: string };
 export type ProjectTreeAsset = { name: string; type: 'character' | 'scene' | 'wardrobe' | 'prop' | 'video' | 'audio' | 'custom'; thumbnail?: string };
-type Props = { projectName: string; assets?: ProjectTreeAsset[]; outputFiles?: string[] | null; shots: ProjectTreeShot[]; activeShot: number; onSelectShot: (i: number) => void; onAddShot?: () => void; onAddAsset?: () => void; onDeleteAsset?: (asset: ProjectTreeAsset) => void; onRenameShot?: (i: number) => void; onDeleteShot?: (i: number) => void; projects?: { name: string }[]; activeProjectName?: string; onSelectProject?: (n: string) => void; onRemoveProject?: (n: string) => void };
+type Props = { assets?: ProjectTreeAsset[]; outputFiles?: string[] | null; shots: ProjectTreeShot[]; activeShot: number; onSelectShot: (i: number) => void; onAddShot?: () => void; onAddAsset?: () => void; onDeleteAsset?: (asset: ProjectTreeAsset) => void; onRenameShot?: (i: number) => void; onDeleteShot?: (i: number) => void; projects?: { name: string }[]; activeProjectName?: string; onSelectProject?: (n: string) => void; onRemoveProject?: (n: string) => void };
 
 const assetTypes = [['character', '角色'], ['scene', '场景'], ['wardrobe', '服装'], ['prop', '道具'], ['video', '视频'], ['audio', '音频'], ['custom', '自定义']] as const;
 

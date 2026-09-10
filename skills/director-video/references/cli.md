@@ -48,7 +48,7 @@ node scripts/directorctl.mjs render --project <path> --clip <id> --mode R2VA --m
 ```
 ```
 
-Optional overrides are `--prompt`, `--prompt-file`, `--mode`, `--duration`, `--resolution`, `--aspect`, `--fps`, `--model`, `--turbo false`, `--seed`, `--seed-mode`, `--keyframe-mode`, `--image`, and `--last-image`. Use `--prompt` for a short direct value or `--prompt-file` to avoid Windows command-line length limits for a long H3 prompt. An explicit prompt override is used only for that render and does not overwrite `clip.json`'s original/optimized record. The command calls `/api/generate`, polls `/api/generate/status`, calls `/api/output/finalize`, downloads the finalized video, and updates `clip.json` with `output` and generation metadata.
+Optional overrides are `--prompt`, `--prompt-file`, `--mode`, `--duration`, `--resolution`, `--aspect`, `--fps`, `--model`, `--turbo false`, `--seed`, `--seed-mode`, `--keyframe-mode`, `--image`, and `--last-image`. `--keyframe-mode` applies only to I2VA; `clip.json.generation.keyframeMode` is present only when `generation.mode` is `I2VA`. Use `--prompt` for a short direct value or `--prompt-file` to avoid Windows command-line length limits for a long H3 prompt. An explicit prompt override is used only for that render and does not overwrite `clip.json`'s original/optimized record. The command calls `/api/generate`, polls `/api/generate/status`, calls `/api/output/finalize`, downloads the finalized video, and updates `clip.json` with `output` and generation metadata.
 
 The CLI does not invoke `/api/optimize-prompt`. The calling agent is responsible for prompt editing in its own context, then passes the result through one of the two prompt override options.
 

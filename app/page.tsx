@@ -52,6 +52,7 @@ const visualStylePresets = {
   japanese_high_key_daylight: { label: "日系高调日光", prompt: `Japanese high-key daylight cinematic look. Bright airy daylight, clean blue skies, crisp white clouds, cool-to-neutral daylight balance and fresh transparent colors. Keep skin fair, natural, and evenly balanced with clean white highlights. Avoid yellow or orange skin tones. Bright, refreshing and photographic rather than anime illustration.\n\n${visualSubjectRealismGuidance}` },
 } as const;
 type GenerationMode = "T2VA" | "I2VA" | "R2VA";
+type KeyframeMode = "first" | "last" | "first_last";
 const generationModes = ["T2VA", "I2VA", "R2VA"] as const;
 type ReferenceRole =
   | "character"
@@ -112,7 +113,7 @@ type ShotSettings = {
   turbo: boolean;
   seed: string;
   seedMode: "fixed" | "random";
-  keyframeMode: "first" | "last" | "first_last";
+  keyframeMode: KeyframeMode;
 };
 const shotSettingDefaults: ShotSettings = {
   duration: "6 秒",
@@ -278,7 +279,7 @@ type ShotTask = {
   turbo: boolean;
   steps: number;
   startedAt: number;
-  keyframeMode: string;
+  keyframeMode?: KeyframeMode;
   inputImage?: string;
   lastImage?: string;
   referenceImages?: string[];
@@ -305,8 +306,7 @@ type ClipPromptRecord = {
   original: string;
   optimized?: string;
 };
-type ClipGeneration = {
-  mode: GenerationMode;
+type ClipGenerationBase = {
   duration: number;
   resolution: string;
   aspect: string;
@@ -315,9 +315,13 @@ type ClipGeneration = {
   turbo: boolean;
   seed: string;
   seedMode: "fixed" | "random";
-  keyframeMode: "first" | "last" | "first_last";
   steps?: number;
 };
+type ClipGeneration = ClipGenerationBase &
+  (
+    | { mode: "I2VA"; keyframeMode: KeyframeMode }
+    | { mode: "T2VA" | "R2VA"; keyframeMode?: never }
+  );
 type ClipPrompts = Record<GenerationMode, ClipPromptRecord>;
 type ProjectShotRecord = Shot & {
   version: 2;
@@ -328,7 +332,10 @@ type ProjectShotRecord = Shot & {
   visualStyle: VisualStyleKey;
 };
 type ClipManifestOverrides = {
-  generation?: Partial<ClipGeneration>;
+  generation?: Partial<ClipGenerationBase> & {
+    mode?: GenerationMode;
+    keyframeMode?: KeyframeMode;
+  };
   promptOriginal?: string;
   promptOptimized?: string;
   output?: string | null;
@@ -664,7 +671,10 @@ async function readProjectShots(
         typeof generation.seed !== "string" ||
         !generation.seed.trim() ||
         (generation.seedMode !== "fixed" && generation.seedMode !== "random") ||
-        !["first", "last", "first_last"].includes(generation.keyframeMode) ||
+        (generation.mode === "I2VA" &&
+          !["first", "last", "first_last"].includes(
+            generation.keyframeMode,
+          )) ||
         (generation.steps !== undefined &&
           (!Number.isInteger(generation.steps) || generation.steps <= 0))
       )
@@ -742,9 +752,7 @@ export default function Home() {
   const [mode, setMode] = useState<GenerationMode>("T2VA");
   const [model, setModel] = useState<keyof typeof modelProfiles>("H3");
   const [turboMode, setTurboMode] = useState(true);
-  const [keyframeMode, setKeyframeMode] = useState<
-    "first" | "last" | "first_last"
-  >("first");
+  const [keyframeMode, setKeyframeMode] = useState<KeyframeMode>("first");
   const [shotStages, setShotStages] = useState<Record<string, string>>({});
   const [shotVisualStyles, setShotVisualStyles] = useState<Record<string, VisualStyleKey>>({});
   const [railWidth, setRailWidth] = useState(220);
@@ -1043,12 +1051,16 @@ export default function Home() {
             turbo: settings.turbo,
             seed: settings.seed,
             seedMode: settings.seedMode,
-            keyframeMode: settings.keyframeMode,
             ...(shotTasks[shot.id]
               ? { seed: shotTasks[shot.id].seed, seedMode: shotTasks[shot.id].seedMode, steps: shotTasks[shot.id].steps }
               : {}),
-            ...(shot.id === taskShot?.id && settings.mode === "I2VA"
-              ? { keyframeMode }
+            ...(settings.mode === "I2VA"
+              ? {
+                  keyframeMode:
+                    shot.id === taskShot?.id
+                      ? keyframeMode
+                      : settings.keyframeMode,
+                }
               : {}),
           },
           promptOriginal: shotPrompts[modeKey] ??
@@ -1347,7 +1359,7 @@ export default function Home() {
     setShots((current) => [...current, shot]);
     try {
       await writeClipManifest(shot, {
-        generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed", keyframeMode: "first" },
+        generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
         promptOriginal: "",
       });
     } catch {
@@ -2008,7 +2020,10 @@ export default function Home() {
           turbo: record.generation.turbo,
           seed: record.generation.seed,
           seedMode: record.generation.seedMode,
-          keyframeMode: record.generation.keyframeMode,
+          keyframeMode:
+            record.generation.mode === "I2VA"
+              ? record.generation.keyframeMode
+              : "first",
         },
       ]),
     );
@@ -3119,8 +3134,7 @@ export default function Home() {
         ];
       }),
     ) as ClipPrompts;
-    const generation: ClipGeneration = {
-      mode: manifestMode,
+    const generationBase: ClipGenerationBase = {
       duration:
         generationOverride.duration ??
         (Number.parseFloat(savedSettings.duration) || 6),
@@ -3132,14 +3146,21 @@ export default function Home() {
       turbo: generationOverride.turbo ?? savedSettings.turbo,
       seed: generationOverride.seed ?? savedSettings.seed,
       seedMode: generationOverride.seedMode ?? savedSettings.seedMode,
-      keyframeMode:
-        generationOverride.keyframeMode ?? savedSettings.keyframeMode,
       ...(generationOverride.steps !== undefined
         ? { steps: generationOverride.steps }
         : shotTasks[shot.id]?.steps !== undefined
           ? { steps: shotTasks[shot.id].steps }
           : {}),
     };
+    const generation: ClipGeneration =
+      manifestMode === "I2VA"
+        ? {
+            ...generationBase,
+            mode: "I2VA",
+            keyframeMode:
+              generationOverride.keyframeMode ?? savedSettings.keyframeMode,
+          }
+        : { ...generationBase, mode: manifestMode };
     const output = Object.prototype.hasOwnProperty.call(overrides, "output")
       ? overrides.output ?? null
       : shotFileNames[shot.id] ?? shot.output ?? null;
@@ -3241,7 +3262,7 @@ export default function Home() {
         mode: task.mode,
         turbo: task.turbo,
         steps: task.steps,
-        keyframe_mode: task.keyframeMode,
+        keyframe_mode: task.mode === "I2VA" ? task.keyframeMode : undefined,
         input_image: task.inputImage ?? null,
         last_image: task.lastImage ?? null,
         reference_images: task.referenceImages ?? [],
@@ -4367,7 +4388,7 @@ export default function Home() {
             turbo: taskSettings.turbo,
             steps: turboMode ? 4 : 20,
             startedAt,
-            keyframeMode,
+            ...(activeMode === "I2VA" ? { keyframeMode } : {}),
             inputImage: firstFrameName,
             lastImage:
               activeMode === "I2VA"
@@ -4562,7 +4583,6 @@ export default function Home() {
                 onDeleteAsset={requestProjectAssetDeletion}
                 assets={projectAssets}
                 outputFiles={projectOutputFiles}
-                projectName={projectDirectoryName}
                 shots={[]}
                 activeShot={0}
                 onSelectShot={() => undefined}
@@ -4885,7 +4905,6 @@ export default function Home() {
               onDeleteAsset={requestProjectAssetDeletion}
               assets={projectAssets}
               outputFiles={projectOutputFiles}
-              projectName={projectDirectoryName}
               shots={shots.map((shot) => ({
                 id: shot.id,
                 title: shot.title,
