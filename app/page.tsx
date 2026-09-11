@@ -1378,7 +1378,6 @@ export default function Home() {
       title: title.trim(),
       state: "草稿",
     };
-    setShots((current) => [...current, shot]);
     try {
       await writeClipManifest(shot, {
         generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
@@ -1389,7 +1388,9 @@ export default function Home() {
       setGenerationStatus(
         "片段已创建，但项目目录没有写入权限，请重新选择项目目录",
       );
+      return;
     }
+    setShots((current) => [...current, shot]);
     setShotPrompts((current) => ({
       ...current,
       [promptStoreKey(id, "T2VA")]: "",
@@ -1533,18 +1534,28 @@ export default function Home() {
         keyframes: renamedKeyframes,
       });
       await writeProjectManifest(next);
+    } catch {
+      setGenerationStatus("片段重命名保存失败，旧目录仍已保留");
+      return;
+    }
+    try {
       const clips = await projectDirectory?.getDirectoryHandle("片段");
       if (clips && (clips as WritableDirectoryHandle).removeEntry)
         await (clips as WritableDirectoryHandle).removeEntry(
           `${shot.id}-${safeFileStem(shot.title)}`,
           { recursive: true },
         );
+    } catch {
       setReferenceAssets(renamedAssets);
       setKeyframes(renamedKeyframes);
       setShots(next);
-    } catch {
-      setGenerationStatus("片段重命名保存失败，旧目录仍已保留");
+      setGenerationStatus("片段已重命名，但旧目录清理失败");
+      setRenameIndex(null);
+      return;
     }
+    setReferenceAssets(renamedAssets);
+    setKeyframes(renamedKeyframes);
+    setShots(next);
     setRenameIndex(null);
   }
   function deleteShot(index: number) {
@@ -2594,7 +2605,7 @@ export default function Home() {
         window.alert(message);
         return;
       }
-      const ownedEntries = ["script.json", "资产", "片段", "输出"];
+      const ownedEntries = ["资产", "片段", "输出", "script.json"];
       for (const entryName of ownedEntries) {
         try {
           await writable.removeEntry(entryName, { recursive: true });
