@@ -4453,6 +4453,14 @@ export default function Home() {
               if (finalizingPromptIdsRef.current.has(task.promptId)) return;
               finalizingPromptIdsRef.current.add(task.promptId);
               if (!result.url) {
+                finalizingPromptIdsRef.current.delete(task.promptId);
+                setShotTasks((current) => {
+                  const next = { ...current };
+                  delete next[shotId];
+                  return next;
+                });
+                setShotStages((current) => ({ ...current, [shotId]: "生成失败" }));
+                setShots((items) => items.map((item) => item.id === shotId ? { ...item, state: "失败" } : item));
                 if (activeShotIdRef.current === shotId)
                   setGenerationStatus("生成完成，但 ComfyUI 未返回视频地址");
                 return;
@@ -5878,6 +5886,11 @@ export default function Home() {
             )}
           </div>
           <div className="sticky bottom-0 z-20 border-t border-border bg-card/95 p-4 backdrop-blur">
+            {/(失败|请先|未上传|无法|权限|错误|不存在|缺失)/.test(generationStatus) && (
+              <output aria-live="assertive" className="mb-2 block text-center text-[10px] text-red-300">
+                {generationStatus}
+              </output>
+            )}
             <Button
               onClick={toggleGeneration}
               className="h-10 w-full bg-[#f4bd50] font-semibold text-[#17120a] hover:bg-[#ffd070]"

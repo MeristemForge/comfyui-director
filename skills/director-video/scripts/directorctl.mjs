@@ -350,9 +350,18 @@ async function prepare(project, args, urls) {
   const entries = referenceEntries(target.manifest);
   const uploaded = [];
   const mode = args.mode || target.manifest.generation?.mode;
+  const keyframeMode = args.keyframe_mode || target.manifest.generation?.keyframeMode || "first";
   const keyframes = target.manifest.keyframes || {};
-  for (const [label, frame] of mode === "I2VA" ? Object.entries(keyframes) : []) {
-    if (!frame || (await remoteAssetAvailable(urls.comfy, frame)) || !frame.sourcePath) continue;
+  const neededKeyframes = mode === "I2VA"
+    ? [
+        ...(keyframeMode === "first" || keyframeMode === "first_last" ? [["first", keyframes.first]] : []),
+        ...(keyframeMode === "last" || keyframeMode === "first_last" ? [["last", keyframes.last]] : []),
+      ]
+    : [];
+  for (const [label, frame] of neededKeyframes) {
+    if (!frame) continue;
+    if (await remoteAssetAvailable(urls.comfy, frame)) continue;
+    if (!frame.sourcePath) fail(`关键帧 ${label} 在 ComfyUI 中已失效，且没有本地源文件`);
     const absolute = ensureInside(project.root, frame.sourcePath);
     const info = await stat(absolute).catch(() => null);
     if (!info?.isFile()) fail(`关键帧不存在：${frame.sourcePath}`);
@@ -361,7 +370,9 @@ async function prepare(project, args, urls) {
     uploaded.push({ assetKey: label, sourcePath: frame.sourcePath, ...remote });
   }
   for (const { reference } of entries) {
-    if (mode !== "R2VA" || (await remoteAssetAvailable(urls.comfy, reference)) || !reference.sourcePath) continue;
+    if (mode !== "R2VA") continue;
+    if (await remoteAssetAvailable(urls.comfy, reference)) continue;
+    if (!reference.sourcePath) fail(`参考素材 ${reference.name || reference.assetKey} 在 ComfyUI 中已失效，且没有本地源文件`);
     const absolute = ensureInside(project.root, reference.sourcePath);
     const info = await stat(absolute).catch(() => null);
     if (!info?.isFile()) fail(`参考素材不存在：${reference.sourcePath}`);
@@ -394,6 +405,12 @@ function generationOptions(manifest, args) {
   const generation = manifest.generation;
   if (!generation) fail("clip.json 缺少 generation");
   const mode = args.mode || generation.mode;
+  const seedMode = args.seed_mode || generation.seedMode;
+  const seed = args.seed !== undefined
+    ? args.seed
+    : seedMode === "random"
+      ? String(Math.floor(Math.random() * (Number.MAX_SAFE_INTEGER - 1000000000000000)) + 1000000000000000)
+      : generation.seed;
   return {
     mode,
     duration: Number(args.duration ?? generation.duration),
@@ -402,8 +419,8 @@ function generationOptions(manifest, args) {
     fps: Number(args.fps ?? generation.fps),
     model: args.model || generation.model,
     turbo: args.turbo === undefined ? generation.turbo : args.turbo !== "false",
-    seed: args.seed ?? generation.seed,
-    seedMode: args.seed_mode || generation.seedMode,
+    seed,
+    seedMode,
     ...(mode === "I2VA"
       ? { keyframeMode: args.keyframe_mode || generation.keyframeMode || "first" }
       : {}),
