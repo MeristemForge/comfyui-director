@@ -16,7 +16,6 @@ export async function POST(request: Request) {
       if (!node.inputs) continue;
       for (const [key, value] of Object.entries(node.inputs)) {
         if (Array.isArray(value) && typeof value[0] === 'string' && value[0].includes(':')) value[0] = value[0].split(':').pop()!;
-        if (typeof value === 'string' && value.includes(':')) node.inputs[key] = value.split(':').pop()!;
       }
     }
     let [width, height] = String(body.resolution ?? '1344 × 768').split('×').map((value) => Number(value.trim()));
@@ -46,8 +45,10 @@ export async function POST(request: Request) {
     const imageNode = node('LoadImage');
     if (body.mode === 'I2VA') {
       const keyframeMode = body.keyframe_mode === 'last' || body.keyframe_mode === 'first_last' ? body.keyframe_mode : 'first';
-      const firstImage = typeof body.image === 'string' && body.image.trim() ? body.image.trim() : '';
-      const lastImage = typeof body.last_image === 'string' && body.last_image.trim() ? body.last_image.trim() : '';
+      const useFirst = keyframeMode === 'first' || keyframeMode === 'first_last';
+      const useLast = keyframeMode === 'last' || keyframeMode === 'first_last';
+      const firstImage = useFirst && typeof body.image === 'string' && body.image.trim() ? body.image.trim() : '';
+      const lastImage = useLast && typeof body.last_image === 'string' && body.last_image.trim() ? body.last_image.trim() : '';
       if ((keyframeMode === 'first' || keyframeMode === 'first_last') && !firstImage) return Response.json({ error: 'I2VA 首帧未上传' }, { status: 400 });
       if ((keyframeMode === 'last' || keyframeMode === 'first_last') && !lastImage) return Response.json({ error: '关键帧模式需要尾帧' }, { status: 400 });
       if (videoNode.inputs) {

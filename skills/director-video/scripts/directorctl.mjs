@@ -333,6 +333,12 @@ async function uploadReference(directorUrl, comfyUrl, asset) {
   return { comfyName: result.name, ...(result.subfolder ? { comfySubfolder: result.subfolder } : {}) };
 }
 
+async function remoteAssetAvailable(comfyUrl, asset) {
+  if (!asset.comfyName) return false;
+  const url = `${comfyUrl}/view?filename=${encodeURIComponent(asset.comfyName)}&subfolder=${encodeURIComponent(asset.comfySubfolder || '')}&type=input`;
+  try { return (await fetch(url, { method: 'HEAD' })).ok; } catch { return false; }
+}
+
 function mimeType(filePath) {
   const extension = path.extname(filePath).toLowerCase();
   return ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".flac": "audio/flac" })[extension] || "application/octet-stream";
@@ -343,9 +349,10 @@ async function prepare(project, args, urls) {
   const target = await getClip(project, args.clip);
   const entries = referenceEntries(target.manifest);
   const uploaded = [];
+  const mode = args.mode || target.manifest.generation?.mode;
   const keyframes = target.manifest.keyframes || {};
-  for (const [label, frame] of Object.entries(keyframes)) {
-    if (!frame || frame.comfyName || !frame.sourcePath) continue;
+  for (const [label, frame] of mode === "I2VA" ? Object.entries(keyframes) : []) {
+    if (!frame || (await remoteAssetAvailable(urls.comfy, frame)) || !frame.sourcePath) continue;
     const absolute = ensureInside(project.root, frame.sourcePath);
     const info = await stat(absolute).catch(() => null);
     if (!info?.isFile()) fail(`关键帧不存在：${frame.sourcePath}`);
@@ -354,7 +361,7 @@ async function prepare(project, args, urls) {
     uploaded.push({ assetKey: label, sourcePath: frame.sourcePath, ...remote });
   }
   for (const { reference } of entries) {
-    if (reference.comfyName || !reference.sourcePath) continue;
+    if (mode !== "R2VA" || (await remoteAssetAvailable(urls.comfy, reference)) || !reference.sourcePath) continue;
     const absolute = ensureInside(project.root, reference.sourcePath);
     const info = await stat(absolute).catch(() => null);
     if (!info?.isFile()) fail(`参考素材不存在：${reference.sourcePath}`);
@@ -410,8 +417,8 @@ async function render(project, args, urls) {
   const mode = options.mode;
   if (!GENERATION_MODES.includes(mode)) fail(`无效生成模式：${mode}`);
   const references = mode === "R2VA" ? prepared.references : { images: [], videos: [], audios: [] };
-  const firstFrame = prepared.keyframes?.[`${prepared.target.clip.id}-首帧`]?.comfyName;
-  const lastFrame = prepared.keyframes?.[`${prepared.target.clip.id}-尾帧`]?.comfyName;
+  const firstFrame = prepared.keyframes?.first?.comfyName;
+  const lastFrame = prepared.keyframes?.last?.comfyName;
   const promptOverride = args.prompt_file
     ? (await readFile(ensureInside(project.root, args.prompt_file), "utf8")).trim()
     : String(args.prompt || "").trim();

@@ -324,6 +324,8 @@ type ClipManifestOverrides = {
   promptOptimized?: string;
   output?: string | null;
   visualStyle?: VisualStyleKey;
+  referenceAssets?: Record<string, ReferenceAsset>;
+  keyframes?: Record<string, { name: string; url: string; comfyName?: string; sourcePath?: string }>;
 };
 function normalizePrompt(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -1482,41 +1484,41 @@ export default function Home() {
     }
     const oldFolder = `片段/${shot.id}-${safeFileStem(shot.title)}`;
     const newFolder = `片段/${shot.id}-${safeFileStem(title)}`;
+    let renamedAssets = referenceAssets;
+    let renamedKeyframes = keyframes;
     if (oldFolder !== newFolder) {
-      setReferenceAssets((current) => {
-        const nextAssets = { ...current };
-        const shotPrefix = `${shot.id}-`;
-        Object.entries(current).forEach(([key, asset]) => {
+      renamedAssets = { ...referenceAssets };
+      const shotPrefix = `${shot.id}-`;
+        Object.entries(referenceAssets).forEach(([key, asset]) => {
           if (!key.startsWith(shotPrefix) || !asset.sourcePath) return;
           const normalized = asset.sourcePath.replaceAll("\\", "/");
           if (!normalized.startsWith(`${oldFolder}/`)) return;
-          nextAssets[key] = {
+          renamedAssets[key] = {
             ...asset,
             sourcePath: `${newFolder}/${normalized.slice(oldFolder.length + 1)}`,
           };
         });
-        return nextAssets;
-      });
-      setKeyframes((current) => {
-        const nextFrames = { ...current };
-        const shotPrefix = `${shot.id}-`;
-        Object.entries(current).forEach(([key, frame]) => {
+      renamedKeyframes = { ...keyframes };
+        Object.entries(keyframes).forEach(([key, frame]) => {
           if (!key.startsWith(shotPrefix) || !frame.sourcePath) return;
           const normalized = frame.sourcePath.replaceAll("\\", "/");
           if (!normalized.startsWith(`${oldFolder}/`)) return;
-          nextFrames[key] = {
+          renamedKeyframes[key] = {
             ...frame,
             sourcePath: `${newFolder}/${normalized.slice(oldFolder.length + 1)}`,
           };
         });
-        return nextFrames;
-      });
+      setReferenceAssets(renamedAssets);
+      setKeyframes(renamedKeyframes);
     }
     const next = shots.map((item, itemIndex) =>
       itemIndex === renameIndex ? { ...item, title } : item,
     );
     try {
-      await writeClipManifest({ id: shot.id, title });
+      await writeClipManifest({ id: shot.id, title }, {
+        referenceAssets: renamedAssets,
+        keyframes: renamedKeyframes,
+      });
       await writeProjectManifest(next);
       const clips = await projectDirectory?.getDirectoryHandle("片段");
       if (clips && (clips as WritableDirectoryHandle).removeEntry)
@@ -1561,12 +1563,17 @@ export default function Home() {
     const next = shots.filter((_, itemIndex) => itemIndex !== index);
     try {
       await writeProjectManifest(next);
-      if (deleteFromDisk)
-        await deleteSavedShotFiles(deletedId, shot.title);
-      setShots(next);
     } catch {
       setGenerationStatus("片段删除保存失败，原片段文件仍已保留");
       return;
+    }
+    setShots(next);
+    if (deleteFromDisk) {
+      try {
+        await deleteSavedShotFiles(deletedId, shot.title);
+      } catch {
+        setGenerationStatus("片段已删除，但磁盘保留了孤儿目录");
+      }
     }
     if (deletedId) {
       setShotPrompts((current) => {
@@ -1825,14 +1832,15 @@ export default function Home() {
     }
   }
   function openPromptViewer() {
-    const optimized = taskShot
-      ? optimizedPrompts[promptStoreKey(taskShot.id, activeMode)]?.trim()
+    const key = taskShot ? promptStoreKey(taskShot.id, activeMode) : "";
+    const effectivePrompt = taskShot
+      ? optimizedPrompts[key]?.trim() || prompt.trim() || shotPrompts[key]?.trim() || ""
       : "";
-    if (!optimized) {
-      setGenerationStatus("当前模式暂无优化提示词，请先点击“优化提示词”");
+    if (!effectivePrompt) {
+      setPromptNotice({ type: "error", text: "当前模式暂无可查看的提示词" });
       return;
     }
-    setPromptDraft(optimized);
+    setPromptDraft(effectivePrompt);
     setPromptCopied(false);
     setPromptViewerOpen(true);
   }
@@ -2059,7 +2067,6 @@ export default function Home() {
       /* Imported projects may not have an output folder yet. */
     }
     setProjectOutputFiles(outputFiles);
-    setGenerationStatus(`项目树已刷新，找到 ${assets.length} 个资产`);
   }
   function applyProjectShotRecords(records: ProjectShotRecord[]) {
     setShots(
@@ -3088,11 +3095,13 @@ export default function Home() {
     });
     const writable = await file.createWritable();
     const shotSubjects = promptSubjects[shot.id] ?? [];
+    const assetsSnapshot = overrides.referenceAssets ?? referenceAssets;
+    const keyframesSnapshot = overrides.keyframes ?? keyframes;
     const serializeReference = (
       assetKey: string,
       role: ReferenceRole,
     ): PersistedPromptReference | null => {
-      const asset = referenceAssets[assetKey];
+      const asset = assetsSnapshot[assetKey];
       if (!asset) return null;
       return {
         assetKey,
@@ -3163,7 +3172,7 @@ export default function Home() {
       ),
     );
     const unassignedPrefix = `${shot.id}-`;
-    Object.entries(referenceAssets)
+    Object.entries(assetsSnapshot)
       .filter(([assetKey]) => assetKey.startsWith(unassignedPrefix) && !usedAssetKeys.has(assetKey))
       .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
       .forEach(([assetKey, asset]) => {
@@ -3271,8 +3280,8 @@ export default function Home() {
       "natural_cinematic";
     const savedKeyframes = Object.fromEntries(
       ([
-        ["first", keyframes[`${shot.id}-首帧`]],
-        ["last", keyframes[`${shot.id}-尾帧`]],
+        ["first", keyframesSnapshot[`${shot.id}-首帧`]],
+        ["last", keyframesSnapshot[`${shot.id}-尾帧`]],
       ] as const).filter(([, frame]) => frame?.comfyName || frame?.sourcePath)
         .map(([name, frame]) => [name, {
           name: frame!.name,
@@ -4173,7 +4182,7 @@ export default function Home() {
       return;
     }
     setPromptOptimizing((current) => ({ ...current, [taskShot.id]: true }));
-    setGenerationStatus("正在使用本地 Agent CLI 优化提示词…");
+    setPromptNotice({ type: "success", text: "正在使用本地 Agent CLI 优化提示词…" });
     try {
       const shotSubjects = [
         ...(promptSubjects[taskShot.id] ?? []),
@@ -4267,9 +4276,9 @@ export default function Home() {
         promptOptimized: result.prompt!,
         visualStyle: shotVisualStyles[taskShot.id] ?? "natural_cinematic",
       });
-      setGenerationStatus("提示词优化完成");
+      setPromptNotice({ type: "success", text: "提示词优化完成" });
     } catch (error) {
-      setGenerationStatus(error instanceof Error ? error.message : "提示词优化失败");
+      setPromptNotice({ type: "error", text: error instanceof Error ? error.message : "提示词优化失败" });
     } finally {
       setPromptOptimizing((current) => {
         const next = { ...current };
@@ -4896,14 +4905,6 @@ export default function Home() {
                     ? "从左侧项目树的“片段”节点添加第一个片段"
                     : "项目中的角色、服装、道具、场景、片段和输出会显示在左侧项目树中"}
                 </p>
-                {generationStatus !== "等待生成" && (
-                  <output
-                    aria-live="polite"
-                    className="mt-3 block max-w-md text-[10px] leading-4 text-zinc-400"
-                  >
-                    {generationStatus}
-                  </output>
-                )}
                 <Button
                   onClick={() =>
                     void (projectDirectory
@@ -5480,7 +5481,7 @@ export default function Home() {
                 className="h-10 w-full gap-1.5 bg-[#f4bd50] px-3 text-[10px] font-semibold text-[#17120a] hover:bg-[#ffd070]"
               >
                 <Eye className="size-3.5" />
-                查看优化后的提示词
+                查看最终提示词
               </Button>
             </div>
           </div>
@@ -5877,13 +5878,6 @@ export default function Home() {
             )}
           </div>
           <div className="sticky bottom-0 z-20 border-t border-border bg-card/95 p-4 backdrop-blur">
-            <output
-              aria-live="polite"
-              className="mb-2 block truncate text-center text-[10px] text-muted-foreground"
-              title={generationStatus}
-            >
-              {generationStatus}
-            </output>
             <Button
               onClick={toggleGeneration}
               className="h-10 w-full bg-[#f4bd50] font-semibold text-[#17120a] hover:bg-[#ffd070]"
