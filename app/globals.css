@@ -36,8 +36,12 @@
 html, body { min-height: 100%; background: var(--background); }
 body { margin: 0; font-family: var(--font-geist-sans), "Microsoft YaHei", sans-serif; }
 button { cursor: pointer; }
+.window-chrome { -webkit-app-region: drag; user-select: none; }
+.window-chrome::after { content: ''; position: absolute; right: 0; bottom: -1px; left: 0; height: 1px; background: linear-gradient(90deg, transparent 8%, rgb(89 198 197 / 45%), rgb(76 124 229 / 45%), rgb(179 68 216 / 45%), transparent 92%); opacity: .55; pointer-events: none; }
+.window-drag-region { -webkit-app-region: drag; }
+.window-no-drag, .window-no-drag button { -webkit-app-region: no-drag; }
 
-.workspace-grid { display: grid; grid-template-columns: 188px minmax(420px, 1fr) 380px; grid-template-rows: calc(100vh - 56px); }
+.workspace-grid { display: grid; grid-template-columns: 188px minmax(420px, 1fr) 380px; grid-template-rows: calc(100vh - 100px); }
 .shot-rail, .preview-stage, .control-panel { min-height: 0; }
 .control-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .field-label { display: block; font-size: 10px; font-weight: 600; letter-spacing: .08em; color: var(--muted-foreground); }
@@ -59,7 +63,7 @@ button { cursor: pointer; }
 }
 
 @media (max-width: 720px) {
-  .workspace-grid { display: flex; min-height: calc(100vh - 56px); flex-direction: column; }
+  .workspace-grid { display: flex; min-height: calc(100vh - 100px); flex-direction: column; }
   .shot-rail { order: 1; display: flex; overflow-x: auto; border-right: 0; border-bottom: 0; }
   .shot-rail > div:first-child { min-width: 70px; }
   .shot-rail > div:last-child { display: flex; gap: 4px; padding: 6px; }

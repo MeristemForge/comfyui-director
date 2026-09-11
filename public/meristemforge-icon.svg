@@ -1,0 +1,48 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="surface" x1="86" y1="78" x2="928" y2="946" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#11B8B7"/>
+      <stop offset="0.42" stop-color="#13AFCF"/>
+      <stop offset="0.7" stop-color="#5869E7"/>
+      <stop offset="1" stop-color="#B344D8"/>
+    </linearGradient>
+    <radialGradient id="light" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(304 216) rotate(48) scale(610 520)">
+      <stop stop-color="#FFFFFF" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="148" y="88" width="728" height="824" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="shadow" x="180" y="120" width="664" height="760" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#30216B" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#surface)"/>
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#light)"/>
+  <rect x="50" y="50" width="924" height="924" rx="208" stroke="#FFFFFF" stroke-opacity="0.78" stroke-width="6"/>
+  <rect x="67" y="67" width="890" height="890" rx="192" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="3"/>
+
+  <g filter="url(#shadow)" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M512 690V300" stroke-width="18"/>
+    <path d="M512 382C459 314 394 284 319 292C346 369 412 421 512 438" stroke-width="14"/>
+    <path d="M512 382C565 314 630 284 705 292C678 369 612 421 512 438" stroke-width="14"/>
+    <path d="M512 380C490 306 500 236 545 178C594 245 593 316 540 395" stroke-width="16"/>
+    <path d="M512 440C455 493 398 526 329 536" stroke-opacity="0.84" stroke-width="7"/>
+    <path d="M512 440C569 493 626 526 695 536" stroke-opacity="0.84" stroke-width="7"/>
+    <circle cx="512" cy="690" r="28" fill="#FFFFFF" fill-opacity="0.12" stroke-width="11"/>
+    <circle cx="512" cy="690" r="7" fill="#FFFFFF" stroke="none"/>
+  </g>
+
+  <g filter="url(#softGlow)" opacity="0.92" fill="#FFFFFF">
+    <circle cx="319" cy="292" r="8"/>
+    <circle cx="705" cy="292" r="8"/>
+    <circle cx="545" cy="178" r="8"/>
+    <circle cx="329" cy="536" r="6"/>
+    <circle cx="695" cy="536" r="6"/>
+  </g>
+
+  <text x="512" y="792" text-anchor="middle" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="56" font-weight="700" letter-spacing="2">Meristem</text>
+  <text x="512" y="846" text-anchor="middle" fill="#FFFFFF" fill-opacity="0.82" font-family="Arial, Helvetica, sans-serif" font-size="35" font-weight="400" letter-spacing="12">FORGE</text>
+</svg>

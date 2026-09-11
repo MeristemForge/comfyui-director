@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   AudioLines,
   Box,
+  CircleAlert,
   CircleStop,
   Clapperboard,
   Clipboard,
@@ -15,6 +16,9 @@ import {
   FolderOpen,
   ImagePlus,
   MapPinned,
+  Maximize2,
+  Minimize2,
+  Minus,
   Package,
   Plus,
   RotateCcw,
@@ -148,7 +152,17 @@ type PersistedKeyframe = {
 };
 type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
+  electronDirector?: {
+    pickDirectory: () => Promise<(FileSystemDirectoryHandle & { createProject?: (name: string, id: string) => Promise<FileSystemDirectoryHandle> }) | null>;
+    promptProjectName?: () => Promise<string | null>;
+    windowControl?: (action: "minimize" | "maximize" | "unmaximize" | "toggle-maximize" | "close" | "is-maximized") => Promise<boolean>;
+    isMaximized?: () => Promise<boolean>;
+    onWindowStateChange?: (callback: (maximized: boolean) => void) => () => void;
+  };
 };
+function hasElectronDirectoryPicker() {
+  return typeof window !== "undefined" && Boolean((window as DirectoryPickerWindow).electronDirector?.pickDirectory);
+}
 type WritableDirectoryHandle = FileSystemDirectoryHandle & {
   queryPermission?: (descriptor?: {
     mode?: "read" | "readwrite";
@@ -178,6 +192,7 @@ function openDirectoryDatabase() {
 }
 
 async function saveProjectDirectoryHandle(handle: FileSystemDirectoryHandle) {
+  if (hasElectronDirectoryPicker()) return;
   const database = await openDirectoryDatabase();
   await new Promise<void>((resolve, reject) => {
     const request = database
@@ -202,6 +217,7 @@ async function clearProjectDirectoryHandle() {
   database.close();
 }
 async function loadProjectDirectoryHandle() {
+  if (hasElectronDirectoryPicker()) return undefined;
   const database = await openDirectoryDatabase();
   const handle = await new Promise<FileSystemDirectoryHandle | undefined>(
     (resolve, reject) => {
@@ -220,6 +236,7 @@ async function loadProjectDirectoryHandle() {
 async function saveProjectDirectoryHandles(
   handles: FileSystemDirectoryHandle[],
 ) {
+  if (hasElectronDirectoryPicker()) return;
   const database = await openDirectoryDatabase();
   await new Promise<void>((resolve, reject) => {
     const request = database
@@ -232,6 +249,7 @@ async function saveProjectDirectoryHandles(
   database.close();
 }
 async function loadProjectDirectoryHandles() {
+  if (hasElectronDirectoryPicker()) return [];
   const database = await openDirectoryDatabase();
   const handles = await new Promise<FileSystemDirectoryHandle[] | undefined>(
     (resolve, reject) => {
@@ -507,6 +525,16 @@ function safeFileStem(title: string) {
       .slice(0, 120) || "未命名片段"
   );
 }
+function isNotFoundError(error: unknown) {
+  return error instanceof DOMException && error.name === "NotFoundError" ||
+    typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "NotFoundError";
+}
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error)
+    return String((error as { message?: unknown }).message);
+  return String(error ?? "未知错误");
+}
 
 function assetNamePart(value: string) {
   return value
@@ -746,15 +774,43 @@ async function readProjectShots(
     }),
   );
 }
+async function readNextShotNumber(handle: FileSystemDirectoryHandle, shots: Shot[] = []) {
+  try {
+    const file = await handle.getFileHandle("script.json");
+    const script = JSON.parse(await (await file.getFile()).text()) as { nextShotNumber?: unknown };
+    if (typeof script.nextShotNumber === "number" && Number.isInteger(script.nextShotNumber) && script.nextShotNumber > 0)
+      return script.nextShotNumber;
+  } catch {
+    // Fall back to the legacy manifest contents.
+  }
+  return shots.reduce((max, shot) => Math.max(max, Number(shot.id) || 0), 0) + 1;
+}
 async function readProjectMetadata(handle: FileSystemDirectoryHandle) {
   try {
     const file = await handle.getFileHandle("script.json");
     const script = JSON.parse(await (await file.getFile()).text()) as {
       project?: { id?: unknown; name?: unknown };
+      [key: string]: unknown;
     };
+    const existingId = typeof script.project?.id === "string" && script.project.id.trim()
+      ? script.project.id.trim()
+      : null;
+    const id = existingId ?? crypto.randomUUID();
+    if (!existingId) {
+      try {
+        const writable = await file.createWritable();
+        await writable.write(JSON.stringify({
+          ...script,
+          project: { ...script.project, id },
+        }, null, 2));
+        await writable.close();
+      } catch {
+        // Reading project metadata must remain available when a restored
+        // handle has read permission only; the next writable import retries.
+      }
+    }
     return {
-      id: typeof script.project?.id === "string" && script.project.id.trim()
-        ? script.project.id.trim() : crypto.randomUUID(),
+      id,
       name: typeof script.project?.name === "string" && script.project.name.trim()
         ? script.project.name.trim() : handle.name,
     };
@@ -763,7 +819,81 @@ async function readProjectMetadata(handle: FileSystemDirectoryHandle) {
   }
 }
 
+async function writeProjectId(handle: FileSystemDirectoryHandle, id: string) {
+  const file = await handle.getFileHandle("script.json");
+  const script = JSON.parse(await (await file.getFile()).text()) as {
+    project?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  const writable = await file.createWritable();
+  await writable.write(JSON.stringify({
+    ...script,
+    project: { ...script.project, id },
+  }, null, 2));
+  await writable.close();
+}
+
+function WindowChrome({
+  title = "MeristemForge",
+  iconSrc = "/meristemforge-icon.svg",
+}: {
+  title?: string;
+  iconSrc?: string;
+}) {
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    const api = (window as DirectoryPickerWindow).electronDirector;
+    if (!api?.windowControl) return;
+    let active = true;
+    if (api.isMaximized) {
+      void api.isMaximized().then((value) => {
+        if (active) setMaximized(Boolean(value));
+      });
+    }
+    const unsubscribe = api.onWindowStateChange?.((value) => setMaximized(value));
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, []);
+  async function control(action: "minimize" | "toggle-maximize" | "close") {
+    const api = (window as DirectoryPickerWindow).electronDirector;
+    if (!api?.windowControl) return;
+    const nextMaximized = await api.windowControl(action);
+    if (action === "toggle-maximize") setMaximized(nextMaximized);
+  }
+  return (
+    <div
+      className="window-chrome relative flex h-11 items-center justify-between border-b border-white/8 bg-[#0b0d12]/92 px-3 text-zinc-400 shadow-[0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-xl"
+      onDoubleClick={() => void control("toggle-maximize")}
+    >
+      <div className="window-drag-region flex min-w-0 flex-1 items-center gap-2.5 pl-1">
+        <img src={iconSrc} alt="" className="size-6 shrink-0 rounded-[7px] shadow-[0_0_18px_rgba(76,124,229,0.18)]" />
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[11px] font-semibold tracking-[0.04em] text-zinc-200">{title}</span>
+          <span className="hidden text-[9px] uppercase tracking-[0.2em] text-zinc-600 sm:inline">Creative Suite</span>
+        </div>
+      </div>
+      <div className="window-no-drag flex items-center">
+        <button type="button" onClick={() => void control("minimize")} className="grid size-9 place-items-center rounded-md transition hover:bg-white/8 hover:text-zinc-100" aria-label="最小化">
+          <Minus className="size-3.5" />
+        </button>
+        <button type="button" onClick={() => void control("toggle-maximize")} className="grid size-9 place-items-center rounded-md transition hover:bg-white/8 hover:text-zinc-100" aria-label={maximized ? "还原窗口" : "最大化"}>
+          {maximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+        </button>
+        <button type="button" onClick={() => void control("close")} className="grid size-9 place-items-center rounded-md transition hover:bg-red-500/80 hover:text-white" aria-label="关闭">
+          <X className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
+  const [workspaceMode, setWorkspaceMode] = useState<"launcher" | "video">(
+    "launcher",
+  );
+  const [activeWorkspaceCard, setActiveWorkspaceCard] = useState(0);
   const [activeShot, setActiveShot] = useState(0);
   const [shots, setShots] = useState<Shot[]>([]);
   const [mode, setMode] = useState<GenerationMode>("T2VA");
@@ -809,6 +939,7 @@ export default function Home() {
   const [projectDirectoryName, setProjectDirectoryName] =
     useState("未选择项目目录");
   const [projectNameDialog, setProjectNameDialog] = useState(false);
+  const [projectError, setProjectError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("未命名项目");
   const projectIdRef = useRef(crypto.randomUUID());
   const projectIdsRef = useRef(new WeakMap<FileSystemDirectoryHandle, string>());
@@ -897,6 +1028,8 @@ export default function Home() {
       ? [{ id: projectIdRef.current, name: projectDirectoryName }]
       : [];
   const activeShotIdRef = useRef<string | null>(null);
+  const projectSwitchTokenRef = useRef(0);
+  const projectTreeEpochRef = useRef(0);
   const saveTimerRef = useRef<number | null>(null);
   const projectMutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   function enqueueProjectMutation<T>(operation: () => Promise<T>): Promise<T> {
@@ -1035,7 +1168,7 @@ export default function Home() {
         typeof indexedDB === "undefined"
           ? []
           : await loadProjectDirectoryHandles().catch(() => []);
-      const projectHandles = (
+      let projectHandles = (
         await Promise.all(
           savedProjectHandles.map(async (handle) =>
             (await isDirectoryHandleAvailable(handle)) ? handle : null,
@@ -1045,10 +1178,22 @@ export default function Home() {
         Boolean(handle),
       );
       if (disposed) return;
-      await Promise.all(projectHandles.map(async (handle) => {
+      const uniqueHandles: FileSystemDirectoryHandle[] = [];
+      const knownIds = new Set<string>();
+      for (const handle of projectHandles) {
         const metadata = await readProjectMetadata(handle);
+        if (await Promise.all(uniqueHandles.map((existing) =>
+          existing.isSameEntry(handle).catch(() => false),
+        )).then((matches) => matches.some(Boolean))) continue;
+        if (knownIds.has(metadata.id)) {
+          metadata.id = crypto.randomUUID();
+          await writeProjectId(handle, metadata.id);
+        }
+        knownIds.add(metadata.id);
         projectIdsRef.current.set(handle, metadata.id);
-      }));
+        uniqueHandles.push(handle);
+      }
+      projectHandles = uniqueHandles;
       if (disposed) return;
       if (projectHandles.length !== savedProjectHandles.length)
         void saveProjectDirectoryHandles(projectHandles).catch(() => undefined);
@@ -1414,20 +1559,21 @@ export default function Home() {
   async function confirmAddShot() {
     const title = newTitle.trim();
     if (!title) return;
-    const id = String(
-      shots.reduce((max, shot) => Math.max(max, Number(shot.id) || 0), 0) + 1,
-    ).padStart(2, "0");
+    const nextShotNumber = await readNextShotNumber(projectDirectory!, shots);
+    const id = String(nextShotNumber).padStart(2, "0");
     const shot = {
       id,
       title: title.trim(),
       state: "草稿",
     };
     try {
-      await enqueueProjectMutation(() => writeClipManifest(shot, {
-        generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
-        promptOriginal: "",
-      }));
-      await enqueueProjectMutation(() => writeProjectManifest([...shots, shot]));
+      await enqueueProjectMutation(async () => {
+        await writeClipManifest(shot, {
+          generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
+          promptOriginal: "",
+        });
+        await writeProjectManifest([...shots, shot], nextShotNumber + 1);
+      });
     } catch {
       await deleteSavedShotFiles(id, shot.title).catch(() => undefined);
       setGenerationStatus(
@@ -1554,15 +1700,7 @@ export default function Home() {
       setRenameIndex(null);
       return;
     }
-    let directoryMoved = false;
-    if (oldFolderName !== newFolderName) {
-      try {
-        directoryMoved = await renameSavedShotDirectory(shot.id, shot.title, title);
-      } catch {
-        setGenerationStatus("片段目录重命名失败，未修改片段名称");
-        return;
-      }
-    }
+    const directoryMoved = oldFolderName !== newFolderName;
     const oldFolder = `片段/${shot.id}-${safeFileStem(shot.title)}`;
     const newFolder = `片段/${shot.id}-${safeFileStem(title)}`;
     let renamedAssets = referenceAssets;
@@ -1594,11 +1732,17 @@ export default function Home() {
       itemIndex === renameIndex ? { ...item, title } : item,
     );
     try {
-      await enqueueProjectMutation(() => writeClipManifest({ id: shot.id, title, output: shot.output ?? null }, {
-        referenceAssets: renamedAssets,
-        keyframes: renamedKeyframes,
-      }));
-      await enqueueProjectMutation(() => writeProjectManifest(next));
+      await enqueueProjectMutation(async () => {
+        await renameSavedShotDirectory(shot.id, shot.title, title);
+        await writeClipManifest({ id: shot.id, title, output: shot.output ?? null }, {
+          referenceAssets: renamedAssets,
+          keyframes: renamedKeyframes,
+        });
+        await writeProjectManifest(next);
+        const clips = await projectDirectory?.getDirectoryHandle("片段");
+        if (directoryMoved && clips && (clips as WritableDirectoryHandle).removeEntry)
+          await (clips as WritableDirectoryHandle).removeEntry(oldFolderName, { recursive: true });
+      });
     } catch {
       if (directoryMoved) {
         try {
@@ -1610,21 +1754,6 @@ export default function Home() {
         }
       }
       setGenerationStatus("片段重命名保存失败，旧目录仍已保留");
-      return;
-    }
-    try {
-      const clips = await projectDirectory?.getDirectoryHandle("片段");
-      if (directoryMoved && clips && (clips as WritableDirectoryHandle).removeEntry)
-        await (clips as WritableDirectoryHandle).removeEntry(
-          `${shot.id}-${safeFileStem(shot.title)}`,
-          { recursive: true },
-        );
-    } catch {
-      setReferenceAssets(renamedAssets);
-      setKeyframes(renamedKeyframes);
-      setShots(next);
-      setGenerationStatus("片段已重命名，但旧目录清理失败");
-      setRenameIndex(null);
       return;
     }
     setReferenceAssets(renamedAssets);
@@ -1662,19 +1791,15 @@ export default function Home() {
     const deletedId = shot.id;
     const next = shots.filter((_, itemIndex) => itemIndex !== index);
     try {
-      await enqueueProjectMutation(() => writeProjectManifest(next));
+      await enqueueProjectMutation(async () => {
+        await writeProjectManifest(next);
+        if (deleteFromDisk) await deleteSavedShotFiles(deletedId, shot.title);
+      });
     } catch {
       setGenerationStatus("片段删除保存失败，原片段文件仍已保留");
       return;
     }
     setShots(next);
-    if (deleteFromDisk) {
-      try {
-        await deleteSavedShotFiles(deletedId, shot.title);
-      } catch {
-        setGenerationStatus("片段已删除，但磁盘保留了孤儿目录");
-      }
-    }
     if (deletedId) {
       setShotPrompts((current) => {
         const nextPrompts = { ...current };
@@ -2005,20 +2130,45 @@ export default function Home() {
     setPromptViewerOpen(false);
   }
   function chooseProjectDirectory() {
+    setProjectError(null);
     setNewProjectName("未命名项目");
     setProjectNameDialog(true);
   }
-  async function createProjectDirectory() {
-    const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
-    if (!picker) {
+  async function createProjectDirectory(projectNameOverride?: string) {
+    const electronPicker = (window as DirectoryPickerWindow).electronDirector?.pickDirectory;
+    const picker = electronPicker ?? (window as DirectoryPickerWindow).showDirectoryPicker;
+    if (!picker || (!electronPicker && /Electron/i.test(navigator.userAgent))) {
       setGenerationStatus("当前浏览器不支持本地项目目录");
+      setProjectError("当前窗口没有可用的目录选择功能，请重新启动视频创作工作台。");
       return;
     }
-    const requestedName = newProjectName.trim();
+    const requestedName = (projectNameOverride ?? newProjectName).trim();
     if (!requestedName) return;
     setProjectNameDialog(false);
+    let createStage = "选择保存位置";
     try {
-      const directory = await picker();
+      const selectedDirectory = await picker();
+      if (!selectedDirectory) return;
+      createStage = "创建项目目录";
+      const folderName = safeFileStem(requestedName) || "未命名项目";
+      const newProjectId = crypto.randomUUID();
+      if (electronPicker && "createProject" in selectedDirectory && selectedDirectory.createProject) {
+        const directory = await selectedDirectory.createProject(requestedName, newProjectId);
+        projectIdRef.current = newProjectId;
+        projectIdsRef.current.set(directory, newProjectId);
+        resetProjectEditorState();
+        setProjectDirectory(directory);
+        setProjectDirectories((current) => {
+          const next = [...current.filter((item) => item !== directory), directory];
+          void saveProjectDirectoryHandles(next);
+          return next;
+        });
+        setProjectDirectoryName(requestedName);
+        void saveProjectDirectoryHandle(directory);
+        setGenerationStatus(`项目目录已就绪：${requestedName}`);
+        return;
+      }
+      const directory = await selectedDirectory.getDirectoryHandle(folderName, { create: true });
       const writable = directory as WritableDirectoryHandle;
       const permission = writable.requestPermission
         ? await writable.requestPermission({ mode: "readwrite" })
@@ -2032,19 +2182,20 @@ export default function Home() {
         setGenerationStatus("该目录已经是项目，请使用“导入项目”打开，避免覆盖现有内容");
         return;
       } catch (error) {
-        if (!(error instanceof DOMException && error.name === "NotFoundError"))
+        if (!isNotFoundError(error))
           throw error;
       }
-      const newProjectId = crypto.randomUUID();
       const assets = await directory.getDirectoryHandle("资产", {
         create: true,
       });
+      createStage = "创建项目资源目录";
       for (const folderName of projectAssetFolders)
         await assets.getDirectoryHandle(folderName, { create: true });
       await directory.getDirectoryHandle("片段", { create: true });
       await directory.getDirectoryHandle("输出", { create: true });
       const file = await directory.getFileHandle("script.json", { create: true });
       const manifestWritable = await file.createWritable();
+      createStage = "写入项目配置";
       await manifestWritable.write(JSON.stringify({
         project: { id: newProjectId, name: requestedName, version: 2 }, clips: [],
       }, null, 2));
@@ -2067,17 +2218,20 @@ export default function Home() {
       setGenerationStatus(`项目目录已就绪：${requestedName}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
+      setProjectError(`${createStage}失败：${errorMessage(error)}`);
       setGenerationStatus("创建项目目录失败");
     }
   }
   async function importProjectDirectory() {
-    const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
-    if (!picker) {
+    const electronPicker = (window as DirectoryPickerWindow).electronDirector?.pickDirectory;
+    const picker = electronPicker ?? (window as DirectoryPickerWindow).showDirectoryPicker;
+    if (!picker || (!electronPicker && /Electron/i.test(navigator.userAgent))) {
       setGenerationStatus("当前浏览器不支持导入本地项目");
       return;
     }
     try {
       const directory = await picker();
+      if (!directory) return;
       const writable = directory as WritableDirectoryHandle;
       const permission = writable.requestPermission
         ? await writable.requestPermission({ mode: "readwrite" })
@@ -2098,7 +2252,30 @@ export default function Home() {
       if (missing.length)
         throw new Error(`项目格式无效，缺少目录：${missing.join("、")}`);
       const loaded = await readProjectShots(directory);
-      const metadata = await readProjectMetadata(directory);
+      let metadata = await readProjectMetadata(directory);
+      const knownDirectories = [
+        ...projectDirectories,
+        ...(projectDirectory ? [projectDirectory] : []),
+      ];
+      let sameDirectory = false;
+      let duplicateId = false;
+      for (const existing of knownDirectories) {
+        if (await existing.isSameEntry(directory).catch(() => false)) {
+          sameDirectory = true;
+          break;
+        }
+        const existingId = projectIdsRef.current.get(existing);
+        if (existingId === metadata.id) duplicateId = true;
+      }
+      if (sameDirectory) {
+        setGenerationStatus(`项目已在列表中：${metadata.name || directory.name}`);
+        return;
+      }
+      if (duplicateId) {
+        const migratedId = crypto.randomUUID();
+        await writeProjectId(directory, migratedId);
+        metadata = { ...metadata, id: migratedId };
+      }
       projectIdRef.current = metadata.id;
       projectIdsRef.current.set(directory, metadata.id);
       resetProjectEditorState();
@@ -2132,6 +2309,8 @@ export default function Home() {
       setGenerationStatus("请先新建或导入项目");
       return;
     }
+    const directory = projectDirectory;
+    const epoch = ++projectTreeEpochRef.current;
     const assets: ProjectTreeAsset[] = [];
     for (const type of [
       "character",
@@ -2158,7 +2337,7 @@ export default function Home() {
                   ? "音频"
                   : "自定义";
         const folder = await getProjectAssetFolder(
-          projectDirectory,
+          directory,
           folderName,
         );
         for await (const [name, entry] of folder.entries()) {
@@ -2173,15 +2352,17 @@ export default function Home() {
         /* Optional asset folders are created on demand. */
       }
     }
+    if (epoch !== projectTreeEpochRef.current || projectDirectory !== directory) return;
     setProjectAssets(assets);
     let outputFiles: string[] | null = null;
     try {
-      const output = await projectDirectory.getDirectoryHandle("输出");
+      const output = await directory.getDirectoryHandle("输出");
       outputFiles = [];
       for await (const [name] of output.entries()) outputFiles.push(name);
     } catch {
       /* Imported projects may not have an output folder yet. */
     }
+    if (epoch !== projectTreeEpochRef.current || projectDirectory !== directory) return;
     setProjectOutputFiles(outputFiles);
   }
   function applyProjectShotRecords(records: ProjectShotRecord[]) {
@@ -2333,6 +2514,7 @@ export default function Home() {
       );
   }
   async function selectProjectById(name: string) {
+    const token = ++projectSwitchTokenRef.current;
     const handle = projectDirectories.find(
       (directory) => (projectIdsRef.current.get(directory) ?? directory.name) === name,
     );
@@ -2340,7 +2522,9 @@ export default function Home() {
     if (projectDirectory && (projectIdsRef.current.get(projectDirectory) ?? projectDirectory.name) === name) return;
     try {
       const loaded = await readProjectShots(handle);
+      if (token !== projectSwitchTokenRef.current) return;
       const metadata = await readProjectMetadata(handle);
+      if (token !== projectSwitchTokenRef.current) return;
       projectIdRef.current = metadata.id;
       projectIdsRef.current.set(handle, metadata.id);
       resetProjectEditorState();
@@ -2348,9 +2532,11 @@ export default function Home() {
       setProjectDirectoryName(metadata.name || handle.name);
       const restoredAssets = applyProjectShotRecords(loaded);
       await hydrateProjectReferenceAssets(handle, restoredAssets, comfyUrl);
+      if (token !== projectSwitchTokenRef.current) return;
       setActiveShot(0);
       void saveProjectDirectoryHandle(handle).catch(() => undefined);
     } catch (error) {
+      if (token !== projectSwitchTokenRef.current) return;
       if (
         error instanceof DOMException &&
         (error.name === "NotFoundError" || error.name === "NotFound")
@@ -2378,7 +2564,8 @@ export default function Home() {
       }
       return;
     }
-    setGenerationStatus(`已切换项目：${handle.name}`);
+    if (token === projectSwitchTokenRef.current)
+      setGenerationStatus(`已切换项目：${handle.name}`);
   }
   function assetFolderName(asset: ProjectTreeAsset) {
     return asset.type === "character"
@@ -2532,13 +2719,13 @@ export default function Home() {
         >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold">导演台设置</h2>
+              <h2 className="text-sm font-semibold">视频创作设置</h2>
             </div>
             <button
               type="button"
               onClick={() => setEngineSettingsOpen(false)}
               className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-              aria-label="关闭导演台设置"
+              aria-label="关闭视频创作设置"
             >
               <X className="size-4" />
             </button>
@@ -2609,7 +2796,7 @@ export default function Home() {
     await saveProjectDirectoryHandles(next).catch(() => undefined);
     if ((projectDirectory && (projectIdsRef.current.get(projectDirectory) ?? projectDirectory.name) !== name)) {
       setProjectDeleteCandidate(null);
-      setGenerationStatus(`项目“${name}”已从导演台移除，磁盘文件未改动`);
+      setGenerationStatus(`项目“${name}”已从视频创作移除，磁盘文件未改动`);
       return;
     }
     const nextHandle = next[0];
@@ -2621,7 +2808,7 @@ export default function Home() {
       setProjectOutputFiles(null);
       await clearProjectDirectoryHandle().catch(() => undefined);
       setProjectDeleteCandidate(null);
-      setGenerationStatus(`项目“${name}”已从导演台移除，磁盘文件未改动`);
+      setGenerationStatus(`项目“${name}”已从视频创作移除，磁盘文件未改动`);
       return;
     }
     const nextMetadata = await readProjectMetadata(nextHandle);
@@ -2652,7 +2839,7 @@ export default function Home() {
     setProjectDeleteCandidate(null);
     if (!switchFailed)
       setGenerationStatus(
-        `项目“${name}”已从导演台移除，已切换到“${nextHandle.name}”，磁盘文件未改动`,
+        `项目“${name}”已从视频创作移除，已切换到“${nextHandle.name}”，磁盘文件未改动`,
       );
   }
   async function deleteProjectById(name: string) {
@@ -2690,15 +2877,17 @@ export default function Home() {
         window.alert(message);
         return;
       }
-      const ownedEntries = ["资产", "片段", "输出", "script.json"];
-      for (const entryName of ownedEntries) {
-        try {
-          await writable.removeEntry(entryName, { recursive: true });
-        } catch (error) {
-          if (!(error instanceof DOMException && error.name === "NotFoundError"))
-            throw error;
+      await enqueueProjectMutation(async () => {
+        const ownedEntries = ["资产", "片段", "输出", "script.json"];
+        for (const entryName of ownedEntries) {
+          try {
+            await writable.removeEntry(entryName, { recursive: true });
+          } catch (error) {
+            if (!(error instanceof DOMException && error.name === "NotFoundError"))
+              throw error;
+          }
         }
-      }
+      });
       const next = knownDirectories.filter((directory) =>
         (projectIdsRef.current.get(directory) ?? directory.name) !== name,
       );
@@ -2835,7 +3024,7 @@ export default function Home() {
               <FolderInput className="size-4 shrink-0 text-primary" />
               <span>
                 <span className="block text-xs font-medium">
-                  仅从导演台移除
+                  仅从视频创作移除
                 </span>
                 <span className="mt-0.5 block text-[10px] font-normal text-muted-foreground">
                   保留电脑上的项目文件，之后仍可通过导入项目重新打开。
@@ -3184,7 +3373,7 @@ export default function Home() {
       </div>
     );
   }
-  async function writeProjectManifest(shotList = shots) {
+  async function writeProjectManifest(shotList = shots, nextShotNumber?: number) {
     if (!projectDirectory) return;
     const file = await projectDirectory.getFileHandle("script.json", {
       create: true,
@@ -3194,6 +3383,7 @@ export default function Home() {
       JSON.stringify(
         {
           project: { id: projectIdRef.current, name: projectDirectoryName, version: 2 },
+          ...(nextShotNumber !== undefined ? { nextShotNumber } : {}),
           clips: shotList.map((item) => ({
             id: item.id,
             title: item.title,
@@ -4321,7 +4511,7 @@ export default function Home() {
     }
     if (promptOptimizing[taskShot.id]) return;
     if (!llmExecutablePath.trim()) {
-      const message = "请先在导演台设置中配置本地 Agent 的可执行程序路径";
+      const message = "请先在视频创作设置中配置本地 Agent 的可执行程序路径";
       setGenerationStatus(message);
       window.alert(message);
       setEngineSettingsOpen(true);
@@ -4958,22 +5148,162 @@ export default function Home() {
     setAssetPickerView("actions");
     setAssetPickerCategory(null);
   }
+  function workspaceCardStyle(index: number) {
+    const relative = (index - activeWorkspaceCard + 3) % 3;
+    const position = relative === 2 ? -1 : relative;
+    const isActive = position === 0;
+    return {
+      transform: `translateX(${position * 190}px) translateZ(${isActive ? 72 : -24}px) rotateY(${position * -30}deg) scale(${isActive ? 1 : 0.84})`,
+      opacity: isActive ? 1 : 0.8,
+      zIndex: isActive ? 3 : 2,
+      pointerEvents: "auto" as const,
+      transformOrigin: "center center",
+      transformStyle: "preserve-3d" as const,
+      transition: "transform 900ms cubic-bezier(.22,.8,.24,1), opacity 700ms ease",
+    };
+  }
+  function selectWorkspaceCard(index: number) {
+    if (index !== activeWorkspaceCard) {
+      setActiveWorkspaceCard(index);
+      return;
+    }
+    if (index === 0) setWorkspaceMode("video");
+  }
+
+  useEffect(() => {
+    if (workspaceMode !== "launcher") return;
+    const timer = window.setInterval(() => {
+      setActiveWorkspaceCard((current) => (current + 1) % 3);
+    }, 4200);
+    return () => window.clearInterval(timer);
+  }, [workspaceMode]);
+
+  if (workspaceMode === "launcher") {
+    return (
+      <main className="min-h-screen overflow-hidden bg-[#090a0d] text-foreground">
+        <WindowChrome />
+
+        <section className="relative mx-auto flex min-h-[calc(100vh-2.75rem)] max-w-6xl flex-col justify-center px-6 py-12 pb-20">
+          <div className="mb-8 max-w-xl">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#59c6c5]">
+              Create workspace
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl">
+              选择你的创作方式
+            </h1>
+            <p className="mt-3 text-sm leading-6 text-zinc-500">
+              视频、图片和音乐各自拥有独立的创作流程，选择一个方向开始。
+            </p>
+          </div>
+
+          <div className="mx-auto h-[330px] w-[min(78vw,300px)] max-w-full [perspective:1200px]">
+            <div
+              className="relative h-full w-full [transform-style:preserve-3d]"
+            >
+            <button
+              type="button"
+              onClick={() => selectWorkspaceCard(0)}
+              style={workspaceCardStyle(0)}
+              className="group absolute inset-0 h-full w-full overflow-hidden rounded-3xl border border-[#f4bd50]/40 bg-gradient-to-br from-[#2b2416] via-[#171719] to-[#0c0d11] p-6 text-left shadow-2xl shadow-black/20 hover:-translate-y-1 hover:border-[#f4bd50] hover:shadow-[#f4bd50]/10"
+            >
+              <div className="absolute -right-16 -top-20 size-64 rounded-full bg-[#f4bd50]/12 blur-3xl transition group-hover:bg-[#f4bd50]/20" />
+              <div className="relative flex h-full flex-col">
+                <div className="grid size-14 place-items-center rounded-2xl border border-[#f4bd50]/35 bg-[#f4bd50]/12 text-[#f4bd50]">
+                  <Film className="size-7" />
+                </div>
+                <div className="mt-auto">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#f4bd50]">
+                    Video
+                  </p>
+                  <h2 className="mt-2 text-2xl font-semibold text-zinc-100">
+                    视频创作
+                  </h2>
+                  <p className="mt-3 max-w-xs text-xs leading-5 text-zinc-400">
+                    创建项目、编排镜头并生成视频。
+                  </p>
+                  <div className="mt-7 inline-flex items-center gap-2 rounded-full bg-[#f4bd50] px-4 py-2 text-xs font-semibold text-[#17120a] transition group-hover:bg-[#ffd070]">
+                    进入工作台
+                    <ArrowLeft className="size-3 rotate-180" />
+                  </div>
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => selectWorkspaceCard(1)}
+              style={workspaceCardStyle(1)}
+              className="absolute inset-0 h-full w-full overflow-hidden rounded-3xl border border-[#59c6c5]/20 bg-gradient-to-br from-[#15333a] via-[#122630] to-[#11151e] p-6 text-left opacity-90"
+            >
+              <div className="absolute -right-16 -top-16 size-64 rounded-full bg-[#59c6c5]/18 blur-3xl" />
+              <div className="relative flex h-full flex-col">
+                <div className="grid size-14 place-items-center rounded-2xl border border-[#59c6c5]/35 bg-[#59c6c5]/12 text-[#8ee4dc]">
+                  <ImagePlus className="size-7" />
+                </div>
+                <div className="mt-auto">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8ee4dc]">Image</p>
+                  <h2 className="mt-2 text-2xl font-semibold text-zinc-100">图片创作</h2>
+                  <p className="mt-3 max-w-xs text-xs leading-5 text-zinc-400">图片工作台正在规划中，后续会在这里加入。</p>
+                  <div className="mt-7 inline-flex rounded-full border border-white/12 bg-white/6 px-4 py-2 text-xs font-medium text-zinc-400">即将推出</div>
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => selectWorkspaceCard(2)}
+              style={workspaceCardStyle(2)}
+              className="absolute inset-0 h-full w-full overflow-hidden rounded-3xl border border-[#b344d8]/20 bg-gradient-to-br from-[#2d1839] via-[#20182f] to-[#11131d] p-6 text-left opacity-90"
+            >
+              <div className="absolute -right-16 -top-16 size-64 rounded-full bg-[#b344d8]/18 blur-3xl" />
+              <div className="relative flex h-full flex-col">
+                <div className="grid size-14 place-items-center rounded-2xl border border-[#b344d8]/35 bg-[#b344d8]/12 text-[#d79bea]">
+                  <AudioLines className="size-7" />
+                </div>
+                <div className="mt-auto">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#d79bea]">Music</p>
+                  <h2 className="mt-2 text-2xl font-semibold text-zinc-100">音乐创作</h2>
+                  <p className="mt-3 max-w-xs text-xs leading-5 text-zinc-400">音乐工作台正在规划中，后续会在这里加入。</p>
+                  <div className="mt-7 inline-flex rounded-full border border-white/12 bg-white/6 px-4 py-2 text-xs font-medium text-zinc-400">即将推出</div>
+                </div>
+              </div>
+            </button>
+            </div>
+          </div>
+          <footer className="absolute bottom-5 left-6 right-6 flex items-center justify-center border-t border-white/6 pt-4 text-[10px] tracking-wide text-zinc-600">
+            © 2026 MeristemForge
+          </footer>
+        </section>
+      </main>
+    );
+  }
 
   if (!taskShot) {
     return (
       <main className="min-h-screen bg-background text-foreground">
+        <WindowChrome />
         {renderAssetDialog()}
         {renderAssetDeleteDialog()}
         {renderProjectDeleteDialog()}
         {renderEngineSettingsDialog()}
         <header className="flex h-14 items-center justify-between border-b border-border bg-card px-4">
           <div className="flex items-center gap-3">
-            <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+            <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground shadow-[0_0_16px_rgba(244,189,80,0.16)]">
               <Clapperboard className="size-4" />
             </div>
-            <p className="text-sm font-semibold tracking-tight">导演台</p>
+            <p className="text-sm font-semibold tracking-tight">视频创作</p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              onClick={() => setWorkspaceMode("launcher")}
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-xs text-zinc-400 hover:bg-white/8 hover:text-foreground"
+            >
+              <ArrowLeft className="size-3.5" />
+              工作台
+            </Button>
             <div
               className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs sm:flex ${comfyConnected === true ? "border-emerald-500/20 bg-emerald-500/8 text-emerald-400" : comfyConnected === false ? "border-red-500/20 bg-red-500/8 text-red-400" : "border-white/10 bg-white/5 text-zinc-400"}`}
             >
@@ -5013,7 +5343,7 @@ export default function Home() {
               <div className="flex items-center gap-0.5">
                 <Button
                   type="button"
-                  onClick={() => void chooseProjectDirectory()}
+                  onClick={chooseProjectDirectory}
                   variant="ghost"
                   size="icon-sm"
                   className="size-7"
@@ -5065,8 +5395,9 @@ export default function Home() {
                     : "项目中的角色、服装、道具、场景、片段和输出会显示在左侧项目树中"}
                 </p>
                 <Button
+                  type="button"
                   onClick={() =>
-                    void (projectDirectory
+                    (projectDirectory
                       ? addShot()
                       : chooseProjectDirectory())
                   }
@@ -5126,12 +5457,62 @@ export default function Home() {
             </div>
           </div>
         )}
+        {projectError && (
+          <div className="fixed inset-0 z-[100] grid place-items-center bg-black/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md overflow-hidden rounded-xl border border-white/10 bg-[#14161b] shadow-2xl shadow-black/50">
+              <div className="flex items-center gap-3 border-b border-white/8 px-5 py-4">
+                <span className="grid size-8 place-items-center rounded-lg bg-red-400/10 text-red-300">
+                  <CircleAlert className="size-4" />
+                </span>
+                <div>
+                  <h2 className="text-sm font-semibold text-zinc-100">创建项目失败</h2>
+                  <p className="mt-0.5 text-[10px] text-zinc-500">项目文件没有被覆盖</p>
+                </div>
+                <button type="button" className="ml-auto rounded-md p-1.5 text-zinc-500 transition hover:bg-white/8 hover:text-zinc-200" onClick={() => setProjectError(null)} aria-label="关闭">
+                  <X className="size-4" />
+                </button>
+              </div>
+              <div className="px-5 py-5 text-xs leading-5 text-zinc-300">{projectError}</div>
+              <div className="flex justify-end border-t border-white/8 bg-black/10 px-5 py-3">
+                <Button type="button" size="sm" onClick={() => setProjectError(null)} className="bg-[#f4bd50] text-[#17120a] hover:bg-[#ffd070]">知道了</Button>
+              </div>
+            </div>
+          </div>
+        )}
+        {projectNameDialog && (
+          <div role="dialog" aria-modal="true" className="fixed inset-0 z-[80] grid place-items-center bg-black/65 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
+              <h2 className="text-base font-semibold">新建项目</h2>
+              <p className="mt-2 text-xs text-muted-foreground">先填写项目名称，下一步选择项目保存位置。</p>
+              <label htmlFor="new-project-name-empty" className="field-label mt-5 block">项目名称</label>
+              <input
+                id="new-project-name-empty"
+                value={newProjectName}
+                onChange={(event) => setNewProjectName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && newProjectName.trim()) {
+                    event.preventDefault();
+                    void createProjectDirectory();
+                  }
+                  if (event.key === "Escape") setProjectNameDialog(false);
+                }}
+                className="mt-2 h-10 w-full rounded-xl border border-border bg-muted/30 px-3 text-sm outline-none transition focus:border-[#f4bd50] focus:ring-2 focus:ring-[#f4bd50]/20"
+                autoFocus
+              />
+              <div className="mt-6 flex justify-end gap-2">
+                <Button type="button" variant="ghost" onClick={() => setProjectNameDialog(false)}>取消</Button>
+                <Button type="button" disabled={!newProjectName.trim()} onClick={() => void createProjectDirectory()} className="bg-[#f4bd50] text-[#17120a] hover:bg-[#ffd070]">选择保存位置</Button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     );
   }
 
   return (
     <main className="min-h-screen bg-background text-foreground">
+      <WindowChrome />
       {renderAssetDialog()}
       {renderAssetDeleteDialog()}
       {renderProjectDeleteDialog()}
@@ -5287,14 +5668,24 @@ export default function Home() {
       )}
       <header className="flex h-14 items-center justify-between border-b border-border bg-card px-4">
         <div className="flex items-center gap-3">
-          <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+          <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground shadow-[0_0_16px_rgba(244,189,80,0.16)]">
             <Clapperboard className="size-4" />
           </div>
           <div>
-            <p className="text-sm font-semibold tracking-tight">导演台</p>
+            <p className="text-sm font-semibold tracking-tight">视频创作</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            onClick={() => setWorkspaceMode("launcher")}
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-xs text-zinc-400 hover:bg-white/8 hover:text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            工作台
+          </Button>
           <div
             className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs sm:flex ${comfyConnected === true ? "border-emerald-500/20 bg-emerald-500/8 text-emerald-400" : comfyConnected === false ? "border-red-500/20 bg-red-500/8 text-red-400" : "border-white/10 bg-white/5 text-zinc-400"}`}
           >
@@ -5335,7 +5726,7 @@ export default function Home() {
             <div className="flex items-center gap-0.5">
               <Button
                 type="button"
-                onClick={() => void chooseProjectDirectory()}
+                onClick={chooseProjectDirectory}
                 variant="ghost"
                 size="icon-sm"
                 className="size-7"
@@ -6064,14 +6455,36 @@ export default function Home() {
           </div>
         </aside>
       </div>
+      {projectError && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md overflow-hidden rounded-xl border border-white/10 bg-[#14161b] shadow-2xl shadow-black/50">
+            <div className="flex items-center gap-3 border-b border-white/8 px-5 py-4">
+              <span className="grid size-8 place-items-center rounded-lg bg-red-400/10 text-red-300">
+                <CircleAlert className="size-4" />
+              </span>
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-100">创建项目失败</h2>
+                <p className="mt-0.5 text-[10px] text-zinc-500">项目文件没有被覆盖</p>
+              </div>
+              <button type="button" className="ml-auto rounded-md p-1.5 text-zinc-500 transition hover:bg-white/8 hover:text-zinc-200" onClick={() => setProjectError(null)} aria-label="关闭">
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="px-5 py-5 text-xs leading-5 text-zinc-300">{projectError}</div>
+            <div className="flex justify-end border-t border-white/8 bg-black/10 px-5 py-3">
+              <Button type="button" size="sm" onClick={() => setProjectError(null)} className="bg-[#f4bd50] text-[#17120a] hover:bg-[#ffd070]">知道了</Button>
+            </div>
+          </div>
+        </div>
+      )}
       {projectNameDialog && (
         <div
+          role="dialog"
+          aria-modal="true"
           className="fixed inset-0 z-[80] grid place-items-center bg-black/65 p-4 backdrop-blur-sm"
-          onMouseDown={() => setProjectNameDialog(false)}
         >
           <div
             className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl"
-            onMouseDown={(event) => event.stopPropagation()}
           >
             <h2 className="text-base font-semibold">新建项目</h2>
             <p className="mt-2 text-xs text-muted-foreground">
@@ -6095,10 +6508,11 @@ export default function Home() {
               autoFocus
             />
             <div className="mt-6 flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setProjectNameDialog(false)}>
+              <Button type="button" variant="ghost" onClick={() => setProjectNameDialog(false)}>
                 取消
               </Button>
               <Button
+                type="button"
                 disabled={!newProjectName.trim()}
                 onClick={() => void createProjectDirectory()}
                 className="bg-[#f4bd50] text-[#17120a] hover:bg-[#ffd070]"
@@ -6209,14 +6623,14 @@ export default function Home() {
           >
             <h2 className="text-sm font-semibold">删除片段</h2>
             <p className="mt-2 text-xs text-muted-foreground">
-              请选择删除方式：仅从导演台移除不会修改磁盘文件；从磁盘删除会同时删除片段目录和输出文件。
+              请选择删除方式：仅从视频创作移除不会修改磁盘文件；从磁盘删除会同时删除片段目录和输出文件。
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setDeleteIndex(null)}>
                 取消
               </Button>
               <Button variant="outline" onClick={() => void confirmDeleteShot(false)}>
-                仅从导演台移除
+                仅从视频创作移除
               </Button>
               <Button variant="destructive" onClick={() => void confirmDeleteShot(true)}>
                 从磁盘删除
