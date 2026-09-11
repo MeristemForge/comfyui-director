@@ -849,7 +849,7 @@ export default function Home() {
   const [renameIndex, setRenameIndex] = useState<number | null>(null);
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null);
   const [projectDeleteCandidate, setProjectDeleteCandidate] = useState<
-    string | null
+    { id: string; name: string } | null
   >(null);
   const [assetDeleteCandidate, setAssetDeleteCandidate] = useState<
     ProjectTreeAsset | null
@@ -1025,8 +1025,11 @@ export default function Home() {
       if (savedProjectHandle && !projectHandle)
         void clearProjectDirectoryHandle().catch(() => undefined);
       if (projectHandle) {
+        const metadata = await readProjectMetadata(projectHandle);
+        projectIdRef.current = metadata.id;
+        projectIdsRef.current.set(projectHandle, metadata.id);
         setProjectDirectory(projectHandle);
-        setProjectDirectoryName(projectHandle.name || "项目目录");
+        setProjectDirectoryName(metadata.name || projectHandle.name || "项目目录");
       }
       const savedProjectHandles =
         typeof indexedDB === "undefined"
@@ -1041,6 +1044,11 @@ export default function Home() {
       ).filter((handle): handle is FileSystemDirectoryHandle =>
         Boolean(handle),
       );
+      if (disposed) return;
+      await Promise.all(projectHandles.map(async (handle) => {
+        const metadata = await readProjectMetadata(handle);
+        projectIdsRef.current.set(handle, metadata.id);
+      }));
       if (disposed) return;
       if (projectHandles.length !== savedProjectHandles.length)
         void saveProjectDirectoryHandles(projectHandles).catch(() => undefined);
@@ -2011,8 +2019,6 @@ export default function Home() {
     setProjectNameDialog(false);
     try {
       const directory = await picker();
-      projectIdRef.current = crypto.randomUUID();
-      projectIdsRef.current.set(directory, projectIdRef.current);
       const writable = directory as WritableDirectoryHandle;
       const permission = writable.requestPermission
         ? await writable.requestPermission({ mode: "readwrite" })
@@ -2029,6 +2035,8 @@ export default function Home() {
         if (!(error instanceof DOMException && error.name === "NotFoundError"))
           throw error;
       }
+      projectIdRef.current = crypto.randomUUID();
+      projectIdsRef.current.set(directory, projectIdRef.current);
       const assets = await directory.getDirectoryHandle("资产", {
         create: true,
       });
@@ -2056,7 +2064,7 @@ export default function Home() {
         await writable.write(
           JSON.stringify(
             {
-              project: { name: requestedName, version: 2 },
+              project: { id: projectIdRef.current, name: requestedName, version: 2 },
               clips: [],
             },
             null,
@@ -2336,7 +2344,7 @@ export default function Home() {
           : `已重新上传 ${restoredCount} 个项目引用`,
       );
   }
-  async function selectProjectByName(name: string) {
+  async function selectProjectById(name: string) {
     const handle = projectDirectories.find(
       (directory) => (projectIdsRef.current.get(directory) ?? directory.name) === name,
     );
@@ -2591,8 +2599,9 @@ export default function Home() {
       </div>
     );
   }
-  function requestProjectDeletion(name: string) {
-    setProjectDeleteCandidate(name);
+  function requestProjectDeletion(id: string) {
+    const project = visibleProjects.find((item) => item.id === id);
+    setProjectDeleteCandidate({ id, name: project?.name ?? id });
   }
   async function removeProjectFromDirector(name: string) {
     const knownDirectories = [
@@ -2627,8 +2636,11 @@ export default function Home() {
       setGenerationStatus(`项目“${name}”已从导演台移除，磁盘文件未改动`);
       return;
     }
+    const nextMetadata = await readProjectMetadata(nextHandle);
+    projectIdRef.current = nextMetadata.id;
+    projectIdsRef.current.set(nextHandle, nextMetadata.id);
     setProjectDirectory(nextHandle);
-    setProjectDirectoryName(nextHandle.name);
+    setProjectDirectoryName(nextMetadata.name || nextHandle.name);
     resetProjectEditorState();
     let switchFailed = false;
     try {
@@ -2655,7 +2667,7 @@ export default function Home() {
         `项目“${name}”已从导演台移除，已切换到“${nextHandle.name}”，磁盘文件未改动`,
       );
   }
-  async function deleteProjectByName(name: string) {
+  async function deleteProjectById(name: string) {
     const knownDirectories = [
       ...projectDirectories,
       ...(projectDirectory &&
@@ -2710,8 +2722,11 @@ export default function Home() {
         const nextHandle = next[0];
         if (nextHandle) {
           resetProjectEditorState();
+          const nextMetadata = await readProjectMetadata(nextHandle);
+          projectIdRef.current = nextMetadata.id;
+          projectIdsRef.current.set(nextHandle, nextMetadata.id);
           setProjectDirectory(nextHandle);
-          setProjectDirectoryName(nextHandle.name);
+          setProjectDirectoryName(nextMetadata.name || nextHandle.name);
           try {
             const loaded = await readProjectShots(nextHandle);
             if (loaded) {
@@ -2754,9 +2769,9 @@ export default function Home() {
     }
   }
   function confirmProjectDeletion() {
-    const name = projectDeleteCandidate;
+    const name = projectDeleteCandidate?.id;
     setProjectDeleteCandidate(null);
-    if (name) void deleteProjectByName(name);
+    if (name) void deleteProjectById(name);
   }
   function renderAssetDeleteDialog() {
     if (!assetDeleteCandidate) return null;
@@ -2813,7 +2828,7 @@ export default function Home() {
                 处理项目
               </h2>
               <p className="mt-1 truncate text-xs text-muted-foreground">
-                {projectDeleteCandidate}
+                {projectDeleteCandidate.name}
               </p>
             </div>
           </div>
@@ -2825,7 +2840,7 @@ export default function Home() {
               type="button"
               variant="outline"
               onClick={() =>
-                void removeProjectFromDirector(projectDeleteCandidate)
+                void removeProjectFromDirector(projectDeleteCandidate.id)
               }
               className="h-auto w-full justify-start gap-2 px-3 py-2.5 text-left"
             >
@@ -5036,7 +5051,7 @@ export default function Home() {
               <ProjectTree
                 projects={visibleProjects}
                 activeProjectId={projectIdRef.current}
-                onSelectProject={selectProjectByName}
+                onSelectProject={selectProjectById}
                 onRemoveProject={requestProjectDeletion}
                 onDeleteAsset={requestProjectAssetDeletion}
                 assets={projectAssets}
@@ -5358,7 +5373,7 @@ export default function Home() {
             <ProjectTree
               projects={visibleProjects}
                 activeProjectId={projectIdRef.current}
-              onSelectProject={selectProjectByName}
+              onSelectProject={selectProjectById}
               onRemoveProject={requestProjectDeletion}
               onDeleteAsset={requestProjectAssetDeletion}
               assets={projectAssets}
