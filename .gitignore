@@ -34,7 +34,12 @@ yarn-error.log*
 .vercel
 next-env.d.ts
 /dist/
+/release/
 /.wrangler/
+/runtime/
+/.runtime-cache/
+/.runtime-build-path
+/.runtime-extractor/
 /outputs/
 /work/
 *.tsbuildinfo

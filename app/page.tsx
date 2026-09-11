@@ -153,12 +153,29 @@ type PersistedKeyframe = {
 type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
   electronDirector?: {
-    pickDirectory: () => Promise<(FileSystemDirectoryHandle & { createProject?: (name: string, id: string) => Promise<FileSystemDirectoryHandle> }) | null>;
+    getComfyState?: () => Promise<{ state: "stopped" | "extracting" | "starting" | "ready" | "unavailable" | "error"; ready: boolean; url: string; port: number; error: string | null; runtimePath: string | null }>;
+    getModelDirectory?: () => Promise<{ path: string; isDefault: boolean }>;
+    pickModelDirectory?: () => Promise<{ path: string; isDefault: boolean } | null>;
+    setModelDirectory?: (value: string) => Promise<{ path: string; isDefault: boolean }>;
+    onComfyStateChange?: (callback: (state: { state: "stopped" | "extracting" | "starting" | "ready" | "unavailable" | "error"; ready: boolean; url: string; port: number; error: string | null; runtimePath: string | null }) => void) => () => void;
+    pickDirectory: () => Promise<ElectronDirectoryHandle | null>;
+    getProjectDirectories?: () => Promise<{ paths: string[]; activePath: string | null; handles: ElectronDirectoryHandle[] }>;
+    setProjectDirectories?: (handles: ElectronDirectoryHandle[]) => Promise<unknown>;
+    setActiveProjectDirectory?: (handle: ElectronDirectoryHandle) => Promise<unknown>;
+    clearActiveProjectDirectory?: () => Promise<unknown>;
+    registerProjectDirectory?: (handle: ElectronDirectoryHandle) => Promise<unknown>;
+    getAgentExecutable?: () => Promise<string>;
+    setAgentExecutable?: (value: string) => Promise<string>;
+    runAgent?: (input: { prompt: string; mode: string; duration: number; visualStyle?: string; referenceMapping: H3ReferenceMapping[] }) => Promise<string>;
     promptProjectName?: () => Promise<string | null>;
     windowControl?: (action: "minimize" | "maximize" | "unmaximize" | "toggle-maximize" | "close" | "is-maximized") => Promise<boolean>;
     isMaximized?: () => Promise<boolean>;
     onWindowStateChange?: (callback: (maximized: boolean) => void) => () => void;
   };
+};
+type ElectronDirectoryHandle = FileSystemDirectoryHandle & {
+  __path?: string;
+  createProject?: (name: string, id: string) => Promise<ElectronDirectoryHandle>;
 };
 function hasElectronDirectoryPicker() {
   return typeof window !== "undefined" && Boolean((window as DirectoryPickerWindow).electronDirector?.pickDirectory);
@@ -192,6 +209,9 @@ function openDirectoryDatabase() {
 }
 
 async function saveProjectDirectoryHandle(handle: FileSystemDirectoryHandle) {
+  const api = (window as DirectoryPickerWindow).electronDirector;
+  if (api?.setActiveProjectDirectory && (handle as ElectronDirectoryHandle).__path)
+    await api.setActiveProjectDirectory(handle as ElectronDirectoryHandle);
   if (hasElectronDirectoryPicker()) return;
   const database = await openDirectoryDatabase();
   await new Promise<void>((resolve, reject) => {
@@ -205,6 +225,11 @@ async function saveProjectDirectoryHandle(handle: FileSystemDirectoryHandle) {
   database.close();
 }
 async function clearProjectDirectoryHandle() {
+  const api = (window as DirectoryPickerWindow).electronDirector;
+  if (api?.clearActiveProjectDirectory) {
+    await api.clearActiveProjectDirectory();
+    return;
+  }
   const database = await openDirectoryDatabase();
   await new Promise<void>((resolve, reject) => {
     const request = database
@@ -217,7 +242,11 @@ async function clearProjectDirectoryHandle() {
   database.close();
 }
 async function loadProjectDirectoryHandle() {
-  if (hasElectronDirectoryPicker()) return undefined;
+  const api = (window as DirectoryPickerWindow).electronDirector;
+  if (api?.getProjectDirectories) {
+    const result = await api.getProjectDirectories();
+    return result.handles.find((handle) => handle.__path?.toLowerCase() === result.activePath?.toLowerCase());
+  }
   const database = await openDirectoryDatabase();
   const handle = await new Promise<FileSystemDirectoryHandle | undefined>(
     (resolve, reject) => {
@@ -236,7 +265,11 @@ async function loadProjectDirectoryHandle() {
 async function saveProjectDirectoryHandles(
   handles: FileSystemDirectoryHandle[],
 ) {
-  if (hasElectronDirectoryPicker()) return;
+  const api = (window as DirectoryPickerWindow).electronDirector;
+  if (api?.setProjectDirectories) {
+    await api.setProjectDirectories(handles as ElectronDirectoryHandle[]);
+    return;
+  }
   const database = await openDirectoryDatabase();
   await new Promise<void>((resolve, reject) => {
     const request = database
@@ -249,7 +282,11 @@ async function saveProjectDirectoryHandles(
   database.close();
 }
 async function loadProjectDirectoryHandles() {
-  if (hasElectronDirectoryPicker()) return [];
+  const api = (window as DirectoryPickerWindow).electronDirector;
+  if (api?.getProjectDirectories) {
+    const result = await api.getProjectDirectories();
+    return result.handles;
+  }
   const database = await openDirectoryDatabase();
   const handles = await new Promise<FileSystemDirectoryHandle[] | undefined>(
     (resolve, reject) => {
@@ -775,15 +812,23 @@ async function readProjectShots(
   );
 }
 async function readNextShotNumber(handle: FileSystemDirectoryHandle, shots: Shot[] = []) {
+  let persistedCounter = 1;
+  let manifestMax = 0;
   try {
     const file = await handle.getFileHandle("script.json");
-    const script = JSON.parse(await (await file.getFile()).text()) as { nextShotNumber?: unknown };
+    const script = JSON.parse(await (await file.getFile()).text()) as {
+      nextShotNumber?: unknown;
+      clips?: Array<{ id?: unknown }>;
+    };
     if (typeof script.nextShotNumber === "number" && Number.isInteger(script.nextShotNumber) && script.nextShotNumber > 0)
-      return script.nextShotNumber;
+      persistedCounter = script.nextShotNumber;
+    if (Array.isArray(script.clips))
+      manifestMax = script.clips.reduce((max, clip) => Math.max(max, Number(clip?.id) || 0), 0);
   } catch {
     // Fall back to the legacy manifest contents.
   }
-  return shots.reduce((max, shot) => Math.max(max, Number(shot.id) || 0), 0) + 1;
+  const loadedMax = shots.reduce((max, shot) => Math.max(max, Number(shot.id) || 0), 0);
+  return Math.max(persistedCounter, manifestMax + 1, loadedMax + 1);
 }
 async function readProjectMetadata(handle: FileSystemDirectoryHandle) {
   try {
@@ -1010,6 +1055,7 @@ export default function Home() {
   const [comfyConnected, setComfyConnected] = useState<boolean | null>(null);
   const [comfyUrl, setComfyUrl] = useState("http://127.0.0.1:8188");
   const [comfyUrlDraft, setComfyUrlDraft] = useState("http://127.0.0.1:8188");
+  const [modelDirectory, setModelDirectory] = useState("");
   const [engineSettingsOpen, setEngineSettingsOpen] = useState(false);
   const profile = modelProfiles[model] ?? modelProfiles.H3;
   const modes = profile.modes;
@@ -1032,6 +1078,9 @@ export default function Home() {
   const projectTreeEpochRef = useRef(0);
   const saveTimerRef = useRef<number | null>(null);
   const projectMutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const creatingShotRef = useRef(false);
+  const optimizedPromptRequestRef = useRef<Record<string, number>>({});
+  const optimizedPromptFingerprintsRef = useRef<Record<string, string>>({});
   function enqueueProjectMutation<T>(operation: () => Promise<T>): Promise<T> {
     const task = projectMutationQueueRef.current
       .catch(() => undefined)
@@ -1075,12 +1124,49 @@ export default function Home() {
   );
   const activeStage = taskShot ? shotStages[taskShot.id] : undefined;
   useEffect(() => {
-    const savedComfyUrl = window.localStorage.getItem("comfyui-url");
-    if (savedComfyUrl) {
-      setComfyUrl(savedComfyUrl);
-      setComfyUrlDraft(savedComfyUrl);
+    let disposed = false;
+    const api = (window as DirectoryPickerWindow).electronDirector;
+    const load = async () => {
+      if (api?.getComfyState) {
+        const state = await api.getComfyState().catch(() => null);
+        if (!disposed && state?.url) {
+          setComfyUrl(state.url);
+          setComfyUrlDraft(state.url);
+        }
+        if (api.getModelDirectory) {
+          const directory = await api.getModelDirectory().catch(() => null);
+          if (!disposed && directory) setModelDirectory(directory.path);
+        }
+        return;
+      }
+      const savedComfyUrl = window.localStorage.getItem("comfyui-url");
+      if (!disposed && savedComfyUrl) {
+        setComfyUrl(savedComfyUrl);
+        setComfyUrlDraft(savedComfyUrl);
+      }
+    };
+    void load();
+    if (api?.getAgentExecutable) {
+      void api.getAgentExecutable().then((value) => {
+        if (!disposed) setLlmExecutablePath(value);
+      });
+    } else {
+      setLlmExecutablePath(window.localStorage.getItem("llm-executable-path") ?? "");
     }
-    setLlmExecutablePath(window.localStorage.getItem("llm-executable-path") ?? "");
+    return () => { disposed = true; };
+  }, []);
+
+  useEffect(() => {
+    const api = (window as DirectoryPickerWindow).electronDirector;
+    if (!api?.onComfyStateChange) return;
+    return api.onComfyStateChange((state) => {
+      setComfyConnected(state.ready);
+      if (state.url) {
+        setComfyUrl(state.url);
+        setComfyUrlDraft(state.url);
+      }
+      if (state.error) setGenerationStatus(`ComfyUI：${state.error}`);
+    });
   }, []);
 
   useEffect(() => {
@@ -1558,57 +1644,68 @@ export default function Home() {
   }
   async function confirmAddShot() {
     const title = newTitle.trim();
-    if (!title) return;
-    const nextShotNumber = await readNextShotNumber(projectDirectory!, shots);
-    const id = String(nextShotNumber).padStart(2, "0");
-    const shot = {
-      id,
-      title: title.trim(),
-      state: "草稿",
-    };
+    if (!title || creatingShotRef.current || !projectDirectory) return;
+    creatingShotRef.current = true;
+    const projectAtStart = projectDirectory;
+    const epochAtStart = projectEpochRef.current;
+    let createdShot: { id: string; title: string; state: string } | null = null;
     try {
       await enqueueProjectMutation(async () => {
+        if (projectDirectory !== projectAtStart || projectEpochRef.current !== epochAtStart)
+          throw new Error("项目已切换，请在当前项目中重新创建片段");
+        const currentShots = await readProjectShots(projectAtStart);
+        const nextShotNumber = await readNextShotNumber(projectAtStart, currentShots);
+        const shot = { id: String(nextShotNumber).padStart(2, "0"), title: title.trim(), state: "草稿" };
+        createdShot = shot;
         await writeClipManifest(shot, {
           generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
           promptOriginal: "",
         });
-        await writeProjectManifest([...shots, shot], nextShotNumber + 1);
+        await writeProjectManifest([...currentShots, shot], nextShotNumber + 1);
       });
-    } catch {
-      await deleteSavedShotFiles(id, shot.title).catch(() => undefined);
+    } catch (error) {
+      const failedShot = createdShot as { id: string; title: string } | null;
+      if (failedShot && projectDirectory === projectAtStart)
+        await deleteSavedShotFiles(failedShot.id, failedShot.title).catch(() => undefined);
       setGenerationStatus(
-        "片段创建失败，请检查项目目录写入权限",
+        error instanceof Error && error.message.includes("项目已切换")
+          ? error.message
+          : "片段创建失败，请检查项目目录写入权限",
       );
       return;
+    } finally {
+      creatingShotRef.current = false;
     }
+    const shot = createdShot as { id: string; title: string; state: string } | null;
+    if (!shot) return;
     setShots((current) => [...current, shot]);
     setShotPrompts((current) => ({
       ...current,
-      [promptStoreKey(id, "T2VA")]: "",
+      [promptStoreKey(shot.id, "T2VA")]: "",
     }));
     // Each shot owns its subjects and references. Reuse is explicit via the
     // subject library, so a new shot cannot accidentally process prior-shot
     // characters that were never added to it.
-    setPromptSubjects((current) => ({ ...current, [id]: [] }));
+    setPromptSubjects((current) => ({ ...current, [shot.id]: [] }));
     setShotSettings((current) => ({
       ...current,
-      [id]: { ...shotSettingDefaults },
+      [shot.id]: { ...shotSettingDefaults },
     }));
-    setShotVisualStyles((current) => ({ ...current, [id]: "natural_cinematic" }));
+    setShotVisualStyles((current) => ({ ...current, [shot.id]: "natural_cinematic" }));
     // A deleted shot may have reused this id. Never inherit its old keyframes.
     setKeyframes((current) => {
       const next = { ...current };
       Object.keys(next)
-        .filter((key) => key.startsWith(`${id}-`))
+        .filter((key) => key.startsWith(`${shot.id}-`))
         .forEach((key) => delete next[key]);
       return next;
     });
     setReferenceAssets((current) =>
-      Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${id}-`))),
+      Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${shot.id}-`))),
     );
     const clearShotEntry = <T,>(current: Record<string, T>) => {
       const next = { ...current };
-      delete next[id];
+      delete next[shot.id];
       return next;
     };
     setShotVideos(clearShotEntry);
@@ -1618,7 +1715,7 @@ export default function Home() {
     setShotStages(clearShotEntry);
     setSubmittingShots(clearShotEntry);
     setActiveShot(shots.length);
-    activeShotIdRef.current = id;
+    activeShotIdRef.current = shot.id;
     setPrompt("");
     setDuration("6 秒");
     setResolution("864 × 480");
@@ -2124,6 +2221,7 @@ export default function Home() {
     setKeyframes({});
     setReferenceAssets({});
     setOptimizedPrompts({});
+    optimizedPromptFingerprintsRef.current = {};
     setShotVisualStyles({});
     setPromptNotice(null);
     setPromptMention(null);
@@ -2197,7 +2295,7 @@ export default function Home() {
       const manifestWritable = await file.createWritable();
       createStage = "写入项目配置";
       await manifestWritable.write(JSON.stringify({
-        project: { id: newProjectId, name: requestedName, version: 2 }, clips: [],
+        project: { id: newProjectId, name: requestedName, version: 2 }, nextShotNumber: 1, clips: [],
       }, null, 2));
       await manifestWritable.close();
       projectIdRef.current = newProjectId;
@@ -2690,7 +2788,27 @@ export default function Home() {
     setComfyUrlDraft(comfyUrl);
     setEngineSettingsOpen(true);
   }
-  function saveEngineSettings() {
+  async function chooseModelDirectory() {
+    const picker = (window as DirectoryPickerWindow).electronDirector?.pickModelDirectory;
+    if (!picker) {
+      setGenerationStatus("请在 MeristemForge 桌面程序中设置模型目录");
+      return;
+    }
+    try {
+      const result = await picker();
+      if (!result) return;
+      setModelDirectory(result.path);
+      const state = await (window as DirectoryPickerWindow).electronDirector?.getComfyState?.();
+      if (state?.url) {
+        setComfyUrl(state.url);
+        setComfyUrlDraft(state.url);
+      }
+      setGenerationStatus(`模型目录已更新：${result.path}`);
+    } catch (error) {
+      setGenerationStatus(`模型目录更新失败：${errorMessage(error)}`);
+    }
+  }
+  async function saveEngineSettings() {
     const draft = comfyUrlDraft.trim();
     try {
       const parsed = new URL(draft);
@@ -2699,7 +2817,10 @@ export default function Home() {
       const normalized = parsed.toString().replace(/\/+$/, "");
       setComfyUrl(normalized);
       window.localStorage.setItem("comfyui-url", normalized);
-      window.localStorage.setItem("llm-executable-path", llmExecutablePath.trim());
+      const agentPath = llmExecutablePath.trim();
+      const api = (window as DirectoryPickerWindow).electronDirector;
+      if (api?.setAgentExecutable) await api.setAgentExecutable(agentPath);
+      else window.localStorage.setItem("llm-executable-path", agentPath);
       setEngineSettingsOpen(false);
       setGenerationStatus(`ComfyUI 地址已更新：${normalized}`);
     } catch {
@@ -2748,6 +2869,22 @@ export default function Home() {
             className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60"
             autoFocus
           />
+          <div className="mt-5 border-t border-border pt-4">
+            <span className="field-label">模型目录</span>
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                value={modelDirectory || "正在读取..."}
+                readOnly
+                className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-muted/30 px-3 font-mono text-[11px] outline-none"
+              />
+              <Button type="button" variant="outline" onClick={() => void chooseModelDirectory()}>
+                选择目录
+              </Button>
+            </div>
+            <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+              默认位置：用户 AppData/MeristemForge/models。切换后会重启内置 ComfyUI。
+            </p>
+          </div>
           <div className="mt-5 border-t border-border pt-4">
             <span className="field-label">本地 Agent CLI</span>
             <div className="mt-3 space-y-3">
@@ -3375,6 +3512,8 @@ export default function Home() {
   }
   async function writeProjectManifest(shotList = shots, nextShotNumber?: number) {
     if (!projectDirectory) return;
+    let counter = nextShotNumber;
+    if (counter === undefined) counter = await readNextShotNumber(projectDirectory, shotList);
     const file = await projectDirectory.getFileHandle("script.json", {
       create: true,
     });
@@ -3383,7 +3522,7 @@ export default function Home() {
       JSON.stringify(
         {
           project: { id: projectIdRef.current, name: projectDirectoryName, version: 2 },
-          ...(nextShotNumber !== undefined ? { nextShotNumber } : {}),
+          nextShotNumber: counter,
           clips: shotList.map((item) => ({
             id: item.id,
             title: item.title,
@@ -4520,6 +4659,9 @@ export default function Home() {
     const epoch = projectEpochRef.current;
     const shotId = taskShot.id;
     const modeAtStart = activeMode;
+    const promptKey = promptStoreKey(shotId, modeAtStart);
+    const requestToken = (optimizedPromptRequestRef.current[promptKey] ?? 0) + 1;
+    optimizedPromptRequestRef.current[promptKey] = requestToken;
     setPromptOptimizing((current) => ({ ...current, [taskShot.id]: true }));
     setPromptNotice({ type: "success", text: "正在使用本地 Agent CLI 优化提示词…" });
     try {
@@ -4580,29 +4722,38 @@ export default function Home() {
           };
         },
       );
-      const response = await fetch("/api/optimize-prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          mode: activeMode,
-          duration: Number.parseFloat(duration) || 6,
-          referenceMapping,
-          visualStyle: shotVisualStyles[taskShot.id]
-            ? visualStylePresets[shotVisualStyles[taskShot.id]].prompt
-            : undefined,
-          executablePath: llmExecutablePath.trim(),
-        }),
-      });
-      const result = (await response.json().catch(() => ({}))) as { prompt?: string; error?: string };
-      if (!response.ok || typeof result.prompt !== "string" || !result.prompt.trim())
-        throw new Error(result.error || "提示词优化失败");
-      if (projectEpochRef.current !== epoch || taskShot?.id !== shotId || activeMode !== modeAtStart)
+      const optimizationInput = {
+        prompt,
+        mode: modeAtStart,
+        duration: Number.parseFloat(duration) || 6,
+        referenceMapping,
+        visualStyle: shotVisualStyles[shotId]
+          ? visualStylePresets[shotVisualStyles[shotId]].prompt
+          : undefined,
+      };
+      const api = (window as DirectoryPickerWindow).electronDirector;
+      let optimizedPrompt: string;
+      if (api?.runAgent) {
+        optimizedPrompt = await api.runAgent(optimizationInput);
+      } else {
+        const response = await fetch("/api/optimize-prompt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...optimizationInput, executablePath: llmExecutablePath.trim() }),
+        });
+        const result = (await response.json().catch(() => ({}))) as { prompt?: string; error?: string };
+        if (!response.ok || typeof result.prompt !== "string" || !result.prompt.trim())
+          throw new Error(result.error || "提示词优化失败");
+        optimizedPrompt = result.prompt;
+      }
+      const fingerprint = JSON.stringify(optimizationInput);
+      if (projectEpochRef.current !== epoch || taskShot?.id !== shotId || activeMode !== modeAtStart || optimizedPromptRequestRef.current[promptKey] !== requestToken)
         return;
       setOptimizedPrompts((current) => ({
         ...current,
-        [promptStoreKey(shotId, modeAtStart)]: result.prompt!,
+        [promptKey]: optimizedPrompt,
       }));
+      optimizedPromptFingerprintsRef.current[promptKey] = fingerprint;
       await writeClipManifest(taskShot, {
         generation: {
           mode: activeMode,
@@ -4614,7 +4765,7 @@ export default function Home() {
           turbo: turboMode,
         },
         promptOriginal: shotPrompts[promptStoreKey(taskShot.id, activeMode)] ?? prompt,
-        promptOptimized: result.prompt!,
+        promptOptimized: optimizedPrompt,
         visualStyle: shotVisualStyles[taskShot.id] ?? "natural_cinematic",
       });
       setPromptNotice({ type: "success", text: "提示词优化完成" });

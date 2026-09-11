@@ -2,12 +2,13 @@
   "name": "sites-project",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.cjs",
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
     "electron:dev": "node electron/dev.mjs",
-    "electron:dist": "npm run build && electron-builder --win nsis portable",
+    "electron:dist": "npm run build && node scripts/prepare-runtime.mjs && electron-builder --config electron-builder.cjs --dir && node scripts/build-inno-installer.mjs",
     "directorctl": "node scripts/directorctl.mjs",
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",
@@ -25,7 +26,8 @@
     "shadcn": "4.18.0",
     "tailwind-merge": "3.6.0",
     "tw-animate-css": "1.4.0",
-    "vinext": "1.0.0-beta.5"
+    "vinext": "1.0.0-beta.5",
+    "wrangler": "4.92.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
@@ -44,18 +46,9 @@
     "oxlint-tsgolint": "7.0.2001",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.0.13"
   },
   "type": "module",
-  "build": {
-    "appId": "comfyui.director",
-    "productName": "MeristemForge",
-    "directories": { "output": "release" },
-    "files": ["electron/**/*", "dist/**/*", "node_modules/**/*", "package.json"],
-    "extraResources": [{ "from": "electron/server", "to": "server" }],
-    "win": { "target": ["nsis", "portable"], "icon": "public/meristemforge-icon.png" }
-  },
   "allowScripts": {
     "electron@39.1.0": true
   }
