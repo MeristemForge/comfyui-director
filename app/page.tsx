@@ -758,7 +758,11 @@ export default function Home() {
   const [shotVisualStyles, setShotVisualStyles] = useState<Record<string, VisualStyleKey>>({});
   const [railWidth, setRailWidth] = useState(220);
   const [panelWidth, setPanelWidth] = useState(420);
-  const [generationStatus, setGenerationStatus] = useState("等待生成");
+  const [generationStatus, setGenerationStatusState] = useState("等待生成");
+  const [generationNotice, setGenerationNotice] = useState<{
+    type: "error" | "warning" | "info";
+    text: string;
+  } | null>(null);
   const [shotTasks, setShotTasks] = useState<Record<string, ShotTask>>({});
   const [generationDurations, setGenerationDurations] = useState<
     Record<string, number>
@@ -879,10 +883,17 @@ export default function Home() {
   const keyframeUploadTokensRef = useRef<Record<string, number>>({});
   const keyframesRef = useRef(keyframes);
   keyframesRef.current = keyframes;
+  const referenceAssetsRef = useRef(referenceAssets);
+  referenceAssetsRef.current = referenceAssets;
   const projectEpochRef = useRef(0);
   const finalizingPromptIdsRef = useRef(new Set<string>());
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeTask = taskShot ? shotTasks[taskShot.id] : undefined;
+  function setGenerationStatus(text: string) {
+    setGenerationStatusState(text);
+    if (/(失败|请先|未上传|无法|权限|错误|不存在|缺失|未返回)/.test(text))
+      setGenerationNotice({ type: "error", text });
+  }
   const activeSubmitting = taskShot
     ? Boolean(submittingShots[taskShot.id])
     : false;
@@ -1148,6 +1159,7 @@ export default function Home() {
       normalizePrompt(shotPrompts[promptStoreKey(taskShot.id, settings.mode)]),
     );
     setPromptNotice(null);
+    setGenerationNotice(null);
     setVideoUrl(shotVideos[taskShot.id] ?? taskShot.output ?? null);
     void loadArchivedShotVideo(taskShot).then((url) => {
       if (url && activeShotIdRef.current === taskShot.id) setVideoUrl(url);
@@ -2157,10 +2169,14 @@ export default function Home() {
     assets: Record<string, ReferenceAsset>,
     comfyUrlValue: string,
   ) {
-    const nextAssets = { ...assets };
+    const epoch = projectEpochRef.current;
     let restoredCount = 0;
     let missingCount = 0;
     for (const [assetKey, asset] of Object.entries(assets)) {
+      const isCurrent = () =>
+        projectEpochRef.current === epoch &&
+        referenceAssetsRef.current[assetKey]?.sourcePath === asset.sourcePath;
+      if (!isCurrent()) return;
       if (!asset.sourcePath) continue;
       if (await isReferenceAssetAvailable(asset, comfyUrlValue)) continue;
       let sourceFile: File;
@@ -2179,22 +2195,29 @@ export default function Home() {
         continue;
       }
       try {
+        if (!isCurrent()) return;
         const uploaded = await uploadReferenceFile(
           sourceFile,
           asset.kind,
           comfyUrlValue,
         );
-        nextAssets[assetKey] = {
-          ...asset,
+        if (!isCurrent()) return;
+        const restored = {
+          ...referenceAssetsRef.current[assetKey],
           ...uploaded,
           url: referenceAssetUrl(uploaded, comfyUrlValue),
         };
+        referenceAssetsRef.current = { ...referenceAssetsRef.current, [assetKey]: restored };
+        setReferenceAssets((current) =>
+          current[assetKey]?.sourcePath === asset.sourcePath
+            ? { ...current, [assetKey]: restored }
+            : current,
+        );
         restoredCount += 1;
       } catch {
         missingCount += 1;
       }
     }
-    if (restoredCount) setReferenceAssets(nextAssets);
     if (restoredCount || missingCount)
       setGenerationStatus(
         missingCount
@@ -3963,13 +3986,11 @@ export default function Home() {
           }
         }}
         onClick={(event) => {
-          if (!asset) {
-            event.preventDefault();
-            setReferencePickerTarget({ kind, index });
-            setAssetPickerView("actions");
-            setAssetPickerCategory(null);
-            setAssetSubjectPickerOpen(true);
-          }
+          event.preventDefault();
+          setReferencePickerTarget({ kind, index });
+          setAssetPickerView("actions");
+          setAssetPickerCategory(null);
+          setAssetSubjectPickerOpen(true);
         }}
         draggable={Boolean(asset)}
         onDragStart={(event) => {
@@ -5886,9 +5907,9 @@ export default function Home() {
             )}
           </div>
           <div className="sticky bottom-0 z-20 border-t border-border bg-card/95 p-4 backdrop-blur">
-            {/(失败|请先|未上传|无法|权限|错误|不存在|缺失)/.test(generationStatus) && (
+            {generationNotice && (
               <output aria-live="assertive" className="mb-2 block text-center text-[10px] text-red-300">
-                {generationStatus}
+                {generationNotice.text}
               </output>
             )}
             <Button
