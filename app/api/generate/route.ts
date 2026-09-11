@@ -6,8 +6,27 @@ import { normalizeComfyUrl } from '../comfy-url';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    if (!body || typeof body !== 'object')
+      return Response.json({ error: '请求参数无效' }, { status: 400 });
+    const mode = body.mode;
+    if (!['T2VA', 'I2VA', 'R2VA'].includes(mode))
+      return Response.json({ error: '无效生成模式' }, { status: 400 });
+    const duration = Number(body.duration);
+    const fps = Number(body.fps);
+    if (!Number.isFinite(duration) || duration <= 0 || duration > 30)
+      return Response.json({ error: '无效的时长' }, { status: 400 });
+    if (!Number.isFinite(fps) || fps <= 0 || fps > 120)
+      return Response.json({ error: '无效的 FPS' }, { status: 400 });
+    if (typeof body.prompt !== 'string' || !body.prompt.trim())
+      return Response.json({ error: '提示词不能为空' }, { status: 400 });
+    if (body.turbo !== undefined && typeof body.turbo !== 'boolean')
+      return Response.json({ error: 'turbo 必须是布尔值' }, { status: 400 });
+    if (body.seed !== undefined &&
+      (!/^[0-9]+$/.test(String(body.seed)) ||
+        !Number.isSafeInteger(Number(body.seed))))
+      return Response.json({ error: 'seed 必须是安全整数' }, { status: 400 });
     const comfyUrl = normalizeComfyUrl(body.comfy_url);
-    const template = body.mode === 'I2VA' ? i2vTemplate : body.mode === 'R2VA' ? r2vTemplate : t2vTemplate;
+    const template = mode === 'I2VA' ? i2vTemplate : mode === 'R2VA' ? r2vTemplate : t2vTemplate;
     const workflow = structuredClone(template) as Record<string, { inputs?: Record<string, unknown>; class_type?: string }>;
     // API exports from subgraphs may prefix node IDs; flatten them for ComfyUI's prompt endpoint.
     const normalized: Record<string, { inputs?: Record<string, unknown> }> = {};
@@ -34,7 +53,7 @@ export async function POST(request: Request) {
     }
 
     const node = (type: string) => Object.values(normalized).find((item) => item.class_type === type);
-    const turbo = Boolean(body.turbo);
+    const turbo = body.turbo === true;
     const turboSwitch = node('PrimitiveBoolean');
     if (turboSwitch) turboSwitch.inputs!.value = turbo;
     const stepNodes = Object.values(normalized).filter((item) => item.class_type === 'PrimitiveInt');
@@ -43,7 +62,7 @@ export async function POST(request: Request) {
     node('RandomNoise')!.inputs!.noise_seed = Number(body.seed) || Math.floor(Math.random() * 9000000000000000) + 1000000000000000;
     const videoNode = Object.values(normalized).find((item) => item.class_type?.startsWith('MiniMaxH3'))!;
     const imageNode = node('LoadImage');
-    if (body.mode === 'I2VA') {
+    if (mode === 'I2VA') {
       const keyframeMode = body.keyframe_mode === 'last' || body.keyframe_mode === 'first_last' ? body.keyframe_mode : 'first';
       const useFirst = keyframeMode === 'first' || keyframeMode === 'first_last';
       const useLast = keyframeMode === 'last' || keyframeMode === 'first_last';
@@ -70,7 +89,7 @@ export async function POST(request: Request) {
         }
       }
     }
-    if (body.mode === 'R2VA') {
+    if (mode === 'R2VA') {
       const nextNodeId = () => String(Math.max(0, ...Object.keys(normalized).map((id) => Number(id)).filter(Number.isFinite)) + 1);
       const addNode = (classType: string, inputs: Record<string, unknown>) => {
         const id = nextNodeId();
@@ -100,8 +119,8 @@ export async function POST(request: Request) {
     }
     videoNode.inputs!.prompt = String(body.prompt ?? '');
     videoNode.inputs!.width = width; videoNode.inputs!.height = height;
-    const durationNode = node('PrimitiveFloat'); if (durationNode) durationNode.inputs!.value = Number.parseInt(String(body.duration ?? '6'), 10) || 6;
-    node('CreateVideo')!.inputs!.fps = Number.parseInt(String(body.fps ?? '24'), 10) || 24;
+    const durationNode = node('PrimitiveFloat'); if (durationNode) durationNode.inputs!.value = duration;
+    node('CreateVideo')!.inputs!.fps = fps;
     const shotId = String(body.shot_id ?? 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
     const shotTitle = String(body.shot_title ?? '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || `shot-${shotId}`;
     const saveVideoNode = node('SaveVideo');

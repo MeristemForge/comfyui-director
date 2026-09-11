@@ -414,6 +414,7 @@ function generationOptions(manifest, args) {
   const generation = manifest.generation;
   if (!generation) fail("clip.json 缺少 generation");
   const mode = args.mode || generation.mode;
+  if (!GENERATION_MODES.includes(mode)) fail(`无效生成模式：${mode}`);
   const seedMode = args.seed_mode || generation.seedMode;
   const seed = args.seed !== undefined
     ? args.seed
@@ -482,7 +483,8 @@ async function render(project, args, urls) {
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
   if (status?.status !== "completed") fail(`等待生成超时（${args.timeout || DEFAULT_TIMEOUT_SECONDS} 秒）`, status);
-  const requestedOutputName = `shot-${prepared.target.clip.id}-${safeStem(prepared.target.clip.title)}.mp4`;
+  const takeId = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
+  const requestedOutputName = `shot-${prepared.target.clip.id}-${safeStem(prepared.target.clip.title)}-${takeId}.mp4`;
   let finalized;
   try {
     finalized = await apiFetchWithRetry(fileUrl(urls.director, "/api/output/finalize"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shot_id: prepared.target.clip.id, shot_title: prepared.target.clip.title, source: status.source, source_subfolder: status.source_subfolder || "", comfy_url: urls.comfy }) });
@@ -511,6 +513,17 @@ async function render(project, args, urls) {
     ...(mode === "I2VA" ? { keyframeMode: options.keyframeMode } : {}),
   };
   await writeJson(prepared.target.manifestPath, prepared.target.manifest);
+  if (status.source) {
+    await apiFetch(fileUrl(urls.director, "/api/output/cleanup"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source: status.source,
+        source_subfolder: status.source_subfolder || "",
+        comfy_url: urls.comfy,
+      }),
+    }).catch(() => undefined);
+  }
   return { ...result, status: "completed", output: relativeProjectPath(path.relative(project.root, outputPath)), filename: outputName, source: status.source, finalized };
 }
 

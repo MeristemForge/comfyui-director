@@ -878,7 +878,17 @@ export default function Home() {
       : [];
   const activeShotIdRef = useRef<string | null>(null);
   const saveTimerRef = useRef<number | null>(null);
-  const saveQueueRef = useRef(Promise.resolve());
+  const projectMutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  function enqueueProjectMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const task = projectMutationQueueRef.current
+      .catch(() => undefined)
+      .then(operation);
+    projectMutationQueueRef.current = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
   const referenceUploadTokensRef = useRef<Record<string, number>>({});
   const keyframeUploadTokensRef = useRef<Record<string, number>>({});
   const keyframesRef = useRef(keyframes);
@@ -886,6 +896,15 @@ export default function Home() {
   const referenceAssetsRef = useRef(referenceAssets);
   referenceAssetsRef.current = referenceAssets;
   const projectEpochRef = useRef(0);
+  function updateReferenceAssets(
+    updater: (current: Record<string, ReferenceAsset>) => Record<string, ReferenceAsset>,
+  ) {
+    setReferenceAssets((current) => {
+      const next = updater(current);
+      referenceAssetsRef.current = next;
+      return next;
+    });
+  }
   const finalizingPromptIdsRef = useRef(new Set<string>());
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeTask = taskShot ? shotTasks[taskShot.id] : undefined;
@@ -1053,9 +1072,7 @@ export default function Home() {
         shotTasks,
         shotFileNames,
       };
-      saveQueueRef.current = saveQueueRef.current
-        .catch(() => undefined)
-        .then(async () => {
+      void enqueueProjectMutation(async () => {
           for (const shot of snapshot.shots) {
             const settings = snapshot.shotSettings[shot.id] ?? shotSettingDefaults;
             const modeKey = promptStoreKey(shot.id, settings.mode);
@@ -1083,8 +1100,7 @@ export default function Home() {
               output: shot.output ?? null,
             });
           }
-        })
-        .catch(() => undefined);
+        }).catch(() => undefined);
     }, 500);
     return () => {
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
@@ -1379,11 +1395,11 @@ export default function Home() {
       state: "草稿",
     };
     try {
-      await writeClipManifest(shot, {
+      await enqueueProjectMutation(() => writeClipManifest(shot, {
         generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
         promptOriginal: "",
-      });
-      await writeProjectManifest([...shots, shot]);
+      }));
+      await enqueueProjectMutation(() => writeProjectManifest([...shots, shot]));
     } catch {
       await deleteSavedShotFiles(id, shot.title).catch(() => undefined);
       setGenerationStatus(
@@ -1468,10 +1484,10 @@ export default function Home() {
     oldTitle: string,
     newTitle: string,
   ) {
-    if (!projectDirectory) return;
+    if (!projectDirectory) throw new Error("请先选择项目目录");
     const oldName = `${shotId}-${safeFileStem(oldTitle)}`;
     const newName = `${shotId}-${safeFileStem(newTitle)}`;
-    if (oldName === newName) return;
+    if (oldName === newName) return false;
     const clips = await projectDirectory.getDirectoryHandle("片段");
     const writableDirectory = clips as WritableDirectoryHandle;
     const permission = writableDirectory.queryPermission
@@ -1482,11 +1498,22 @@ export default function Home() {
     try {
       source = await clips.getDirectoryHandle(oldName);
     } catch (error) {
-      if (error instanceof DOMException && error.name === "NotFoundError") return;
+      if (error instanceof DOMException && error.name === "NotFoundError")
+        throw new Error("原片段目录不存在，无法重命名");
       throw error;
     }
-    const target = await clips.getDirectoryHandle(newName, { create: true });
+    let target: FileSystemDirectoryHandle;
+    try {
+      target = await clips.getDirectoryHandle(newName);
+      if (await source.isSameEntry(target)) return false;
+      throw new Error("目标片段目录已存在");
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError"))
+        throw error;
+      target = await clips.getDirectoryHandle(newName, { create: true });
+    }
     await copyDirectoryContents(source, target);
+    return true;
   }
   async function confirmRenameShot() {
     if (renameIndex === null || !newTitle.trim()) return;
@@ -1495,15 +1522,18 @@ export default function Home() {
     const title = newTitle.trim();
     const oldFolderName = `${shot.id}-${safeFileStem(shot.title)}`;
     const newFolderName = `${shot.id}-${safeFileStem(title)}`;
-    if (oldFolderName === newFolderName) {
+    if (title === shot.title) {
       setRenameIndex(null);
       return;
     }
-    try {
-      await renameSavedShotDirectory(shot.id, shot.title, title);
-    } catch {
-      setGenerationStatus("片段目录重命名失败，未修改片段名称");
-      return;
+    let directoryMoved = false;
+    if (oldFolderName !== newFolderName) {
+      try {
+        directoryMoved = await renameSavedShotDirectory(shot.id, shot.title, title);
+      } catch {
+        setGenerationStatus("片段目录重命名失败，未修改片段名称");
+        return;
+      }
     }
     const oldFolder = `片段/${shot.id}-${safeFileStem(shot.title)}`;
     const newFolder = `片段/${shot.id}-${safeFileStem(title)}`;
@@ -1536,25 +1566,27 @@ export default function Home() {
       itemIndex === renameIndex ? { ...item, title } : item,
     );
     try {
-      await writeClipManifest({ id: shot.id, title, output: shot.output ?? null }, {
+      await enqueueProjectMutation(() => writeClipManifest({ id: shot.id, title, output: shot.output ?? null }, {
         referenceAssets: renamedAssets,
         keyframes: renamedKeyframes,
-      });
-      await writeProjectManifest(next);
+      }));
+      await enqueueProjectMutation(() => writeProjectManifest(next));
     } catch {
-      try {
-        const clips = await projectDirectory?.getDirectoryHandle("片段");
-        if (clips && (clips as WritableDirectoryHandle).removeEntry)
-          await (clips as WritableDirectoryHandle).removeEntry(newFolderName, { recursive: true });
-      } catch {
-        // Keep the original error; cleanup is best effort.
+      if (directoryMoved) {
+        try {
+          const clips = await projectDirectory?.getDirectoryHandle("片段");
+          if (clips && (clips as WritableDirectoryHandle).removeEntry)
+            await (clips as WritableDirectoryHandle).removeEntry(newFolderName, { recursive: true });
+        } catch {
+          // Keep the original error; cleanup is best effort.
+        }
       }
       setGenerationStatus("片段重命名保存失败，旧目录仍已保留");
       return;
     }
     try {
       const clips = await projectDirectory?.getDirectoryHandle("片段");
-      if (clips && (clips as WritableDirectoryHandle).removeEntry)
+      if (directoryMoved && clips && (clips as WritableDirectoryHandle).removeEntry)
         await (clips as WritableDirectoryHandle).removeEntry(
           `${shot.id}-${safeFileStem(shot.title)}`,
           { recursive: true },
@@ -1602,7 +1634,7 @@ export default function Home() {
     const deletedId = shot.id;
     const next = shots.filter((_, itemIndex) => itemIndex !== index);
     try {
-      await writeProjectManifest(next);
+      await enqueueProjectMutation(() => writeProjectManifest(next));
     } catch {
       setGenerationStatus("片段删除保存失败，原片段文件仍已保留");
       return;
@@ -1749,6 +1781,8 @@ export default function Home() {
   ) {
     const shotId = taskShot?.id;
     if (!shotId || !projectDirectory) return;
+    const epoch = projectEpochRef.current;
+    const projectAtStart = projectDirectory;
     ensureReferenceMode(shotId);
     try {
       const folderName =
@@ -1767,6 +1801,7 @@ export default function Home() {
                   : "音频";
       const folder = await getProjectAssetFolder(projectDirectory, folderName);
       const file = await (await folder.getFileHandle(asset.name)).getFile();
+      if (projectEpochRef.current !== epoch || projectDirectory !== projectAtStart) return;
       const kind: ReferenceKind = file.type.startsWith("audio/")
         ? "audio"
         : file.type.startsWith("video/")
@@ -1798,9 +1833,10 @@ export default function Home() {
       if (!existingKey || target) {
         const previous = referenceAssets[key];
         const uploaded = await uploadReferenceFile(file, kind, comfyUrl);
+        if (projectEpochRef.current !== epoch || projectDirectory !== projectAtStart) return;
         if (previous?.sourcePath) void deleteReferenceSourceFile(previous.sourcePath);
         if (previous?.url.startsWith("blob:")) URL.revokeObjectURL(previous.url);
-        setReferenceAssets((current) => ({
+        updateReferenceAssets((current) => ({
           ...current,
           [key]: {
             name: file.name,
@@ -1946,6 +1982,8 @@ export default function Home() {
       setGenerationStatus("当前浏览器不支持本地项目目录");
       return;
     }
+    const requestedName = window.prompt("请输入项目名称", "未命名项目")?.trim();
+    if (!requestedName) return;
     try {
       const directory = await picker();
       const writable = directory as WritableDirectoryHandle;
@@ -1991,7 +2029,7 @@ export default function Home() {
         await writable.write(
           JSON.stringify(
             {
-              project: { name: directory.name || "未命名项目", version: 2 },
+              project: { name: requestedName, version: 2 },
               clips: [],
             },
             null,
@@ -2002,7 +2040,8 @@ export default function Home() {
       } catch {
         /* Keep the selected directory usable if manifest creation is unavailable. */
       }
-      setGenerationStatus(`项目目录已就绪：${directory.name || "未命名项目"}`);
+      setProjectDirectoryName(requestedName);
+      setGenerationStatus(`项目目录已就绪：${requestedName}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setGenerationStatus("创建项目目录失败");
@@ -2250,8 +2289,7 @@ export default function Home() {
           ...uploaded,
           url: referenceAssetUrl(uploaded, comfyUrlValue),
         };
-        referenceAssetsRef.current = { ...referenceAssetsRef.current, [assetKey]: restored };
-        setReferenceAssets((current) =>
+        updateReferenceAssets((current) =>
           current[assetKey]?.sourcePath === asset.sourcePath
             ? { ...current, [assetKey]: restored }
             : current,
@@ -3757,12 +3795,8 @@ export default function Home() {
     const key = referenceKey(taskShot.id, kind, index);
     const uploadToken = (referenceUploadTokensRef.current[key] ?? 0) + 1;
     referenceUploadTokensRef.current[key] = uploadToken;
-    const previousAsset = referenceAssets[key];
-    const url = URL.createObjectURL(file);
-    setReferenceAssets((current) => ({
-      ...current,
-      [key]: { name: file.name, url, kind },
-    }));
+    const previousAsset = referenceAssetsRef.current[key];
+    let url: string | undefined;
     try {
       const uploaded = await uploadReferenceFile(file, kind, comfyUrl);
       let sourcePath: string | undefined;
@@ -3779,6 +3813,7 @@ export default function Home() {
         if (sourcePath) void deleteReferenceSourceFile(sourcePath);
         return;
       }
+      url = URL.createObjectURL(file);
       if (
         sourcePath &&
         previousAsset?.sourcePath &&
@@ -3846,10 +3881,10 @@ export default function Home() {
         projectEpoch !== projectEpochRef.current ||
         referenceUploadTokensRef.current[key] !== uploadToken
       ) {
-        URL.revokeObjectURL(url);
+        if (url) URL.revokeObjectURL(url);
         return;
       }
-      URL.revokeObjectURL(url);
+      if (url) URL.revokeObjectURL(url);
       setReferenceAssets((current) => {
         const next = { ...current };
         if (previousAsset) next[key] = previousAsset;
@@ -4224,6 +4259,11 @@ export default function Home() {
       ...current,
       [promptStoreKey(taskShot.id, activeMode)]: nextPrompt,
     }));
+    setOptimizedPrompts((current) => {
+      const next = { ...current };
+      delete next[promptStoreKey(taskShot.id, activeMode)];
+      return next;
+    });
     setPromptMention(null);
     window.requestAnimationFrame(() => {
       const textarea = promptRef.current;
@@ -4250,6 +4290,9 @@ export default function Home() {
       setEngineSettingsOpen(true);
       return;
     }
+    const epoch = projectEpochRef.current;
+    const shotId = taskShot.id;
+    const modeAtStart = activeMode;
     setPromptOptimizing((current) => ({ ...current, [taskShot.id]: true }));
     setPromptNotice({ type: "success", text: "正在使用本地 Agent CLI 优化提示词…" });
     try {
@@ -4327,9 +4370,11 @@ export default function Home() {
       const result = (await response.json().catch(() => ({}))) as { prompt?: string; error?: string };
       if (!response.ok || typeof result.prompt !== "string" || !result.prompt.trim())
         throw new Error(result.error || "提示词优化失败");
+      if (projectEpochRef.current !== epoch || taskShot?.id !== shotId || activeMode !== modeAtStart)
+        return;
       setOptimizedPrompts((current) => ({
         ...current,
-        [promptStoreKey(taskShot.id, activeMode)]: result.prompt!,
+        [promptStoreKey(shotId, modeAtStart)]: result.prompt!,
       }));
       await writeClipManifest(taskShot, {
         generation: {
