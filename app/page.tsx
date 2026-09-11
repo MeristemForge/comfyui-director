@@ -1555,12 +1555,14 @@ export default function Home() {
   async function confirmDeleteShot(deleteFromDisk = false) {
     if (deleteIndex === null) return;
     const index = deleteIndex;
-    const deletedId = shots[index]?.id;
+    const shot = shots[index];
+    if (!shot) return;
+    const deletedId = shot.id;
     const next = shots.filter((_, itemIndex) => itemIndex !== index);
     try {
       await writeProjectManifest(next);
       if (deleteFromDisk)
-        await deleteSavedShotFiles(deletedId, shots[index]?.title ?? "");
+        await deleteSavedShotFiles(deletedId, shot.title);
       setShots(next);
     } catch {
       setGenerationStatus("片段删除保存失败，原片段文件仍已保留");

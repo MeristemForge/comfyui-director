@@ -343,6 +343,16 @@ async function prepare(project, args, urls) {
   const target = await getClip(project, args.clip);
   const entries = referenceEntries(target.manifest);
   const uploaded = [];
+  const keyframes = target.manifest.keyframes || {};
+  for (const [label, frame] of Object.entries(keyframes)) {
+    if (!frame || frame.comfyName || !frame.sourcePath) continue;
+    const absolute = ensureInside(project.root, frame.sourcePath);
+    const info = await stat(absolute).catch(() => null);
+    if (!info?.isFile()) fail(`关键帧不存在：${frame.sourcePath}`);
+    const remote = await uploadReference(urls.director, urls.comfy, { absolute, sourcePath: frame.sourcePath, name: frame.name || path.basename(absolute) });
+    Object.assign(frame, remote);
+    uploaded.push({ assetKey: label, sourcePath: frame.sourcePath, ...remote });
+  }
   for (const { reference } of entries) {
     if (reference.comfyName || !reference.sourcePath) continue;
     const absolute = ensureInside(project.root, reference.sourcePath);
@@ -370,7 +380,7 @@ async function prepare(project, args, urls) {
     else if (kind === "audio") refs.audios.push(value);
     else refs.images.push(value);
   }
-  return { target, uploaded, references: refs, prompt: selectedPrompt(target.manifest) };
+  return { target, uploaded, references: refs, keyframes, prompt: selectedPrompt(target.manifest) };
 }
 
 function generationOptions(manifest, args) {
@@ -399,16 +409,18 @@ async function render(project, args, urls) {
   const options = generationOptions(prepared.target.manifest, args);
   const mode = options.mode;
   if (!GENERATION_MODES.includes(mode)) fail(`无效生成模式：${mode}`);
-  const prompt = selectedPrompt(prepared.target.manifest, mode);
-  if (!prompt) fail(`当前 ${mode} 模式没有提示词，请先写入 clip.json 的 prompts.${mode}`);
   const references = mode === "R2VA" ? prepared.references : { images: [], videos: [], audios: [] };
+  const firstFrame = prepared.keyframes?.[`${prepared.target.clip.id}-首帧`]?.comfyName;
+  const lastFrame = prepared.keyframes?.[`${prepared.target.clip.id}-尾帧`]?.comfyName;
   const promptOverride = args.prompt_file
     ? (await readFile(ensureInside(project.root, args.prompt_file), "utf8")).trim()
     : String(args.prompt || "").trim();
+  const prompt = promptOverride || selectedPrompt(prepared.target.manifest, mode);
+  if (!prompt) fail(`当前 ${mode} 模式没有提示词，请先写入 clip.json 的 prompts.${mode} 或使用 --prompt/--prompt-file`);
   const body = {
     shot_id: prepared.target.clip.id,
     shot_title: prepared.target.clip.title,
-    prompt: promptOverride || prompt,
+    prompt,
     mode,
     duration: options.duration,
     resolution: options.resolution,
@@ -422,8 +434,8 @@ async function render(project, args, urls) {
     images: references.images.slice(0, REFERENCE_LIMITS.image),
     videos: references.videos.slice(0, REFERENCE_LIMITS.video),
     audios: references.audios.slice(0, REFERENCE_LIMITS.audio),
-    ...(args.image ? { image: args.image } : {}),
-    ...(args.last_image ? { last_image: args.last_image } : {}),
+    ...(args.image || firstFrame ? { image: args.image || firstFrame } : {}),
+    ...(args.last_image || lastFrame ? { last_image: args.last_image || lastFrame } : {}),
   };
   const submitted = await apiFetch(fileUrl(urls.director, "/api/generate"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const result = { ok: true, clip: prepared.target.clip.id, prompt_id: submitted.prompt_id, status: "submitted", generation: options, references: { images: body.images, videos: body.videos, audios: body.audios } };
