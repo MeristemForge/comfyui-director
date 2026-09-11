@@ -2035,8 +2035,7 @@ export default function Home() {
         if (!(error instanceof DOMException && error.name === "NotFoundError"))
           throw error;
       }
-      projectIdRef.current = crypto.randomUUID();
-      projectIdsRef.current.set(directory, projectIdRef.current);
+      const newProjectId = crypto.randomUUID();
       const assets = await directory.getDirectoryHandle("资产", {
         create: true,
       });
@@ -2044,11 +2043,19 @@ export default function Home() {
         await assets.getDirectoryHandle(folderName, { create: true });
       await directory.getDirectoryHandle("片段", { create: true });
       await directory.getDirectoryHandle("输出", { create: true });
+      const file = await directory.getFileHandle("script.json", { create: true });
+      const manifestWritable = await file.createWritable();
+      await manifestWritable.write(JSON.stringify({
+        project: { id: newProjectId, name: requestedName, version: 2 }, clips: [],
+      }, null, 2));
+      await manifestWritable.close();
+      projectIdRef.current = newProjectId;
+      projectIdsRef.current.set(directory, newProjectId);
       resetProjectEditorState();
       setProjectDirectory(directory);
       setProjectDirectories((current) => {
         const next = [
-          ...current.filter((item) => item.name !== directory.name),
+          ...current.filter((item) => item !== directory),
           directory,
         ];
         void saveProjectDirectoryHandles(next);
@@ -2056,25 +2063,6 @@ export default function Home() {
       });
       setProjectDirectoryName(directory.name || "项目目录");
       void saveProjectDirectoryHandle(directory);
-      try {
-        const file = await directory.getFileHandle("script.json", {
-          create: true,
-        });
-        const writable = await file.createWritable();
-        await writable.write(
-          JSON.stringify(
-            {
-              project: { id: projectIdRef.current, name: requestedName, version: 2 },
-              clips: [],
-            },
-            null,
-            2,
-          ),
-        );
-        await writable.close();
-      } catch {
-        /* Keep the selected directory usable if manifest creation is unavailable. */
-      }
       setProjectDirectoryName(requestedName);
       setGenerationStatus(`项目目录已就绪：${requestedName}`);
     } catch (error) {
@@ -2117,7 +2105,7 @@ export default function Home() {
       setProjectDirectory(directory);
       setProjectDirectories((current) => {
         const next = [
-          ...current.filter((item) => item.name !== directory.name),
+          ...current.filter((item) => item !== directory),
           directory,
         ];
         void saveProjectDirectoryHandles(next);
@@ -2349,7 +2337,7 @@ export default function Home() {
       (directory) => (projectIdsRef.current.get(directory) ?? directory.name) === name,
     );
     if (!handle) return;
-    if (projectDirectory?.name === name) return;
+    if (projectDirectory && (projectIdsRef.current.get(projectDirectory) ?? projectDirectory.name) === name) return;
     try {
       const loaded = await readProjectShots(handle);
       const metadata = await readProjectMetadata(handle);
@@ -2368,11 +2356,11 @@ export default function Home() {
         (error.name === "NotFoundError" || error.name === "NotFound")
       ) {
         const next = projectDirectories.filter(
-          (directory) => directory.name !== name,
+          (directory) => (projectIdsRef.current.get(directory) ?? directory.name) !== name,
         );
         setProjectDirectories(next);
         void saveProjectDirectoryHandles(next).catch(() => undefined);
-        if (projectDirectory?.name === name) {
+        if (projectDirectory && (projectIdsRef.current.get(projectDirectory) ?? projectDirectory.name) === name) {
           resetProjectEditorState();
           setProjectDirectory(null);
           setProjectDirectoryName("未选择项目目录");
