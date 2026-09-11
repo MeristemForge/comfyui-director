@@ -38,7 +38,8 @@ export async function POST(request: Request) {
       }
     }
     let [width, height] = String(body.resolution ?? '1344 × 768').split('×').map((value) => Number(value.trim()));
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return Response.json({ error: '无效的分辨率' }, { status: 400 });
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0)
+      return Response.json({ error: '无效的分辨率' }, { status: 400 });
     // Keep the selected pixel budget while honoring portrait/square/wide aspect
     // choices. H3 requires dimensions aligned to a 32-pixel grid.
     const aspect = String(body.aspect ?? '16:9').trim();
@@ -59,11 +60,15 @@ export async function POST(request: Request) {
     const stepNodes = Object.values(normalized).filter((item) => item.class_type === 'PrimitiveInt');
     const stepNode = stepNodes.find((item) => Number(item.inputs?.value) === 20 || Number(item.inputs?.value) === 4);
     if (stepNode) stepNode.inputs!.value = turbo ? 4 : 20;
-    node('RandomNoise')!.inputs!.noise_seed = Number(body.seed) || Math.floor(Math.random() * 9000000000000000) + 1000000000000000;
+    node('RandomNoise')!.inputs!.noise_seed = body.seed === undefined
+      ? Math.floor(Math.random() * (Number.MAX_SAFE_INTEGER - 1)) + 1
+      : Number(body.seed);
     const videoNode = Object.values(normalized).find((item) => item.class_type?.startsWith('MiniMaxH3'))!;
     const imageNode = node('LoadImage');
     if (mode === 'I2VA') {
-      const keyframeMode = body.keyframe_mode === 'last' || body.keyframe_mode === 'first_last' ? body.keyframe_mode : 'first';
+      const keyframeMode = body.keyframe_mode ?? 'first';
+      if (!['first', 'last', 'first_last'].includes(keyframeMode))
+        return Response.json({ error: '无效的关键帧模式' }, { status: 400 });
       const useFirst = keyframeMode === 'first' || keyframeMode === 'first_last';
       const useLast = keyframeMode === 'last' || keyframeMode === 'first_last';
       const firstImage = useFirst && typeof body.image === 'string' && body.image.trim() ? body.image.trim() : '';

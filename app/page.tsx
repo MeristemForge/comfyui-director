@@ -746,6 +746,22 @@ async function readProjectShots(
     }),
   );
 }
+async function readProjectMetadata(handle: FileSystemDirectoryHandle) {
+  try {
+    const file = await handle.getFileHandle("script.json");
+    const script = JSON.parse(await (await file.getFile()).text()) as {
+      project?: { id?: unknown; name?: unknown };
+    };
+    return {
+      id: typeof script.project?.id === "string" && script.project.id.trim()
+        ? script.project.id.trim() : crypto.randomUUID(),
+      name: typeof script.project?.name === "string" && script.project.name.trim()
+        ? script.project.name.trim() : handle.name,
+    };
+  } catch {
+    return { id: crypto.randomUUID(), name: handle.name };
+  }
+}
 
 export default function Home() {
   const [activeShot, setActiveShot] = useState(0);
@@ -792,6 +808,10 @@ export default function Home() {
   >([]);
   const [projectDirectoryName, setProjectDirectoryName] =
     useState("未选择项目目录");
+  const [projectNameDialog, setProjectNameDialog] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("未命名项目");
+  const projectIdRef = useRef(crypto.randomUUID());
+  const projectIdsRef = useRef(new WeakMap<FileSystemDirectoryHandle, string>());
   const [projectAssets, setProjectAssets] = useState<ProjectTreeAsset[]>([]);
   const [projectOutputFiles, setProjectOutputFiles] = useState<string[] | null>(
     null,
@@ -872,9 +892,9 @@ export default function Home() {
     : profile.resolutions[profile.resolutions.length - 1];
   const taskShot = shots[activeShot];
   const visibleProjects = projectDirectories.length
-    ? projectDirectories.map((directory) => ({ name: directory.name }))
+    ? projectDirectories.map((directory) => ({ id: projectIdsRef.current.get(directory) ?? directory.name, name: directory.name }))
     : projectDirectory
-      ? [{ name: projectDirectoryName }]
+      ? [{ id: projectIdRef.current, name: projectDirectoryName }]
       : [];
   const activeShotIdRef = useRef<string | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -1976,16 +1996,23 @@ export default function Home() {
     setPromptMention(null);
     setPromptViewerOpen(false);
   }
-  async function chooseProjectDirectory() {
+  function chooseProjectDirectory() {
+    setNewProjectName("未命名项目");
+    setProjectNameDialog(true);
+  }
+  async function createProjectDirectory() {
     const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
     if (!picker) {
       setGenerationStatus("当前浏览器不支持本地项目目录");
       return;
     }
-    const requestedName = window.prompt("请输入项目名称", "未命名项目")?.trim();
+    const requestedName = newProjectName.trim();
     if (!requestedName) return;
+    setProjectNameDialog(false);
     try {
       const directory = await picker();
+      projectIdRef.current = crypto.randomUUID();
+      projectIdsRef.current.set(directory, projectIdRef.current);
       const writable = directory as WritableDirectoryHandle;
       const permission = writable.requestPermission
         ? await writable.requestPermission({ mode: "readwrite" })
@@ -2075,6 +2102,9 @@ export default function Home() {
       if (missing.length)
         throw new Error(`项目格式无效，缺少目录：${missing.join("、")}`);
       const loaded = await readProjectShots(directory);
+      const metadata = await readProjectMetadata(directory);
+      projectIdRef.current = metadata.id;
+      projectIdsRef.current.set(directory, metadata.id);
       resetProjectEditorState();
       setProjectDirectory(directory);
       setProjectDirectories((current) => {
@@ -2085,7 +2115,7 @@ export default function Home() {
         void saveProjectDirectoryHandles(next);
         return next;
       });
-      setProjectDirectoryName(directory.name || "导入项目");
+      setProjectDirectoryName(metadata.name || "导入项目");
       void saveProjectDirectoryHandle(directory);
       const restoredAssets = applyProjectShotRecords(loaded);
       await hydrateProjectReferenceAssets(
@@ -2093,7 +2123,7 @@ export default function Home() {
         restoredAssets,
         comfyUrl,
       );
-      setGenerationStatus(`项目已导入：${directory.name || "未命名项目"}`);
+      setGenerationStatus(`项目已导入：${metadata.name || "未命名项目"}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setGenerationStatus(
@@ -2308,15 +2338,18 @@ export default function Home() {
   }
   async function selectProjectByName(name: string) {
     const handle = projectDirectories.find(
-      (directory) => directory.name === name,
+      (directory) => (projectIdsRef.current.get(directory) ?? directory.name) === name,
     );
     if (!handle) return;
     if (projectDirectory?.name === name) return;
     try {
       const loaded = await readProjectShots(handle);
+      const metadata = await readProjectMetadata(handle);
+      projectIdRef.current = metadata.id;
+      projectIdsRef.current.set(handle, metadata.id);
       resetProjectEditorState();
       setProjectDirectory(handle);
-      setProjectDirectoryName(handle.name);
+      setProjectDirectoryName(metadata.name || handle.name);
       const restoredAssets = applyProjectShotRecords(loaded);
       await hydrateProjectReferenceAssets(handle, restoredAssets, comfyUrl);
       setActiveShot(0);
@@ -2571,13 +2604,13 @@ export default function Home() {
         ? [projectDirectory]
         : []),
     ];
-    const next = knownDirectories.filter(
-      (directory) => directory.name !== name,
+    const next = knownDirectories.filter((directory) =>
+      (projectIdsRef.current.get(directory) ?? directory.name) !== name,
     );
     if (next.length === knownDirectories.length) return;
     setProjectDirectories(next);
     await saveProjectDirectoryHandles(next).catch(() => undefined);
-    if (projectDirectory?.name !== name) {
+    if ((projectDirectory && (projectIdsRef.current.get(projectDirectory) ?? projectDirectory.name) !== name)) {
       setProjectDeleteCandidate(null);
       setGenerationStatus(`项目“${name}”已从导演台移除，磁盘文件未改动`);
       return;
@@ -2632,8 +2665,8 @@ export default function Home() {
         ? [projectDirectory]
         : []),
     ];
-    const handle = knownDirectories.find(
-      (directory) => directory.name === name,
+    const handle = knownDirectories.find((directory) =>
+      (projectIdsRef.current.get(directory) ?? directory.name) === name,
     );
     if (!handle) return;
     try {
@@ -2666,12 +2699,13 @@ export default function Home() {
             throw error;
         }
       }
-      const next = knownDirectories.filter(
-        (directory) => directory.name !== name,
+      const next = knownDirectories.filter((directory) =>
+        (projectIdsRef.current.get(directory) ?? directory.name) !== name,
       );
       setProjectDirectories(next);
       void saveProjectDirectoryHandles(next);
-      const deletingActive = projectDirectory?.name === name;
+      const deletingActive = projectDirectory &&
+        (projectIdsRef.current.get(projectDirectory) ?? projectDirectory.name) === name;
       if (deletingActive) {
         const nextHandle = next[0];
         if (nextHandle) {
@@ -3156,7 +3190,7 @@ export default function Home() {
     await writable.write(
       JSON.stringify(
         {
-          project: { name: projectDirectoryName, version: 2 },
+          project: { id: projectIdRef.current, name: projectDirectoryName, version: 2 },
           clips: shotList.map((item) => ({
             id: item.id,
             title: item.title,
@@ -5001,7 +5035,7 @@ export default function Home() {
             <div className="p-3">
               <ProjectTree
                 projects={visibleProjects}
-                activeProjectName={projectDirectoryName}
+                activeProjectId={projectIdRef.current}
                 onSelectProject={selectProjectByName}
                 onRemoveProject={requestProjectDeletion}
                 onDeleteAsset={requestProjectAssetDeletion}
@@ -5323,7 +5357,7 @@ export default function Home() {
           <div className="p-3">
             <ProjectTree
               projects={visibleProjects}
-              activeProjectName={projectDirectoryName}
+                activeProjectId={projectIdRef.current}
               onSelectProject={selectProjectByName}
               onRemoveProject={requestProjectDeletion}
               onDeleteAsset={requestProjectAssetDeletion}
@@ -6027,6 +6061,51 @@ export default function Home() {
           </div>
         </aside>
       </div>
+      {projectNameDialog && (
+        <div
+          className="fixed inset-0 z-[80] grid place-items-center bg-black/65 p-4 backdrop-blur-sm"
+          onMouseDown={() => setProjectNameDialog(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-base font-semibold">新建项目</h2>
+            <p className="mt-2 text-xs text-muted-foreground">
+              先填写项目名称，下一步选择项目保存位置。
+            </p>
+            <label htmlFor="new-project-name" className="field-label mt-5 block">
+              项目名称
+            </label>
+            <input
+              id="new-project-name"
+              value={newProjectName}
+              onChange={(event) => setNewProjectName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && newProjectName.trim()) {
+                  event.preventDefault();
+                  void createProjectDirectory();
+                }
+                if (event.key === "Escape") setProjectNameDialog(false);
+              }}
+              className="mt-2 h-10 w-full rounded-xl border border-border bg-muted/30 px-3 text-sm outline-none transition focus:border-[#f4bd50] focus:ring-2 focus:ring-[#f4bd50]/20"
+              autoFocus
+            />
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setProjectNameDialog(false)}>
+                取消
+              </Button>
+              <Button
+                disabled={!newProjectName.trim()}
+                onClick={() => void createProjectDirectory()}
+                className="bg-[#f4bd50] text-[#17120a] hover:bg-[#ffd070]"
+              >
+                选择保存位置
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       {addDialog && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
