@@ -32,6 +32,9 @@ export async function GET(request: Request) {
   if (!id) return Response.json({ error: '缺少任务 ID' }, { status: 400 });
   try {
     const response = await fetch(`${comfyUrl}/history/${encodeURIComponent(id)}`);
+    if (!response.ok) {
+      return Response.json({ status: 'error', error: `ComfyUI history HTTP ${response.status}` }, { status: 502 });
+    }
     const data = await response.json();
     const item = data[id];
     if (!item) {

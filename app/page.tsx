@@ -1771,7 +1771,10 @@ export default function Home() {
         ? referenceKey(shotId, kind, target.index)
         : existingKey ?? referenceKey(shotId, kind, nextReferenceIndex(shotId, kind));
       if (!existingKey || target) {
+        const previous = referenceAssets[key];
         const uploaded = await uploadReferenceFile(file, kind, comfyUrl);
+        if (previous?.sourcePath) void deleteReferenceSourceFile(previous.sourcePath);
+        if (previous?.url.startsWith("blob:")) URL.revokeObjectURL(previous.url);
         setReferenceAssets((current) => ({
           ...current,
           [key]: {
@@ -1786,7 +1789,10 @@ export default function Home() {
       const uploadedRoles: ReferenceRole[] = [role];
       const parsedAsset = parseProjectAssetName(asset.name);
       setPromptSubjects((current) => {
-        const subjects = [...(current[shotId] ?? [])];
+        const subjects = remapSubjectReferenceKeys(
+          current[shotId] ?? [],
+          (assetKey) => assetKey === key ? null : assetKey,
+        );
         const child = {
           name: parsedAsset.name,
           assetKeys: uploadedKeys,
@@ -2185,7 +2191,8 @@ export default function Home() {
       const isCurrent = () =>
         projectEpochRef.current === epoch &&
         referenceAssetsRef.current[assetKey]?.sourcePath === asset.sourcePath;
-      if (!isCurrent()) return;
+      if (projectEpochRef.current !== epoch) return;
+      if (referenceAssetsRef.current[assetKey]?.sourcePath !== asset.sourcePath) continue;
       if (!asset.sourcePath) continue;
       if (await isReferenceAssetAvailable(asset, comfyUrlValue)) continue;
       let sourceFile: File;
@@ -2204,7 +2211,8 @@ export default function Home() {
         continue;
       }
       try {
-        if (!isCurrent()) return;
+        if (projectEpochRef.current !== epoch) return;
+        if (referenceAssetsRef.current[assetKey]?.sourcePath !== asset.sourcePath) continue;
         const uploaded = await uploadReferenceFile(
           sourceFile,
           asset.kind,

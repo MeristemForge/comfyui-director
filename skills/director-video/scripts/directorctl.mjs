@@ -148,6 +148,7 @@ function validateClipManifest(manifest, clip) {
   })) fail(`片段 ${clip.id} 的 prompts 不完整`);
   if (!Array.isArray(manifest.references?.subjects))
     fail(`片段 ${clip.id} 的 references 不完整`);
+  const assetOwners = new Set();
   for (const [subjectIndex, subject] of manifest.references.subjects.entries()) {
     if (!subject || typeof subject.subjectId !== "string" || !subject.subjectId.trim() ||
       typeof subject.name !== "string" || !subject.name.trim() || !Array.isArray(subject.references))
@@ -161,6 +162,8 @@ function validateClipManifest(manifest, clip) {
         typeof reference.name !== "string" || !reference.name.trim() ||
         !REFERENCE_ROLES.includes(reference.role) || !REFERENCE_KINDS.includes(reference.kind))
         fail(`片段 ${clip.id} 的第 ${subjectIndex + 1} 个主体中，第 ${referenceIndex + 1} 个引用无效`);
+      if (assetOwners.has(reference.assetKey)) fail(`片段 ${clip.id} 的引用 ${reference.assetKey} 被多个主体重复绑定`);
+      assetOwners.add(reference.assetKey);
     }
   }
   if (typeof manifest.visualStyle !== "string" || !manifest.visualStyle.trim())
@@ -270,6 +273,11 @@ function subjectRecord(manifest, clipId, subjectName) {
   return subject;
 }
 
+function detachAssetKey(manifest, assetKey) {
+  for (const subject of allReferences(manifest))
+    subject.references = (subject.references || []).filter((reference) => reference.assetKey !== assetKey);
+}
+
 async function bind(project, args) {
   if (!args.clip || !args.asset.length) fail("bind 需要 --clip 和至少一个 --asset");
   const target = await getClip(project, args.clip);
@@ -280,7 +288,8 @@ async function bind(project, args) {
     const existing = findExistingReference(target.manifest, asset.sourcePath);
     const subject = subjectRecord(target.manifest, target.clip.id, args.subject || nameFromFile(asset.name));
     if (existing) {
-      if (!subject.references.some((reference) => reference.assetKey === existing.reference.assetKey)) subject.references.push(existing.reference);
+      detachAssetKey(target.manifest, existing.reference.assetKey);
+      subject.references.push({ ...existing.reference, role: inferRole(asset.type, args.role) });
       bound.push({ asset: asset.sourcePath, assetKey: existing.reference.assetKey, reused: true });
       continue;
     }
