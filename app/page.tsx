@@ -1159,7 +1159,6 @@ export default function Home() {
       normalizePrompt(shotPrompts[promptStoreKey(taskShot.id, settings.mode)]),
     );
     setPromptNotice(null);
-    setGenerationNotice(null);
     setVideoUrl(shotVideos[taskShot.id] ?? taskShot.output ?? null);
     void loadArchivedShotVideo(taskShot).then((url) => {
       if (url && activeShotIdRef.current === taskShot.id) setVideoUrl(url);
@@ -1188,6 +1187,10 @@ export default function Home() {
                 : "等待生成",
     );
   }, [storageReady, taskShot?.id, shotVideos, shotSettings]);
+
+  useEffect(() => {
+    setGenerationNotice(null);
+  }, [taskShot?.id]);
 
   useEffect(() => {
     if (!storageReady || !projectDirectory) return;
@@ -1715,7 +1718,10 @@ export default function Home() {
     const settings = getShotSettings(shot);
     return `${settings.duration.replace(/\s*秒$/, "s")} · ${settings.mode} · ${settings.turbo ? "加速" : "标准"} · ${settings.resolution.replace(/\s*×\s*/, "×")} · ${settings.fps.replace(/\s+/g, "")}`;
   }
-  async function bindProjectAsset(asset: ProjectTreeAsset) {
+  async function bindProjectAsset(
+    asset: ProjectTreeAsset,
+    target?: { kind: ReferenceKind; index: number },
+  ) {
     const shotId = taskShot?.id;
     if (!shotId || !projectDirectory) return;
     ensureReferenceMode(shotId);
@@ -1761,8 +1767,10 @@ export default function Home() {
           existing.kind === kind &&
           existing.sourcePath === `资产/${folderName}/${asset.name}`,
       )?.[0];
-      const key = existingKey ?? referenceKey(shotId, kind, nextReferenceIndex(shotId, kind));
-      if (!existingKey) {
+      const key = target?.kind === kind
+        ? referenceKey(shotId, kind, target.index)
+        : existingKey ?? referenceKey(shotId, kind, nextReferenceIndex(shotId, kind));
+      if (!existingKey || target) {
         const uploaded = await uploadReferenceFile(file, kind, comfyUrl);
         setReferenceAssets((current) => ({
           ...current,
@@ -2161,6 +2169,7 @@ export default function Home() {
       Object.assign(restoredReferenceAssets, shotReferences.referenceAssets);
     });
     setPromptSubjects(restored);
+    referenceAssetsRef.current = restoredReferenceAssets;
     setReferenceAssets(restoredReferenceAssets);
     return restoredReferenceAssets;
   }
@@ -5125,7 +5134,7 @@ export default function Home() {
                     type="button"
                     onClick={() => {
                       closeAssetPicker();
-                      void bindProjectAsset(asset);
+                      void bindProjectAsset(asset, referencePickerTarget ?? undefined);
                     }}
                     className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left text-xs hover:border-primary/50"
                   >
