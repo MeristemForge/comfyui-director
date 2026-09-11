@@ -30,8 +30,13 @@ export async function POST(request: Request) {
     if (!outputRoot) return Response.json({ error: '无法确定 ComfyUI 输出目录' }, { status: 503 });
     const relative = path.join(String(body.subfolder ?? ''), filename);
     const videoPath = safeChildPath(outputRoot, relative);
-    await unlink(pathToFileURL(videoPath)).catch(() => undefined);
-    await unlink(pathToFileURL(videoPath.replace(/\.[^.]+$/, '.json'))).catch(() => undefined);
+    for (const filePath of [videoPath, videoPath.replace(/\.[^.]+$/, '.json')]) {
+      try {
+        await unlink(pathToFileURL(filePath));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
     return Response.json({ ok: true });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : '清理输出文件失败' }, { status: 500 });

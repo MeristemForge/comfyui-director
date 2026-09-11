@@ -878,6 +878,7 @@ export default function Home() {
   const keyframesRef = useRef(keyframes);
   keyframesRef.current = keyframes;
   const projectEpochRef = useRef(0);
+  const finalizingPromptIdsRef = useRef(new Set<string>());
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeTask = taskShot ? shotTasks[taskShot.id] : undefined;
   const activeSubmitting = taskShot
@@ -1467,8 +1468,6 @@ export default function Home() {
     }
     const target = await clips.getDirectoryHandle(newName, { create: true });
     await copyDirectoryContents(source, target);
-    if (!writableDirectory.removeEntry) return;
-    await writableDirectory.removeEntry(oldName, { recursive: true });
   }
   async function confirmRenameShot() {
     if (renameIndex === null || !newTitle.trim()) return;
@@ -1516,11 +1515,18 @@ export default function Home() {
     const next = shots.map((item, itemIndex) =>
       itemIndex === renameIndex ? { ...item, title } : item,
     );
-    setShots(next);
     try {
+      await writeClipManifest({ id: shot.id, title });
       await writeProjectManifest(next);
+      const clips = await projectDirectory?.getDirectoryHandle("片段");
+      if (clips && (clips as WritableDirectoryHandle).removeEntry)
+        await (clips as WritableDirectoryHandle).removeEntry(
+          `${shot.id}-${safeFileStem(shot.title)}`,
+          { recursive: true },
+        );
+      setShots(next);
     } catch {
-      setGenerationStatus("片段名称已修改，但项目清单写入失败");
+      setGenerationStatus("片段重命名保存失败，旧目录仍已保留");
     }
     setRenameIndex(null);
   }
@@ -1550,20 +1556,15 @@ export default function Home() {
     if (deleteIndex === null) return;
     const index = deleteIndex;
     const deletedId = shots[index]?.id;
-    if (deletedId && deleteFromDisk) {
-      try {
-        await deleteSavedShotFiles(deletedId, shots[index]?.title ?? "");
-      } catch {
-        if (activeShotIdRef.current === deletedId)
-          setGenerationStatus("镜头已删除，但输出文件删除失败");
-      }
-    }
     const next = shots.filter((_, itemIndex) => itemIndex !== index);
-    setShots(next);
     try {
       await writeProjectManifest(next);
+      if (deleteFromDisk)
+        await deleteSavedShotFiles(deletedId, shots[index]?.title ?? "");
+      setShots(next);
     } catch {
-      setGenerationStatus("片段已从当前界面移除，但项目清单写入失败");
+      setGenerationStatus("片段删除保存失败，原片段文件仍已保留");
+      return;
     }
     if (deletedId) {
       setShotPrompts((current) => {
@@ -4401,7 +4402,10 @@ export default function Home() {
     const tasks = Object.entries(shotTasks);
     if (!tasks.length) return;
     let disposed = false;
+    let polling = false;
     const poll = async () => {
+      if (polling) return;
+      polling = true;
       await Promise.all(
         tasks.map(async ([shotId, task]) => {
           try {
@@ -4435,6 +4439,8 @@ export default function Home() {
                 setGenerationStatus("正在采样");
             }
             if (result.status === "completed") {
+              if (finalizingPromptIdsRef.current.has(task.promptId)) return;
+              finalizingPromptIdsRef.current.add(task.promptId);
               if (!result.url) {
                 if (activeShotIdRef.current === shotId)
                   setGenerationStatus("生成完成，但 ComfyUI 未返回视频地址");
@@ -4468,7 +4474,7 @@ export default function Home() {
                 task,
                 result.source,
                 result.source_subfolder,
-              );
+              ).finally(() => finalizingPromptIdsRef.current.delete(task.promptId));
             }
             if (result.status === "error") {
               setShotTasks((current) => {
@@ -4493,6 +4499,7 @@ export default function Home() {
           }
         }),
       );
+      polling = false;
     };
     void poll();
     const timer = window.setInterval(() => {
@@ -4506,6 +4513,7 @@ export default function Home() {
 
   function toggleGeneration() {
     if (!taskShot) return;
+    const projectEpoch = projectEpochRef.current;
     const shotId = taskShot.id;
     if (activeTask) {
       void fetch("/api/generate/cancel", {
@@ -4663,6 +4671,7 @@ export default function Home() {
         }
         if (typeof result.prompt_id !== "string" || !result.prompt_id)
           throw new Error("ComfyUI 未返回任务 ID");
+        if (projectEpoch !== projectEpochRef.current) return;
         setSubmittingShots((current) => {
           const next = { ...current };
           delete next[shotId];
@@ -4684,6 +4693,7 @@ export default function Home() {
           setGenerationStatus("已提交，等待 ComfyUI 排队");
       })
       .catch((error: unknown) => {
+        if (projectEpoch !== projectEpochRef.current) return;
         const message = error instanceof Error ? error.message : "未知提交错误";
         setSubmittingShots((current) => {
           const next = { ...current };
