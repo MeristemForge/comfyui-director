@@ -1385,8 +1385,9 @@ export default function Home() {
       });
       await writeProjectManifest([...shots, shot]);
     } catch {
+      await deleteSavedShotFiles(id, shot.title).catch(() => undefined);
       setGenerationStatus(
-        "片段已创建，但项目目录没有写入权限，请重新选择项目目录",
+        "片段创建失败，请检查项目目录写入权限",
       );
       return;
     }
@@ -1492,6 +1493,12 @@ export default function Home() {
     const shot = shots[renameIndex];
     if (!shot) return;
     const title = newTitle.trim();
+    const oldFolderName = `${shot.id}-${safeFileStem(shot.title)}`;
+    const newFolderName = `${shot.id}-${safeFileStem(title)}`;
+    if (oldFolderName === newFolderName) {
+      setRenameIndex(null);
+      return;
+    }
     try {
       await renameSavedShotDirectory(shot.id, shot.title, title);
     } catch {
@@ -1529,12 +1536,19 @@ export default function Home() {
       itemIndex === renameIndex ? { ...item, title } : item,
     );
     try {
-      await writeClipManifest({ id: shot.id, title }, {
+      await writeClipManifest({ id: shot.id, title, output: shot.output ?? null }, {
         referenceAssets: renamedAssets,
         keyframes: renamedKeyframes,
       });
       await writeProjectManifest(next);
     } catch {
+      try {
+        const clips = await projectDirectory?.getDirectoryHandle("片段");
+        if (clips && (clips as WritableDirectoryHandle).removeEntry)
+          await (clips as WritableDirectoryHandle).removeEntry(newFolderName, { recursive: true });
+      } catch {
+        // Keep the original error; cleanup is best effort.
+      }
       setGenerationStatus("片段重命名保存失败，旧目录仍已保留");
       return;
     }
