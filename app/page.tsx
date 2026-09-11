@@ -1523,8 +1523,6 @@ export default function Home() {
             sourcePath: `${newFolder}/${normalized.slice(oldFolder.length + 1)}`,
           };
         });
-      setReferenceAssets(renamedAssets);
-      setKeyframes(renamedKeyframes);
     }
     const next = shots.map((item, itemIndex) =>
       itemIndex === renameIndex ? { ...item, title } : item,
@@ -1541,6 +1539,8 @@ export default function Home() {
           `${shot.id}-${safeFileStem(shot.title)}`,
           { recursive: true },
         );
+      setReferenceAssets(renamedAssets);
+      setKeyframes(renamedKeyframes);
       setShots(next);
     } catch {
       setGenerationStatus("片段重命名保存失败，旧目录仍已保留");
@@ -2218,7 +2218,8 @@ export default function Home() {
           asset.kind,
           comfyUrlValue,
         );
-        if (!isCurrent()) return;
+        if (projectEpochRef.current !== epoch) return;
+        if (referenceAssetsRef.current[assetKey]?.sourcePath !== asset.sourcePath) continue;
         const restored = {
           ...referenceAssetsRef.current[assetKey],
           ...uploaded,
@@ -2593,10 +2594,15 @@ export default function Home() {
         window.alert(message);
         return;
       }
-      const entries: string[] = [];
-      for await (const [entryName] of handle.entries()) entries.push(entryName);
-      for (const entryName of entries)
-        await writable.removeEntry(entryName, { recursive: true });
+      const ownedEntries = ["script.json", "资产", "片段", "输出"];
+      for (const entryName of ownedEntries) {
+        try {
+          await writable.removeEntry(entryName, { recursive: true });
+        } catch (error) {
+          if (!(error instanceof DOMException && error.name === "NotFoundError"))
+            throw error;
+        }
+      }
       const next = knownDirectories.filter(
         (directory) => directory.name !== name,
       );
