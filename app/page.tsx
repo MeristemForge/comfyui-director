@@ -156,13 +156,14 @@ type DirectoryPickerWindow = Window & {
     getModelDirectory?: () => Promise<{ path: string }>;
     pickModelDirectory?: () => Promise<{ path: string } | null>;
     onComfyStateChange?: (callback: (state: { ready: boolean; url: string; error: string | null }) => void) => () => void;
-    pickDirectory: () => Promise<ElectronDirectoryHandle | null>;
+    pickDirectory: (createProject?: boolean) => Promise<ElectronDirectoryHandle | null>;
     getProjectDirectories?: () => Promise<{ paths: string[]; activePath: string | null; handles: ElectronDirectoryHandle[] }>;
     setProjectDirectories?: (handles: ElectronDirectoryHandle[]) => Promise<unknown>;
     setActiveProjectDirectory?: (handle: ElectronDirectoryHandle) => Promise<unknown>;
     clearActiveProjectDirectory?: () => Promise<unknown>;
     getAgentExecutable?: () => Promise<string>;
     setAgentExecutable?: (value: string) => Promise<string>;
+    copyFile?: (file: File, targetPath: string) => Promise<boolean>;
     runAgent?: (input: { prompt: string; mode: string; duration: number; visualStyle?: string; referenceMapping: H3ReferenceMapping[] }) => Promise<string>;
     windowControl?: (action: "minimize" | "toggle-maximize" | "close" | "is-maximized") => Promise<boolean>;
     isMaximized?: () => Promise<boolean>;
@@ -173,6 +174,7 @@ type ElectronDirectoryHandle = FileSystemDirectoryHandle & {
   __path?: string;
   createProject: (name: string, id: string) => Promise<ElectronDirectoryHandle>;
 };
+type ElectronFileHandle = FileSystemFileHandle & { __path?: string };
 type WritableDirectoryHandle = FileSystemDirectoryHandle & {
   queryPermission?: (descriptor?: {
     mode?: "read" | "readwrite";
@@ -190,6 +192,13 @@ async function saveProjectDirectoryHandle(handle: FileSystemDirectoryHandle) {
   const api = (window as DirectoryPickerWindow).electronDirector;
   if (api?.setActiveProjectDirectory && (handle as ElectronDirectoryHandle).__path)
     await api.setActiveProjectDirectory(handle as ElectronDirectoryHandle);
+}
+async function copyFileWithElectron(file: File, target: FileSystemFileHandle) {
+  const api = (window as DirectoryPickerWindow).electronDirector;
+  const targetPath = (target as ElectronFileHandle).__path;
+  if (!api?.copyFile || !targetPath) return false;
+  await api.copyFile(file, targetPath);
+  return true;
 }
 async function clearProjectDirectoryHandle() {
   const api = (window as DirectoryPickerWindow).electronDirector;
@@ -2136,7 +2145,7 @@ export default function Home() {
     setProjectNameDialog(false);
     let createStage = "选择保存位置";
     try {
-      const selectedDirectory = await electronPicker();
+      const selectedDirectory = await electronPicker(true);
       if (!selectedDirectory) return;
       createStage = "创建项目目录";
       const newProjectId = crypto.randomUUID();
@@ -3086,9 +3095,11 @@ export default function Home() {
       });
       const targetName = await uniqueProjectAssetFileName(folder, requestedName);
       const target = await folder.getFileHandle(targetName, { create: true });
-      const writable = await target.createWritable();
-      await writable.write(await file.arrayBuffer());
-      await writable.close();
+      if (!(await copyFileWithElectron(file, target))) {
+        const writable = await target.createWritable();
+        await writable.write(await file.arrayBuffer());
+        await writable.close();
+      }
       setProjectAssets((current) =>
         current.some((asset) => asset.type === kind && asset.name === targetName)
           ? current.map((asset) =>
@@ -3905,9 +3916,11 @@ export default function Home() {
     const handle = await referenceDirectory.getFileHandle(targetName, {
       create: true,
     });
-    const writable = await handle.createWritable();
-    await writable.write(await file.arrayBuffer());
-    await writable.close();
+    if (!(await copyFileWithElectron(file, handle))) {
+      const writable = await handle.createWritable();
+      await writable.write(await file.arrayBuffer());
+      await writable.close();
+    }
     return `片段/${shot.id}-${safeFileStem(shot.title)}/引用/${targetName}`;
   }
   async function saveKeyframeSourceFile(
@@ -3926,13 +3939,15 @@ export default function Home() {
     const targetName = `${label}-${crypto.randomUUID()}${extension}`;
     const handle = await frameDirectory.getFileHandle(targetName, { create: true });
     try {
-      const writable = await handle.createWritable();
-      try {
-        await writable.write(await file.arrayBuffer());
-        await writable.close();
-      } catch (error) {
-        await writable.abort().catch(() => undefined);
-        throw error;
+      if (!(await copyFileWithElectron(file, handle))) {
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(await file.arrayBuffer());
+          await writable.close();
+        } catch (error) {
+          await writable.abort().catch(() => undefined);
+          throw error;
+        }
       }
     } catch (error) {
       await frameDirectory.removeEntry(targetName).catch(() => undefined);

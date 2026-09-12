@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const decode = (value) => Uint8Array.from(Buffer.from(value, 'base64'));
 const mimeByExtension = {
@@ -71,7 +71,7 @@ function directoryHandle(path, name = path.split(/[\\/]/).pop()) {
   };
 }
 contextBridge.exposeInMainWorld('electronDirector', {
-  async pickDirectory() { const path = await ipcRenderer.invoke('director:pick-directory'); return path ? { ...directoryHandle(path), async createProject(projectName, projectId) { const createdPath = await ipcRenderer.invoke('director:create-project', { parentPath: path, projectName, projectId }); return directoryHandle(createdPath, projectName); } } : null; },
+  async pickDirectory(createProject = false) { const path = await ipcRenderer.invoke('director:pick-directory', { createProject }); return path ? { ...directoryHandle(path), async createProject(projectName, projectId) { const createdPath = await ipcRenderer.invoke('director:create-project', { parentPath: path, projectName, projectId }); return directoryHandle(createdPath, projectName); } } : null; },
   async getProjectDirectories() { const result = await ipcRenderer.invoke('director:get-project-directories'); return { ...result, handles: result.paths.map((value) => directoryHandle(value)) }; },
   async setProjectDirectories(handles) { const paths = handles.map((handle) => handle.__path).filter(Boolean); return ipcRenderer.invoke('director:set-project-directories', { paths }); },
   async setActiveProjectDirectory(handle) { return ipcRenderer.invoke('director:set-active-project-directory', handle.__path); },
@@ -79,6 +79,11 @@ contextBridge.exposeInMainWorld('electronDirector', {
   async getAgentExecutable() { return ipcRenderer.invoke('director:get-agent-executable'); },
   async setAgentExecutable(value) { return ipcRenderer.invoke('director:set-agent-executable', value); },
   async runAgent(prompt) { return ipcRenderer.invoke('director:run-agent', prompt); },
+  async copyFile(file, targetPath) {
+    const sourcePath = webUtils.getPathForFile(file);
+    if (!sourcePath) throw new Error('无法获取素材的本地路径');
+    return ipcRenderer.invoke('director:copy-file', { sourcePath, targetPath });
+  },
   async windowControl(action) { return ipcRenderer.invoke('director:window-control', action); },
   async isMaximized() { return ipcRenderer.invoke('director:window-control', 'is-maximized'); },
   async getComfyState() { return ipcRenderer.invoke('director:get-comfy-state'); },

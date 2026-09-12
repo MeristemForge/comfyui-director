@@ -14,6 +14,7 @@ let comfyPort = 8188;
 let comfyState = 'stopped';
 let comfyError = null;
 const projectRoots = new Set();
+const pendingProjectParents = new Set();
 let appConfigWriteQueue = Promise.resolve();
 
 function defaultModelDirectory() {
@@ -54,6 +55,10 @@ function isPathInside(child, parent) {
   return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function pathKey(value) {
+  return path.normalize(value).toLowerCase();
+}
+
 function assertProjectPath(target) {
   const normalized = normalizePath(target);
   if (![...projectRoots].some((root) => isPathInside(normalized, root)))
@@ -61,10 +66,15 @@ function assertProjectPath(target) {
   return normalized;
 }
 
-async function registerProjectPath(value) {
+async function validateProjectDirectory(value) {
   const normalized = normalizePath(value);
   const stat = await fs.stat(normalized);
   if (!stat.isDirectory()) throw new Error('项目路径必须是目录');
+  return normalized;
+}
+
+async function registerProjectPath(value) {
+  const normalized = await validateProjectDirectory(value);
   projectRoots.add(normalized);
   return normalized;
 }
@@ -77,6 +87,8 @@ async function saveProjectPaths(paths, activePath) {
       if (!unique.some((item) => path.normalize(item).toLowerCase() === path.normalize(normalized).toLowerCase())) unique.push(normalized);
     } catch {}
   }
+  projectRoots.clear();
+  for (const value of unique) projectRoots.add(value);
   const requestedActive = activePath === undefined ? undefined : activePath ? normalizePath(activePath) : null;
   await writeAppConfig((current) => {
     const active = requestedActive === undefined
@@ -94,6 +106,7 @@ async function getSavedProjectPaths() {
   const config = await readAppConfig();
   const saved = Array.isArray(config.projectPaths) ? config.projectPaths : [];
   const valid = [];
+  projectRoots.clear();
   for (const value of saved) {
     try {
       const normalized = await registerProjectPath(value);
@@ -123,7 +136,14 @@ async function runConfiguredAgent(input) {
   const style = String(data.visualStyle || '').trim();
   const context = `${H3_AGENT_INSTRUCTION}\nUse the installed H3 prompt-writing skill when available.\n\nMode: ${String(data.mode || 'T2VA')}\nDuration: ${data.duration || 6} seconds${style ? `\n\nVisual style preset:\n${style}` : ''}${mappings ? `\n\nReference inputs below correspond to the actual H3 input slots. Keep labels unchanged and use only the listed inputs:\n${mappings}` : ''}\n\nUser draft:\n${draft}`;
   return new Promise((resolve, reject) => {
-    const isCodex = /codex/i.test(path.basename(executable));
+    const executableName = path.basename(executable);
+    const agentKind = /codex/i.test(executableName)
+      ? 'codex'
+      : /claude/i.test(executableName)
+        ? 'claude'
+        : null;
+    if (!agentKind) throw new Error('不支持的 Agent，请选择 Codex 或 Claude');
+    const isCodex = agentKind === 'codex';
     const args = isCodex
       ? ['--ask-for-approval', 'never', 'exec', '-', '--ephemeral', '--sandbox', 'read-only', '--skip-git-repo-check', '--color', 'never']
       : ['-p', context, '--output-format', 'text'];
@@ -459,10 +479,11 @@ async function startProductionServer() {
   return `http://127.0.0.1:${port}`;
 }
 
-ipcMain.handle('director:pick-directory', async () => {
+ipcMain.handle('director:pick-directory', async (_event, operation = {}) => {
   const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] });
   if (result.canceled || !result.filePaths[0]) return null;
-  const selected = await registerProjectPath(result.filePaths[0]);
+  const selected = await validateProjectDirectory(result.filePaths[0]);
+  if (operation.createProject === true) pendingProjectParents.add(pathKey(selected));
   return selected;
 });
 ipcMain.handle('director:get-project-directories', async () => getSavedProjectPaths());
@@ -489,6 +510,11 @@ ipcMain.handle('director:get-agent-executable', async () => {
 });
 ipcMain.handle('director:set-agent-executable', async (_event, value) => {
   const executablePath = String(value || '').trim();
+  if (executablePath) {
+    const executableName = path.basename(executablePath);
+    if (!/codex/i.test(executableName) && !/claude/i.test(executableName))
+      throw new Error('不支持的 Agent，请选择 Codex 或 Claude');
+  }
   await writeAppConfig({ agentExecutablePath: executablePath });
   return executablePath;
 });
@@ -514,12 +540,20 @@ ipcMain.handle('director:pick-model-directory', async () => {
 });
 ipcMain.handle('director:create-project', async (_event, operation) => {
   const folderName = String(operation.projectName || '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || '未命名项目';
-  const projectPath = path.join(path.resolve(String(operation.parentPath)), folderName);
-  const scriptPath = path.join(projectPath, 'script.json');
-  let scriptExists = false;
-  try { await fs.access(scriptPath); scriptExists = true; } catch (error) { if (error?.code !== 'ENOENT') throw error; }
-  if (scriptExists) throw new Error('该目录已经是项目，请使用“导入项目”打开，避免覆盖现有内容');
-  await fs.mkdir(path.join(projectPath, '资产'), { recursive: true });
+  const parentPath = await validateProjectDirectory(operation.parentPath);
+  if (!pendingProjectParents.has(pathKey(parentPath)))
+    throw new Error('请先通过系统目录选择器选择项目保存位置');
+  const projectPath = path.join(parentPath, folderName);
+  try {
+    const targetStat = await fs.stat(projectPath);
+    if (!targetStat.isDirectory()) throw new Error('项目名称对应的路径已存在且不是目录');
+    if ((await fs.readdir(projectPath)).length > 0)
+      throw new Error('项目目录已存在且不为空，请换一个项目名称');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    await fs.mkdir(projectPath);
+  }
+  await fs.mkdir(path.join(projectPath, '资产'));
   for (const folder of ['角色', '场景', '服装', '道具', '视频', '音频', '自定义']) await fs.mkdir(path.join(projectPath, '资产', folder), { recursive: true });
   await fs.mkdir(path.join(projectPath, '片段'), { recursive: true });
   await fs.mkdir(path.join(projectPath, '输出'), { recursive: true });
@@ -527,6 +561,7 @@ ipcMain.handle('director:create-project', async (_event, operation) => {
   const config = await readAppConfig();
   const existing = Array.isArray(config.projectPaths) ? config.projectPaths : [];
   await saveProjectPaths([...existing, projectPath], projectPath);
+  pendingProjectParents.delete(pathKey(parentPath));
   return projectPath;
 });
 ipcMain.handle('director:fs', async (_event, operation) => {
@@ -538,6 +573,15 @@ ipcMain.handle('director:fs', async (_event, operation) => {
   if (operation.kind === 'exists') { try { const stat = await fs.stat(target); return stat.isDirectory() === operation.directory; } catch { return false; } }
   if (operation.kind === 'remove') { await fs.rm(target, { recursive: true, force: true }); return true; }
   throw new Error(`Unknown filesystem operation: ${operation.kind}`);
+});
+ipcMain.handle('director:copy-file', async (_event, operation = {}) => {
+  const sourcePath = normalizePath(operation.sourcePath);
+  const targetPath = assertProjectPath(operation.targetPath);
+  const sourceStat = await fs.stat(sourcePath);
+  if (!sourceStat.isFile()) throw new Error('源素材必须是文件');
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.copyFile(sourcePath, targetPath);
+  return true;
 });
 
 function createWindow(url = process.env.DIRECTOR_DEV_URL || 'http://127.0.0.1:3000') {

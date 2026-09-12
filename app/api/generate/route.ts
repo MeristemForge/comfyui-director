@@ -66,21 +66,27 @@ export async function POST(request: Request) {
         if (Array.isArray(value) && typeof value[0] === 'string' && value[0].includes(':')) value[0] = value[0].split(':').pop()!;
       }
     }
-    let [width, height] = textValue(body.resolution, '1344 × 768').split('×').map((value) => Number(value.trim()));
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0)
+    const resolutionMatch = textValue(body.resolution, '1344 × 768').trim().match(/^(\d+)\s*[×x]\s*(\d+)$/i);
+    let width = resolutionMatch ? Number(resolutionMatch[1]) : NaN;
+    let height = resolutionMatch ? Number(resolutionMatch[2]) : NaN;
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0)
       return Response.json({ error: '无效的分辨率' }, { status: 400 });
     // Keep the selected pixel budget while honoring portrait/square/wide aspect
     // choices. H3 requires dimensions aligned to a 32-pixel grid.
     const aspect = textValue(body.aspect, '16:9').trim();
-    const aspectMatch = aspect.match(/^(\d+(?:\.\d+)?):([\d.]+)$/);
-    if (aspectMatch) {
-      const ratio = Number(aspectMatch[1]) / Number(aspectMatch[2]);
-      if (Number.isFinite(ratio) && ratio > 0 && aspect !== '16:9') {
-        const area = width * height;
-        width = Math.max(32, Math.round(Math.sqrt(area * ratio) / 32) * 32);
-        height = Math.max(32, Math.round(Math.sqrt(area / ratio) / 32) * 32);
-      }
+    const aspectMatch = aspect.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+    if (!aspectMatch || Number(aspectMatch[1]) <= 0 || Number(aspectMatch[2]) <= 0)
+      return Response.json({ error: '无效的画面比例' }, { status: 400 });
+    const ratio = Number(aspectMatch[1]) / Number(aspectMatch[2]);
+    if (!Number.isFinite(ratio) || ratio <= 0)
+      return Response.json({ error: '无效的画面比例' }, { status: 400 });
+    if (aspect !== '16:9') {
+      const area = width * height;
+      width = Math.max(32, Math.round(Math.sqrt(area * ratio) / 32) * 32);
+      height = Math.max(32, Math.round(Math.sqrt(area / ratio) / 32) * 32);
     }
+    if (width > 4096 || height > 4096 || width * height > 4096 * 4096)
+      return Response.json({ error: '分辨率不能超过 4096 × 4096' }, { status: 400 });
 
     const node = (type: string) => Object.values(normalized).find((item) => item.class_type === type);
     const turbo = body.turbo === true;
@@ -124,9 +130,8 @@ export async function POST(request: Request) {
       }
     }
     if (mode === 'R2VA') {
-      const nextNodeId = () => String(Math.max(0, ...Object.keys(normalized).map((id) => Number(id)).filter(Number.isFinite)) + 1);
       const addNode = (classType: string, inputs: Record<string, unknown>) => {
-        const id = nextNodeId();
+        const id = nextNumericNodeId(normalized);
         normalized[id] = { class_type: classType, inputs };
         return id;
       };
@@ -160,7 +165,7 @@ export async function POST(request: Request) {
     const saveVideoNode = node('SaveVideo');
     if (saveVideoNode) saveVideoNode.inputs!.filename_prefix = `director/shot-${shotId}-${shotTitle}-${Date.now().toString(36)}`;
     const clientId = typeof body.client_id === 'string' && body.client_id ? body.client_id : 'comfyui-director';
-    const response = await fetch(`${comfyUrl}/prompt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: normalized, client_id: clientId }) });
+    const response = await fetch(`${comfyUrl}/prompt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: normalized, client_id: clientId }), signal: AbortSignal.timeout(30000) });
     const result = await response.json().catch(() => ({})) as {
       prompt_id?: unknown;
       error?: unknown;
@@ -187,7 +192,8 @@ export async function POST(request: Request) {
     }
     return Response.json(result);
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : '生成请求失败' }, { status: 500 });
+    const timedOut = error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    return Response.json({ error: timedOut ? 'ComfyUI 请求超时' : error instanceof Error ? error.message : '生成请求失败' }, { status: timedOut ? 504 : 500 });
   }
 }
 

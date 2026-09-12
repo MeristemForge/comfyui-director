@@ -52,7 +52,8 @@ export async function GET(request: Request) {
         if (isRunning) return Response.json({ status: 'running' });
         const pendingIndex = pending.findIndex((entry) => Array.isArray(entry) && entry[1] === id);
         if (pendingIndex >= 0) return Response.json({ status: 'queued', position: pendingIndex + 1 });
-      } catch {
+      } catch (error) {
+        if (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError')) throw error;
         // History remains the source of truth if queue inspection is unavailable.
       }
       return Response.json({ status: 'pending' });
@@ -66,10 +67,18 @@ export async function GET(request: Request) {
       return Response.json({ status: 'error', error: typeof detailMessage === 'string' ? detailMessage : 'ComfyUI 执行失败' });
     }
     const output = findVideoOutput(item);
-    if (!output) return Response.json({ status: 'running' });
+    if (!output) {
+      const statusString = item.status?.status_str?.toLowerCase();
+      if (statusString && ['success', 'completed', 'complete', 'done'].includes(statusString))
+        return Response.json({ status: 'error', error: '生成完成但未找到视频输出' });
+      return Response.json({ status: 'running' });
+    }
     // The local Worker runtime cannot write arbitrary Windows paths. Return a
     // same-origin proxy URL; the browser saves it via the selected directory handle.
     const url = `/api/video?filename=${encodeURIComponent(output.filename)}&subfolder=${encodeURIComponent(output.subfolder ?? '')}&type=${encodeURIComponent(output.type ?? 'output')}&comfy_url=${encodeURIComponent(comfyUrl)}`;
     return Response.json({ status: 'completed', url, source: output.filename, source_subfolder: output.subfolder ?? '' });
-  } catch (error) { return Response.json({ status: 'error', error: error instanceof Error ? error.message : '状态查询失败' }, { status: 500 }); }
+  } catch (error) {
+    const timedOut = error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    return Response.json({ status: 'error', error: timedOut ? 'ComfyUI 状态查询超时' : error instanceof Error ? error.message : '状态查询失败' }, { status: timedOut ? 504 : 500 });
+  }
 }
