@@ -1,4 +1,4 @@
-import { unlink } from 'node:fs/promises';
+import { rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { normalizeComfyUrl } from '../../comfy-url';
@@ -32,7 +32,8 @@ export async function POST(request: Request) {
     const index = argv.findIndex((value: unknown) => value === '--output-directory');
     const outputRoot = outputRootFromArg(index >= 0 && typeof argv[index + 1] === 'string' ? argv[index + 1] : '');
     if (!outputRoot) return Response.json({ error: '无法确定 ComfyUI 输出目录' }, { status: 503 });
-    const relative = path.join(stringValue(body.subfolder), filename);
+    const subfolder = stringValue(body.subfolder).trim().replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
+    const relative = path.join(subfolder, filename);
     const videoPath = safeChildPath(outputRoot, relative);
     for (const filePath of [videoPath, videoPath.replace(/\.[^.]+$/, '.json')]) {
       try {
@@ -40,6 +41,13 @@ export async function POST(request: Request) {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
+    }
+    const parentDirectory = path.dirname(relative);
+    if (parentDirectory !== '.') {
+      await rmdir(safeChildPath(outputRoot, parentDirectory)).catch((error) => {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ENOTEMPTY' && code !== 'EEXIST') throw error;
+      });
     }
     return Response.json({ ok: true });
   } catch (error) {

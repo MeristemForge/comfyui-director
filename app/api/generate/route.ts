@@ -157,8 +157,26 @@ export async function POST(request: Request) {
     const vaeNodes = Object.values(normalized).filter((item) => item.class_type === 'VAELoader');
     if (videoVae && vaeNodes[0]) vaeNodes[0].inputs!.vae_name = videoVae;
     if (audioVae && vaeNodes[1]) vaeNodes[1].inputs!.vae_name = audioVae;
-    const loraNode = node('LoraLoaderModelOnly');
-    if (lora && loraNode) loraNode.inputs!.lora_name = lora;
+    const loraNodeEntry = Object.entries(normalized).find(([, item]) => item.class_type === 'LoraLoaderModelOnly');
+    const loraNode = loraNodeEntry?.[1];
+    if (loraNodeEntry && loraNode) {
+      if (lora) {
+        loraNode.inputs!.lora_name = lora;
+      } else {
+        // The template contains a default LoRA filename that may no longer
+        // exist in the configured model directory. Remove this branch when
+        // quality mode is selected so ComfyUI cannot validate that stale name.
+        const [loraNodeId] = loraNodeEntry;
+        const modelSwitch = Object.values(normalized).find((item) =>
+          item.class_type === 'ComfySwitchNode' &&
+          referenceNodeId(item.inputs?.on_true) === loraNodeId,
+        );
+        if (modelSwitch?.inputs) {
+          modelSwitch.inputs.on_true = modelSwitch.inputs.on_false;
+          delete normalized[loraNodeId];
+        }
+      }
+    }
     const imageNode = node('LoadImage');
     if (mode === 'I2VA') {
       const keyframeMode = typeof body.keyframe_mode === 'string' ? body.keyframe_mode : 'first';
@@ -223,7 +241,7 @@ export async function POST(request: Request) {
     const shotId = textValue(body.shot_id, 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
     const shotTitle = textValue(body.shot_title).replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || `shot-${shotId}`;
     const saveVideoNode = node('SaveVideo');
-    if (saveVideoNode) saveVideoNode.inputs!.filename_prefix = `director/shot-${shotId}-${shotTitle}-${Date.now().toString(36)}`;
+    if (saveVideoNode) saveVideoNode.inputs!.filename_prefix = `shot-${shotId}-${shotTitle}-${Date.now().toString(36)}`;
     const clientId = typeof body.client_id === 'string' && body.client_id ? body.client_id : 'comfyui-director';
     const response = await fetch(`${comfyUrl}/prompt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: normalized, client_id: clientId }), signal: AbortSignal.timeout(30000) });
     const result = await response.json().catch(() => ({})) as {
