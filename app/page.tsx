@@ -22,7 +22,7 @@ import {
   Package,
   Plus,
   RotateCcw,
-  Settings,
+  SlidersHorizontal,
   Shirt,
   Trash2 as TrashIcon,
   UserRound,
@@ -5542,18 +5542,6 @@ export default function Home() {
               <ArrowLeft className="size-3.5" />
               工作台
             </Button>
-            <div
-              className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs sm:flex ${comfyConnected === true ? "border-emerald-500/20 bg-emerald-500/8 text-emerald-400" : comfyConnected === false ? "border-red-500/20 bg-red-500/8 text-red-400" : "border-white/10 bg-white/5 text-zinc-400"}`}
-            >
-              <span
-                className={`size-1.5 rounded-full ${comfyConnected === true ? "bg-emerald-400" : comfyConnected === false ? "bg-red-400" : "bg-zinc-500"}`}
-              />
-              {comfyConnected === true
-                ? "已连接引擎"
-                : comfyConnected === false
-                  ? "引擎未连接"
-                  : "正在检测引擎"}
-            </div>
             <Button
               type="button"
               onClick={openEngineSettings}
@@ -5563,7 +5551,7 @@ export default function Home() {
               aria-label="引擎连接设置"
               title="引擎连接设置"
             >
-              <Settings className="size-4" />
+              <SlidersHorizontal className="size-4" />
             </Button>
           </div>
         </header>
@@ -5924,18 +5912,6 @@ export default function Home() {
             <ArrowLeft className="size-3.5" />
             工作台
           </Button>
-          <div
-            className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs sm:flex ${comfyConnected === true ? "border-emerald-500/20 bg-emerald-500/8 text-emerald-400" : comfyConnected === false ? "border-red-500/20 bg-red-500/8 text-red-400" : "border-white/10 bg-white/5 text-zinc-400"}`}
-          >
-            <span
-              className={`size-1.5 rounded-full ${comfyConnected === true ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : comfyConnected === false ? "bg-red-400" : "bg-zinc-500"}`}
-            />
-            {comfyConnected === true
-              ? "已连接引擎"
-              : comfyConnected === false
-                ? "引擎未连接"
-                : "正在检测引擎"}
-          </div>
           <Button
             type="button"
             onClick={openEngineSettings}
@@ -5945,7 +5921,7 @@ export default function Home() {
             aria-label="引擎连接设置"
             title="引擎连接设置"
           >
-            <Settings className="size-4" />
+            <SlidersHorizontal className="size-4" />
           </Button>
         </div>
       </header>
