@@ -5516,7 +5516,7 @@ export default function Home() {
       },
     }));
     const startedAt = Date.now();
-    const fileName = `shot-${shotId}-${safeFileStem(taskShot.title)}.mp4`;
+    const fileName = `${safeFileStem(taskShot.title)}.mp4`;
     const references =
       activeMode === "R2VA"
         ? {

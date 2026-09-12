@@ -238,10 +238,9 @@ export async function POST(request: Request) {
     videoNode.inputs!.width = width; videoNode.inputs!.height = height;
     const durationNode = node('PrimitiveFloat'); if (durationNode) durationNode.inputs!.value = duration;
     node('CreateVideo')!.inputs!.fps = fps;
-    const shotId = textValue(body.shot_id, 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const shotTitle = textValue(body.shot_title).replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || `shot-${shotId}`;
+    const shotTitle = textValue(body.shot_title).replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || '未命名片段';
     const saveVideoNode = node('SaveVideo');
-    if (saveVideoNode) saveVideoNode.inputs!.filename_prefix = `shot-${shotId}-${shotTitle}-${Date.now().toString(36)}`;
+    if (saveVideoNode) saveVideoNode.inputs!.filename_prefix = `${shotTitle}-${Date.now().toString(36)}`;
     const clientId = typeof body.client_id === 'string' && body.client_id ? body.client_id : 'comfyui-director';
     const response = await fetch(`${comfyUrl}/prompt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: normalized, client_id: clientId }), signal: AbortSignal.timeout(30000) });
     const result = await response.json().catch(() => ({})) as {
