@@ -1,5 +1,3 @@
-#define AppVersion "0.1.0"
-#define RuntimeVersion "0.1.0"
 #define SourceDir "..\release\win-unpacked"
 
 [Setup]
@@ -14,7 +12,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 OutputDir=..\release
-OutputBaseFilename=MeristemForge-Inno-Setup-{#AppVersion}-fixed5
+OutputBaseFilename=MeristemForge-Inno-Setup-{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 DiskSpanning=no

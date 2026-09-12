@@ -15,16 +15,16 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL('https://comfyui-director.wujin-developer.chatgpt.site'),
   title: 'MeristemForge',
-  description: '面向 MiniMax H3 的轻量 ComfyUI 导演工作台',
+  description: '面向 MiniMax H3 的轻量视频导演工作台',
   openGraph: {
     title: 'MeristemForge',
-    description: '面向 MiniMax H3 的轻量 ComfyUI 视频导演工作台',
+    description: '面向 MiniMax H3 的轻量视频导演工作台',
     images: ['/og.png'],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'MeristemForge',
-    description: '面向 MiniMax H3 的轻量 ComfyUI 视频导演工作台',
+    description: '面向 MiniMax H3 的轻量视频导演工作台',
     images: ['/og.png'],
   },
 };

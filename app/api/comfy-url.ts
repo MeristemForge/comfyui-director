@@ -11,5 +11,6 @@ export function normalizeComfyUrl(value?: unknown) {
   if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname)
     throw new Error('ComfyUI 地址无效，只支持 http 或 https 地址');
   parsed.hash = '';
+  parsed.search = '';
   return parsed.toString().replace(/\/+$/, '');
 }

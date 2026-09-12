@@ -6,6 +6,8 @@ type HistoryItem = {
   outputs?: Record<string, unknown>;
 };
 
+const COMFY_STATUS_TIMEOUT_MS = 10_000;
+
 function findVideoOutput(item: { outputs?: Record<string, unknown> }) {
   const outputEntries = Object.values(item.outputs ?? {}) as Array<Record<string, unknown>>;
   // SaveVideo commonly reports `videos` or `gifs`; scan every node before
@@ -36,7 +38,9 @@ export async function GET(request: Request) {
   const comfyUrl = normalizeComfyUrl(new URL(request.url).searchParams.get('comfy_url'));
   if (!id) return Response.json({ error: '缺少任务 ID' }, { status: 400 });
   try {
-    const response = await fetch(`${comfyUrl}/history/${encodeURIComponent(id)}`);
+    const response = await fetch(`${comfyUrl}/history/${encodeURIComponent(id)}`, {
+      signal: AbortSignal.timeout(COMFY_STATUS_TIMEOUT_MS),
+    });
     if (!response.ok) {
       return Response.json({ status: 'error', error: `ComfyUI history HTTP ${response.status}` }, { status: 502 });
     }
@@ -44,7 +48,9 @@ export async function GET(request: Request) {
     const item = data[id];
     if (!item) {
       try {
-        const queueResponse = await fetch(`${comfyUrl}/queue`);
+        const queueResponse = await fetch(`${comfyUrl}/queue`, {
+          signal: AbortSignal.timeout(COMFY_STATUS_TIMEOUT_MS),
+        });
         const queue = await queueResponse.json() as { queue_pending?: unknown[]; queue_running?: unknown[] };
         const pending = Array.isArray(queue.queue_pending) ? queue.queue_pending : [];
         const running = Array.isArray(queue.queue_running) ? queue.queue_running : [];

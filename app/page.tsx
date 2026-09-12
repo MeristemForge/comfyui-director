@@ -157,16 +157,16 @@ type DirectoryPickerWindow = Window & {
     pickModelDirectory?: () => Promise<{ path: string } | null>;
     onComfyStateChange?: (callback: (state: { ready: boolean; url: string; error: string | null }) => void) => () => void;
     pickDirectory: (createProject?: boolean) => Promise<ElectronDirectoryHandle | null>;
-    getProjectDirectories?: () => Promise<{ paths: string[]; activePath: string | null; handles: ElectronDirectoryHandle[] }>;
-    setProjectDirectories?: (handles: ElectronDirectoryHandle[]) => Promise<unknown>;
-    setActiveProjectDirectory?: (handle: ElectronDirectoryHandle) => Promise<unknown>;
-    clearActiveProjectDirectory?: () => Promise<unknown>;
+    getProjectDirectories?: () => Promise<{ activePath: string | null; handles: ElectronDirectoryHandle[] }>;
+    setProjectDirectories?: (paths: string[]) => Promise<void>;
+    setActiveProjectDirectory?: (path: string) => Promise<void>;
+    clearActiveProjectDirectory?: () => Promise<void>;
+    writeFile?: (targetPath: string, data: string) => Promise<void>;
+    listDirectory?: (directoryPath: string) => Promise<string[]>;
     getAgentExecutable?: () => Promise<string>;
-    setAgentExecutable?: (value: string) => Promise<string>;
-    copyFile?: (file: File, targetPath: string) => Promise<boolean>;
+    setAgentExecutable?: (value: string) => Promise<void>;
     runAgent?: (input: { prompt: string; mode: string; duration: number; visualStyle?: string; referenceMapping: H3ReferenceMapping[] }) => Promise<string>;
     windowControl?: (action: "minimize" | "toggle-maximize" | "close" | "is-maximized") => Promise<boolean>;
-    isMaximized?: () => Promise<boolean>;
     onWindowStateChange?: (callback: (maximized: boolean) => void) => () => void;
   };
 };
@@ -190,15 +190,32 @@ type WritableDirectoryHandle = FileSystemDirectoryHandle & {
 
 async function saveProjectDirectoryHandle(handle: FileSystemDirectoryHandle) {
   const api = (window as DirectoryPickerWindow).electronDirector;
-  if (api?.setActiveProjectDirectory && (handle as ElectronDirectoryHandle).__path)
-    await api.setActiveProjectDirectory(handle as ElectronDirectoryHandle);
+  const projectPath = (handle as ElectronDirectoryHandle).__path;
+  if (api?.setActiveProjectDirectory && projectPath)
+    await api.setActiveProjectDirectory(projectPath);
 }
-async function copyFileWithElectron(file: File, target: FileSystemFileHandle) {
+function encodeBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize)
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  return btoa(binary);
+}
+async function writeFileFromBrowser(file: File, target: FileSystemFileHandle) {
   const api = (window as DirectoryPickerWindow).electronDirector;
   const targetPath = (target as ElectronFileHandle).__path;
-  if (!api?.copyFile || !targetPath) return false;
-  await api.copyFile(file, targetPath);
-  return true;
+  if (api?.writeFile && targetPath) {
+    await api.writeFile(targetPath, encodeBase64(new Uint8Array(await file.arrayBuffer())));
+    return;
+  }
+  const writable = await target.createWritable();
+  try {
+    await writable.write(await file.arrayBuffer());
+    await writable.close();
+  } catch (error) {
+    await writable.abort().catch(() => undefined);
+    throw error;
+  }
 }
 async function clearProjectDirectoryHandle() {
   const api = (window as DirectoryPickerWindow).electronDirector;
@@ -214,7 +231,10 @@ async function saveProjectDirectoryHandles(
   handles: FileSystemDirectoryHandle[],
 ) {
   const api = (window as DirectoryPickerWindow).electronDirector;
-  await api?.setProjectDirectories?.(handles as ElectronDirectoryHandle[]);
+  const paths = handles
+    .map((handle) => (handle as ElectronDirectoryHandle).__path)
+    .filter((value): value is string => Boolean(value));
+  await api?.setProjectDirectories?.(paths);
 }
 async function loadProjectDirectoryHandles() {
   const api = (window as DirectoryPickerWindow).electronDirector;
@@ -482,13 +502,20 @@ function safeFileStem(title: string) {
       .slice(0, 120) || "未命名片段"
   );
 }
+function sanitizeEngineMessage(value: string) {
+  return value
+    .replace(/ComfyUI/gi, "引擎")
+    .replace(/https?:\/\/[^\s"'`<>]+/gi, "连接服务")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g, "连接服务");
+}
+
 function errorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
+  if (error instanceof Error) return sanitizeEngineMessage(error.message);
+  if (typeof error === "string") return sanitizeEngineMessage(error);
   if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") return String(error);
   if (typeof error === "object" && error !== null && "message" in error) {
     const message = (error as { message?: unknown }).message;
-    if (typeof message === "string") return message;
+    if (typeof message === "string") return sanitizeEngineMessage(message);
   }
   return "未知错误";
 }
@@ -555,6 +582,14 @@ async function uniqueProjectAssetFileName(
   ).entries();
   const existingNames = new Set<string>();
   for await (const [name] of entries) existingNames.add(name.toLowerCase());
+  return uniqueFileNameFromNames(existingNames, requestedName);
+}
+
+function uniqueFileNameFromNames(
+  names: Iterable<string>,
+  requestedName: string,
+) {
+  const existingNames = new Set(Array.from(names, (name) => name.toLowerCase()));
   if (!existingNames.has(requestedName.toLowerCase())) return requestedName;
   const extension = requestedName.match(/\.[^.]+$/)?.[0] ?? "";
   const stem = extension
@@ -791,20 +826,20 @@ async function writeProjectId(handle: FileSystemDirectoryHandle, id: string) {
 function WindowChrome({
   title = "MeristemForge",
   iconSrc = "/meristemforge-icon.svg",
+  variant = "default",
 }: {
   title?: string;
   iconSrc?: string;
+  variant?: "default" | "boot";
 }) {
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
     const api = (window as DirectoryPickerWindow).electronDirector;
     if (!api?.windowControl) return;
     let active = true;
-    if (api.isMaximized) {
-      void api.isMaximized().then((value) => {
-        if (active) setMaximized(Boolean(value));
-      });
-    }
+    void api.windowControl("is-maximized").then((value) => {
+      if (active) setMaximized(Boolean(value));
+    });
     const unsubscribe = api.onWindowStateChange?.((value) => setMaximized(value));
     return () => {
       active = false;
@@ -819,7 +854,7 @@ function WindowChrome({
   }
   return (
     <div
-      className="window-chrome relative flex h-11 items-center justify-between border-b border-white/8 bg-[#0b0d12]/92 px-3 text-zinc-400 shadow-[0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-xl"
+      className={`window-chrome relative flex h-11 items-center justify-between border-b border-white/8 px-3 text-zinc-400 shadow-[0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-xl ${variant === "boot" ? "engine-boot-chrome" : "bg-[#0b0d12]/92"}`}
       onDoubleClick={() => void control("toggle-maximize")}
     >
       <div className="window-drag-region flex min-w-0 flex-1 items-center gap-2.5 pl-1">
@@ -841,6 +876,40 @@ function WindowChrome({
         </button>
       </div>
     </div>
+  );
+}
+
+function EngineBootScreen({
+  error,
+}: {
+  error: string | null;
+}) {
+  const failed = Boolean(error);
+  return (
+    <main className="engine-boot-screen text-foreground">
+      <WindowChrome variant="boot" />
+      <section className={`engine-boot-content ${failed ? "is-failed" : ""}`}>
+        <div className="engine-boot-visual" aria-hidden="true">
+          <div className="engine-boot-duck-motion" />
+          <div className="engine-boot-copy">
+            <h1>正在连接引擎...</h1>
+            <p>Connecting to Engine...</p>
+            <div className="engine-boot-progress-motion">
+              <span />
+            </div>
+            <div className="engine-boot-brand">
+              <strong>Meristem</strong>
+              <span>FORGE</span>
+            </div>
+          </div>
+        </div>
+        {failed && (
+          <p className="engine-boot-failure" role="alert">
+            {sanitizeEngineMessage(error ?? "引擎连接异常")}
+          </p>
+        )}
+      </section>
+    </main>
   );
 }
 
@@ -959,6 +1028,8 @@ export default function Home() {
   >({});
   const [storageReady, setStorageReady] = useState(false);
   const [comfyConnected, setComfyConnected] = useState<boolean | null>(null);
+  const [comfyError, setComfyError] = useState<string | null>(null);
+  const [engineBooting, setEngineBooting] = useState(true);
   const [comfyUrl, setComfyUrl] = useState("http://127.0.0.1:8188");
   const [comfyUrlDraft, setComfyUrlDraft] = useState("http://127.0.0.1:8188");
   const [modelDirectory, setModelDirectory] = useState("");
@@ -1034,9 +1105,13 @@ export default function Home() {
     const load = async () => {
       if (api?.getComfyState) {
         const state = await api.getComfyState().catch(() => null);
-        if (!disposed && state?.url) {
-          setComfyUrl(state.url);
-          setComfyUrlDraft(state.url);
+        if (!disposed && state) {
+          setComfyConnected(state.ready);
+          setComfyError(state.error);
+          if (state.url) {
+            setComfyUrl(state.url);
+            setComfyUrlDraft(state.url);
+          }
         }
         if (api.getModelDirectory) {
           const directory = await api.getModelDirectory().catch(() => null);
@@ -1066,13 +1141,22 @@ export default function Home() {
     if (!api?.onComfyStateChange) return;
     return api.onComfyStateChange((state) => {
       setComfyConnected(state.ready);
+      setComfyError(state.error);
       if (state.url) {
         setComfyUrl(state.url);
         setComfyUrlDraft(state.url);
       }
-      if (state.error) setGenerationStatus(`ComfyUI：${state.error}`);
+      if (state.error) setGenerationStatus(`引擎：${sanitizeEngineMessage(state.error)}`);
     });
   }, []);
+
+  useEffect(() => {
+    if (!engineBooting || comfyConnected !== true) return;
+    const timer = window.setTimeout(() => {
+      setEngineBooting(false);
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [comfyConnected, engineBooting]);
 
   useEffect(() => {
     if (!taskShot) return;
@@ -2669,9 +2753,9 @@ export default function Home() {
       if (api?.setAgentExecutable) await api.setAgentExecutable(agentPath);
       else window.localStorage.setItem("llm-executable-path", agentPath);
       setEngineSettingsOpen(false);
-      setGenerationStatus(`ComfyUI 地址已更新：${normalized}`);
+      setGenerationStatus("引擎连接设置已更新");
     } catch {
-      setGenerationStatus("请输入有效的 ComfyUI 地址");
+      setGenerationStatus("请输入有效的引擎连接地址");
     }
   }
   function renderEngineSettingsDialog() {
@@ -2699,10 +2783,11 @@ export default function Home() {
             </button>
           </div>
           <label htmlFor="comfyui-url" className="field-label mt-5">
-            ComfyUI 地址
+            引擎连接地址
           </label>
           <input
             id="comfyui-url"
+            type="password"
             value={comfyUrlDraft}
             onChange={(event) => setComfyUrlDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -2712,7 +2797,8 @@ export default function Home() {
               }
               if (event.key === "Escape") setEngineSettingsOpen(false);
             }}
-            placeholder="http://127.0.0.1:8188"
+            placeholder="输入引擎连接地址"
+            autoComplete="off"
             className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60"
             autoFocus
           />
@@ -2729,7 +2815,7 @@ export default function Home() {
               </Button>
             </div>
             <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-              默认位置：用户 AppData/MeristemForge/models。切换后会重启内置 ComfyUI。
+              默认位置：用户 AppData/MeristemForge/models。切换后会重启内置引擎。
             </p>
           </div>
           <div className="mt-5 border-t border-border pt-4">
@@ -3090,15 +3176,24 @@ export default function Home() {
                 : kind === "audio"
                   ? "音频"
                   : "自定义";
-      const folder = await getProjectAssetFolder(projectDirectory, folderName, {
-        create: true,
-      });
-      const targetName = await uniqueProjectAssetFileName(folder, requestedName);
-      const target = await folder.getFileHandle(targetName, { create: true });
-      if (!(await copyFileWithElectron(file, target))) {
-        const writable = await target.createWritable();
-        await writable.write(await file.arrayBuffer());
-        await writable.close();
+      const api = (window as DirectoryPickerWindow).electronDirector;
+      const projectPath = (projectDirectory as ElectronDirectoryHandle).__path;
+      let targetName: string;
+      if (api?.writeFile && api.listDirectory && projectPath) {
+        const folderPath = `${projectPath}/资产/${folderName}`;
+        const existingNames = await api.listDirectory(folderPath).catch(() => []);
+        targetName = uniqueFileNameFromNames(existingNames, requestedName);
+        await api.writeFile(
+          `${folderPath}/${targetName}`,
+          encodeBase64(new Uint8Array(await file.arrayBuffer())),
+        );
+      } else {
+        const folder = await getProjectAssetFolder(projectDirectory, folderName, {
+          create: true,
+        });
+        targetName = await uniqueProjectAssetFileName(folder, requestedName);
+        const target = await folder.getFileHandle(targetName, { create: true });
+        await writeFileFromBrowser(file, target);
       }
       setProjectAssets((current) =>
         current.some((asset) => asset.type === kind && asset.name === targetName)
@@ -3130,8 +3225,8 @@ export default function Home() {
       setAssetDialog(false);
       setAssetType(null);
       setGenerationStatus(`${targetName} 已添加到资产/${folderName}`);
-    } catch {
-      setGenerationStatus("添加资产失败，请检查项目目录权限");
+    } catch (error) {
+      setGenerationStatus(`添加资产失败：${errorMessage(error)}`);
     }
   }
   function renderAssetDialog() {
@@ -3688,7 +3783,7 @@ export default function Home() {
     const epoch = projectEpochRef.current;
     if (!source) {
       if (activeShotIdRef.current === shotId)
-        setGenerationStatus("已完成，但未找到 ComfyUI 输出文件");
+        setGenerationStatus("已完成，但未找到引擎输出文件");
       return;
     }
     try {
@@ -3725,7 +3820,7 @@ export default function Home() {
         finalUrl = result.url;
         finalName = result.filename ?? task.fileName;
       } catch {
-        // A remote ComfyUI output may not be available on the local filesystem.
+        // A remote engine output may not be available on the local filesystem.
         // The proxy URL can still be fetched and copied into the project clip.
       }
       if (epoch !== projectEpochRef.current) return;
@@ -3787,7 +3882,7 @@ export default function Home() {
         setGenerationStatus(
           persisted
             ? cleanupFailed
-              ? "视频已归档，但 ComfyUI 临时文件清理失败"
+          ? "视频已归档，但引擎临时文件清理失败"
               : "已完成，视频已复制到当前项目片段"
             : "生成完成，但归档到项目片段目录失败",
         );
@@ -3916,11 +4011,7 @@ export default function Home() {
     const handle = await referenceDirectory.getFileHandle(targetName, {
       create: true,
     });
-    if (!(await copyFileWithElectron(file, handle))) {
-      const writable = await handle.createWritable();
-      await writable.write(await file.arrayBuffer());
-      await writable.close();
-    }
+    await writeFileFromBrowser(file, handle);
     return `片段/${shot.id}-${safeFileStem(shot.title)}/引用/${targetName}`;
   }
   async function saveKeyframeSourceFile(
@@ -3939,16 +4030,7 @@ export default function Home() {
     const targetName = `${label}-${crypto.randomUUID()}${extension}`;
     const handle = await frameDirectory.getFileHandle(targetName, { create: true });
     try {
-      if (!(await copyFileWithElectron(file, handle))) {
-        const writable = await handle.createWritable();
-        try {
-          await writable.write(await file.arrayBuffer());
-          await writable.close();
-        } catch (error) {
-          await writable.abort().catch(() => undefined);
-          throw error;
-        }
-      }
+      await writeFileFromBrowser(file, handle);
     } catch (error) {
       await frameDirectory.removeEntry(targetName).catch(() => undefined);
       throw error;
@@ -4093,7 +4175,7 @@ export default function Home() {
       });
       setGenerationStatus(
         backupFailed
-          ? "已上传到 ComfyUI，但本地引用备份失败"
+          ? "已上传到引擎，但本地引用备份失败"
           : `已添加参考素材“${file.name}”`,
       );
     } catch (error) {
@@ -4796,7 +4878,7 @@ export default function Home() {
                 setShotStages((current) => ({ ...current, [shotId]: "生成失败" }));
                 setShots((items) => items.map((item) => item.id === shotId ? { ...item, state: "失败" } : item));
                 if (activeShotIdRef.current === shotId)
-                  setGenerationStatus("生成完成，但 ComfyUI 未返回视频地址");
+                  setGenerationStatus("生成完成，但引擎未返回视频地址");
                 return;
               }
               setGenerationDurations((current) => ({
@@ -4812,7 +4894,7 @@ export default function Home() {
                 ...current,
                 [shotId]: "整理输出",
               }));
-              // ComfyUI 已完成，但项目文件尚未归档；最终状态在
+              // 引擎已完成，但项目文件尚未归档；最终状态在
               // saveVideoToDirectory 成功写入 clip.json 后再置为“已完成”。
               setShots((items) =>
                 items.map((item) =>
@@ -5023,7 +5105,7 @@ export default function Home() {
           throw new Error(detail);
         }
         if (typeof result.prompt_id !== "string" || !result.prompt_id)
-          throw new Error("ComfyUI 未返回任务 ID");
+          throw new Error("引擎未返回任务 ID");
         if (projectEpoch !== projectEpochRef.current) return;
         setSubmittingShots((current) => {
           const next = { ...current };
@@ -5043,7 +5125,7 @@ export default function Home() {
           },
         }));
         if (activeShotIdRef.current === shotId)
-          setGenerationStatus("已提交，等待 ComfyUI 排队");
+          setGenerationStatus("已提交，等待引擎排队");
       })
       .catch((error: unknown) => {
         if (projectEpoch !== projectEpochRef.current) return;
@@ -5170,6 +5252,10 @@ export default function Home() {
     }, 4200);
     return () => window.clearInterval(timer);
   }, [workspaceMode]);
+
+  if (engineBooting) {
+    return <EngineBootScreen error={comfyError} />;
+  }
 
   if (workspaceMode === "launcher") {
     return (
@@ -5315,8 +5401,8 @@ export default function Home() {
               variant="ghost"
               size="icon-sm"
               className="size-8 text-zinc-400 hover:bg-white/8 hover:text-foreground"
-              aria-label="ComfyUI 连接设置"
-              title="ComfyUI 连接设置"
+              aria-label="引擎连接设置"
+              title="引擎连接设置"
             >
               <Settings className="size-4" />
             </Button>
@@ -5697,8 +5783,8 @@ export default function Home() {
             variant="ghost"
             size="icon-sm"
             className="size-8 text-zinc-400 hover:bg-white/8 hover:text-foreground"
-            aria-label="ComfyUI 连接设置"
-            title="ComfyUI 连接设置"
+            aria-label="引擎连接设置"
+            title="引擎连接设置"
           >
             <Settings className="size-4" />
           </Button>

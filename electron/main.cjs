@@ -66,6 +66,23 @@ function assertProjectPath(target) {
   return normalized;
 }
 
+async function assertRegisteredProjectPath(target) {
+  const normalized = normalizePath(target);
+  if (![...projectRoots].some((root) => isPathInside(normalized, root))) {
+    const config = await readAppConfig();
+    const savedPaths = [
+      ...(Array.isArray(config.projectPaths) ? config.projectPaths : []),
+      ...(typeof config.activeProjectPath === 'string' ? [config.activeProjectPath] : []),
+    ];
+    for (const value of savedPaths) {
+      try {
+        await registerProjectPath(value);
+      } catch {}
+    }
+  }
+  return assertProjectPath(normalized);
+}
+
 async function validateProjectDirectory(value) {
   const normalized = normalizePath(value);
   const stat = await fs.stat(normalized);
@@ -453,9 +470,20 @@ async function startProductionServer() {
   const serverRuntimeRoot = path.join(app.getPath('userData'), 'server-runtime');
   const packagedDistRoot = path.join(app.getAppPath(), 'dist');
   const writableDistRoot = path.join(serverRuntimeRoot, 'dist');
+  const distVersionPath = path.join(serverRuntimeRoot, 'app-version.json');
   await fs.mkdir(serverRuntimeRoot, { recursive: true });
-  await fs.cp(path.join(packagedDistRoot, 'server'), path.join(writableDistRoot, 'server'), { recursive: true, force: true });
-  await fs.cp(path.join(packagedDistRoot, 'client'), path.join(writableDistRoot, 'client'), { recursive: true, force: true });
+  let distVersion = null;
+  try {
+    const marker = JSON.parse(await fs.readFile(distVersionPath, 'utf8'));
+    distVersion = marker?.version;
+  } catch {}
+  const hasWritableDist = fsSync.existsSync(path.join(writableDistRoot, 'server', 'wrangler.json')) &&
+    fsSync.existsSync(path.join(writableDistRoot, 'client'));
+  if (distVersion !== app.getVersion() || !hasWritableDist) {
+    await fs.cp(path.join(packagedDistRoot, 'server'), path.join(writableDistRoot, 'server'), { recursive: true, force: true });
+    await fs.cp(path.join(packagedDistRoot, 'client'), path.join(writableDistRoot, 'client'), { recursive: true, force: true });
+    await fs.writeFile(distVersionPath, JSON.stringify({ version: app.getVersion() }, null, 2), 'utf8');
+  }
   const logDirectory = path.join(app.getPath('userData'), 'logs');
   await fs.mkdir(logDirectory, { recursive: true });
   const logFd = fsSync.openSync(path.join(logDirectory, 'server.log'), 'a');
@@ -484,25 +512,22 @@ ipcMain.handle('director:pick-directory', async (_event, operation = {}) => {
   if (result.canceled || !result.filePaths[0]) return null;
   const selected = await validateProjectDirectory(result.filePaths[0]);
   if (operation.createProject === true) pendingProjectParents.add(pathKey(selected));
+  else projectRoots.add(selected);
   return selected;
 });
 ipcMain.handle('director:get-project-directories', async () => getSavedProjectPaths());
 ipcMain.handle('director:set-project-directories', async (_event, operation = {}) => {
   const paths = Array.isArray(operation.paths) ? operation.paths : [];
-  const saved = await saveProjectPaths(paths);
-  const nextConfig = await readAppConfig();
-  return { paths: saved, activePath: typeof nextConfig.activeProjectPath === 'string' ? nextConfig.activeProjectPath : null };
+  await saveProjectPaths(paths);
 });
 ipcMain.handle('director:set-active-project-directory', async (_event, value) => {
   const activePath = await registerProjectPath(value);
   const config = await readAppConfig();
   const paths = Array.isArray(config.projectPaths) ? config.projectPaths : [];
-  const saved = await saveProjectPaths([...paths, activePath], activePath);
-  return { paths: saved, activePath };
+  await saveProjectPaths([...paths, activePath], activePath);
 });
 ipcMain.handle('director:clear-active-project-directory', async () => {
   await writeAppConfig({ activeProjectPath: null });
-  return true;
 });
 ipcMain.handle('director:get-agent-executable', async () => {
   const config = await readAppConfig();
@@ -516,7 +541,6 @@ ipcMain.handle('director:set-agent-executable', async (_event, value) => {
       throw new Error('不支持的 Agent，请选择 Codex 或 Claude');
   }
   await writeAppConfig({ agentExecutablePath: executablePath });
-  return executablePath;
 });
 ipcMain.handle('director:run-agent', async (_event, input) => runConfiguredAgent(input));
 ipcMain.handle('director:get-comfy-state', () => getComfyState());
@@ -539,33 +563,39 @@ ipcMain.handle('director:pick-model-directory', async () => {
   return { path: selected };
 });
 ipcMain.handle('director:create-project', async (_event, operation) => {
-  const folderName = String(operation.projectName || '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || '未命名项目';
-  const parentPath = await validateProjectDirectory(operation.parentPath);
-  if (!pendingProjectParents.has(pathKey(parentPath)))
-    throw new Error('请先通过系统目录选择器选择项目保存位置');
-  const projectPath = path.join(parentPath, folderName);
+  const parentValue = typeof operation?.parentPath === 'string' ? operation.parentPath : null;
+  const pendingParentKey = parentValue ? pathKey(normalizePath(parentValue)) : null;
   try {
-    const targetStat = await fs.stat(projectPath);
-    if (!targetStat.isDirectory()) throw new Error('项目名称对应的路径已存在且不是目录');
-    if ((await fs.readdir(projectPath)).length > 0)
-      throw new Error('项目目录已存在且不为空，请换一个项目名称');
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-    await fs.mkdir(projectPath);
+    const folderName = String(operation.projectName || '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || '未命名项目';
+    const parentPath = await validateProjectDirectory(operation.parentPath);
+    if (!pendingProjectParents.has(pathKey(parentPath)))
+      throw new Error('请先通过系统目录选择器选择项目保存位置');
+    const projectPath = path.join(parentPath, folderName);
+    try {
+      const targetStat = await fs.stat(projectPath);
+      if (!targetStat.isDirectory()) throw new Error('项目名称对应的路径已存在且不是目录');
+      if ((await fs.readdir(projectPath)).length > 0)
+        throw new Error('项目目录已存在且不为空，请换一个项目名称');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      await fs.mkdir(projectPath);
+    }
+    await fs.mkdir(path.join(projectPath, '资产'));
+    for (const folder of ['角色', '场景', '服装', '道具', '视频', '音频', '自定义']) await fs.mkdir(path.join(projectPath, '资产', folder), { recursive: true });
+    await fs.mkdir(path.join(projectPath, '片段'), { recursive: true });
+    await fs.mkdir(path.join(projectPath, '输出'), { recursive: true });
+    const scriptPath = path.join(projectPath, 'script.json');
+    await fs.writeFile(scriptPath, JSON.stringify({ project: { id: String(operation.projectId), name: String(operation.projectName), version: 2 }, nextShotNumber: 1, clips: [] }, null, 2));
+    const config = await readAppConfig();
+    const existing = Array.isArray(config.projectPaths) ? config.projectPaths : [];
+    await saveProjectPaths([...existing, projectPath], projectPath);
+    return projectPath;
+  } finally {
+    if (pendingParentKey) pendingProjectParents.delete(pendingParentKey);
   }
-  await fs.mkdir(path.join(projectPath, '资产'));
-  for (const folder of ['角色', '场景', '服装', '道具', '视频', '音频', '自定义']) await fs.mkdir(path.join(projectPath, '资产', folder), { recursive: true });
-  await fs.mkdir(path.join(projectPath, '片段'), { recursive: true });
-  await fs.mkdir(path.join(projectPath, '输出'), { recursive: true });
-  await fs.writeFile(scriptPath, JSON.stringify({ project: { id: String(operation.projectId), name: String(operation.projectName), version: 2 }, nextShotNumber: 1, clips: [] }, null, 2));
-  const config = await readAppConfig();
-  const existing = Array.isArray(config.projectPaths) ? config.projectPaths : [];
-  await saveProjectPaths([...existing, projectPath], projectPath);
-  pendingProjectParents.delete(pathKey(parentPath));
-  return projectPath;
 });
 ipcMain.handle('director:fs', async (_event, operation) => {
-  const target = assertProjectPath(operation.path);
+  const target = await assertRegisteredProjectPath(operation.path);
   if (operation.kind === 'read-file') return (await fs.readFile(target)).toString('base64');
   if (operation.kind === 'write-file') { await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, Buffer.from(operation.data, 'base64')); return true; }
   if (operation.kind === 'mkdir') { await fs.mkdir(target, { recursive: true }); return true; }
@@ -574,16 +604,6 @@ ipcMain.handle('director:fs', async (_event, operation) => {
   if (operation.kind === 'remove') { await fs.rm(target, { recursive: true, force: true }); return true; }
   throw new Error(`Unknown filesystem operation: ${operation.kind}`);
 });
-ipcMain.handle('director:copy-file', async (_event, operation = {}) => {
-  const sourcePath = normalizePath(operation.sourcePath);
-  const targetPath = assertProjectPath(operation.targetPath);
-  const sourceStat = await fs.stat(sourcePath);
-  if (!sourceStat.isFile()) throw new Error('源素材必须是文件');
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.copyFile(sourcePath, targetPath);
-  return true;
-});
-
 function createWindow(url = process.env.DIRECTOR_DEV_URL || 'http://127.0.0.1:3000') {
   const window = new BrowserWindow({
     width: 1440,
@@ -593,29 +613,42 @@ function createWindow(url = process.env.DIRECTOR_DEV_URL || 'http://127.0.0.1:30
     title: 'MeristemForge',
     icon: path.join(__dirname, '..', 'public', 'meristemforge-icon.png'),
     frame: false,
-    backgroundColor: '#090a0d',
+    backgroundColor: '#28cddd',
+    show: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false, preload: path.join(__dirname, 'preload.cjs') },
   });
   mainWindow = window;
   window.on('maximize', broadcastWindowState);
   window.on('unmaximize', broadcastWindowState);
+  window.once('ready-to-show', () => window.show());
   void window.loadURL(url);
 }
 
-void app.whenReady().then(async () => {
-  let webUrl = process.env.DIRECTOR_DEV_URL || 'http://127.0.0.1:3000';
+function createStartupSplashUrl() {
+  let duckData = '';
   try {
-    webUrl = await startProductionServer();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    webUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><meta charset="utf-8"><body style="font:16px sans-serif;background:#090a0d;color:#f5f5f5;padding:48px"><h2>MeristemForge 启动失败</h2><p>${message}</p><p>请查看用户数据目录 logs/server.log。</p></body>`)}`;
-  }
+    duckData = fsSync.readFileSync(path.join(__dirname, '..', 'public', 'engine-boot-duck.png')).toString('base64');
+  } catch {}
+  return `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{width:100%;height:100%;margin:0}body{overflow:hidden;background:linear-gradient(125deg,#42d7d3 0%,#26bce9 34%,#4c8df5 61%,#c24be9 100%);color:#fff;font-family:Arial,"Microsoft YaHei",sans-serif}.stage{position:relative;width:100%;height:100%;overflow:hidden}.stage:before{position:absolute;inset:0;content:"";background:radial-gradient(circle at 50% 35%,rgb(255 255 255 / 18%),transparent 26%),radial-gradient(circle at 88% 78%,rgb(255 116 242 / 30%),transparent 34%),radial-gradient(circle at 10% 12%,rgb(255 255 255 / 20%),transparent 28%)}.duck{position:absolute;inset:0;background:url(data:image/png;base64,${duckData}) center/cover no-repeat;clip-path:polygon(44% 20%,49% 17%,55% 19%,58% 27%,57% 39%,59% 49%,58% 57%,54% 60%,48% 59%,46% 56%,43% 54%,42% 49%,44% 43%,42% 38%,41% 31%,42% 25%);filter:drop-shadow(0 18px 15px rgb(35 42 124 / 25%));transform-origin:50% 40%;animation:dance 2.8s ease-in-out infinite}.copy{position:absolute;z-index:1;top:64.2%;left:50%;width:min(86vw,560px);text-align:center;text-shadow:0 2px 16px rgb(25 28 115 / 38%);transform:translateX(-50%)}h1{margin:0;font-size:clamp(26px,4vw,42px);font-weight:700;letter-spacing:.08em;line-height:1.3}.sub{margin:9px 0 0;font-size:clamp(13px,1.5vw,18px);letter-spacing:.28em;line-height:1.5}.progress{width:min(100%,500px);height:22px;margin:34px auto 0;overflow:hidden;border:1px solid rgb(255 255 255 / 35%);border-radius:999px;background:rgb(255 255 255 / 18%);box-shadow:0 0 16px rgb(255 255 255 / 22%)}.progress span{position:relative;display:block;width:46%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#19e6e0,#6fd7ff 45%,#ff9bf8);box-shadow:0 0 12px rgb(255 255 255 / 78%);animation:flow 2.4s ease-in-out infinite}.progress span:after{position:absolute;top:0;right:-35%;bottom:0;width:35%;content:"";background:rgb(255 255 255 / 86%);filter:blur(5px);animation:glint 1.4s ease-in-out infinite}.brand{display:grid;justify-items:center;margin-top:6.5%;line-height:1}.brand strong{font-size:clamp(20px,2.2vw,30px)}.brand span{margin-top:8px;font-size:11px;letter-spacing:.65em}@keyframes dance{0%,100%{transform:translate3d(0,0,0) rotate(0) scale(1)}20%{transform:translate3d(-.25%,-1.1%,0) rotate(-1.4deg) scale(1.015)}40%{transform:translate3d(.25%,.3%,0) rotate(1.7deg) scale(.995)}60%{transform:translate3d(.3%,-1.25%,0) rotate(1.3deg) scale(1.015)}80%{transform:translate3d(-.3%,.2%,0) rotate(-1.6deg) scale(1)}}@keyframes flow{0%,100%{width:38%;transform:translateX(0)}50%{width:78%;transform:translateX(22%)}}@keyframes glint{0%,100%{transform:translateX(-160%);opacity:0}45%,70%{transform:translateX(220%);opacity:1}}</style><div class="stage"><div class="duck"></div><div class="copy"><h1>正在连接引擎...</h1><div class="sub">Connecting to Engine...</div><div class="progress"><span></span></div><div class="brand"><strong>Meristem</strong><span>FORGE</span></div></div></div>`)}`;
+}
+
+void app.whenReady().then(async () => {
+  let webUrl = process.env.DIRECTOR_DEV_URL || null;
+  createWindow(webUrl || createStartupSplashUrl());
   void startComfyUI().catch((error) => {
     comfyState = 'error';
     comfyError = error instanceof Error ? error.message : String(error);
     broadcastComfyState();
   });
-  createWindow(webUrl);
+  if (!webUrl) {
+    try {
+      webUrl = await startProductionServer();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      webUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><meta charset="utf-8"><body style="font:16px sans-serif;background:#28cddd;color:#fff;padding:48px"><h2>MeristemForge 启动失败</h2><p>${message}</p><p>请查看用户数据目录 logs/server.log。</p></body>`)}`;
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) void mainWindow.loadURL(webUrl);
+  }
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(webUrl); });
 });
 app.on('before-quit', () => {
