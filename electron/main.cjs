@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 
@@ -15,6 +16,7 @@ let comfyState = 'stopped';
 let comfyError = null;
 const projectRoots = new Set();
 const pendingProjectParents = new Set();
+const fileWriteSessions = new Map();
 let appConfigWriteQueue = Promise.resolve();
 
 function defaultModelDirectory() {
@@ -594,6 +596,74 @@ ipcMain.handle('director:create-project', async (_event, operation) => {
     if (pendingParentKey) pendingProjectParents.delete(pendingParentKey);
   }
 });
+async function abortFileWriteSession(token) {
+  const session = fileWriteSessions.get(token);
+  if (!session) return;
+  fileWriteSessions.delete(token);
+  await session.queue.catch(() => undefined);
+  await session.handle.close().catch(() => undefined);
+  await fs.rm(session.tempPath, { force: true }).catch(() => undefined);
+}
+
+async function abortAllFileWriteSessions() {
+  await Promise.all([...fileWriteSessions.keys()].map((token) => abortFileWriteSession(token)));
+}
+
+ipcMain.handle('director:file-write-begin', async (_event, operation) => {
+  const target = await assertRegisteredProjectPath(operation?.path);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const token = randomUUID();
+  const tempPath = path.join(path.dirname(target), `.${path.basename(target)}.${token}.upload`);
+  const handle = await fs.open(tempPath, 'w');
+  fileWriteSessions.set(token, { handle, target, tempPath, queue: Promise.resolve(), bytesWritten: 0 });
+  return token;
+});
+
+ipcMain.handle('director:file-write-chunk', async (_event, operation) => {
+  const token = typeof operation?.token === 'string' ? operation.token : '';
+  const session = fileWriteSessions.get(token);
+  if (!session) throw new Error('文件写入会话已失效');
+  const chunkBase64 = typeof operation?.chunkBase64 === 'string' ? operation.chunkBase64 : null;
+  if (chunkBase64 === null || chunkBase64.length > 16 * 1024 * 1024)
+    throw new Error('文件分块无效或过大');
+  const write = session.queue.then(async () => {
+    const chunk = Buffer.from(chunkBase64, 'base64');
+    if (chunk.length === 0 && chunkBase64.length > 0) throw new Error('文件分块编码无效');
+    await session.handle.write(chunk, 0, chunk.length, session.bytesWritten);
+    session.bytesWritten += chunk.length;
+    return session.bytesWritten;
+  });
+  session.queue = write.catch(() => undefined);
+  try {
+    return await write;
+  } catch (error) {
+    await abortFileWriteSession(token);
+    throw error;
+  }
+});
+
+ipcMain.handle('director:file-write-end', async (_event, operation) => {
+  const token = typeof operation?.token === 'string' ? operation.token : '';
+  const session = fileWriteSessions.get(token);
+  if (!session) throw new Error('文件写入会话已失效');
+  fileWriteSessions.delete(token);
+  try {
+    await session.queue;
+    await session.handle.close();
+    await fs.rename(session.tempPath, session.target);
+    return session.bytesWritten;
+  } catch (error) {
+    await session.handle.close().catch(() => undefined);
+    await fs.rm(session.tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+});
+
+ipcMain.handle('director:file-write-abort', async (_event, operation) => {
+  await abortFileWriteSession(typeof operation?.token === 'string' ? operation.token : '');
+  return true;
+});
+
 ipcMain.handle('director:fs', async (_event, operation) => {
   const target = await assertRegisteredProjectPath(operation.path);
   if (operation.kind === 'read-file') return (await fs.readFile(target)).toString('base64');
@@ -652,6 +722,7 @@ void app.whenReady().then(async () => {
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(webUrl); });
 });
 app.on('before-quit', () => {
+  void abortAllFileWriteSessions();
   if (server && !server.killed) server.kill();
   void stopComfyUI();
 });

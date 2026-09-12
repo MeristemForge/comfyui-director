@@ -161,6 +161,11 @@ type DirectoryPickerWindow = Window & {
     setProjectDirectories?: (paths: string[]) => Promise<void>;
     setActiveProjectDirectory?: (path: string) => Promise<void>;
     clearActiveProjectDirectory?: () => Promise<void>;
+    beginFileWrite?: (targetPath: string) => Promise<string>;
+    appendFileWrite?: (token: string, chunkBase64: string) => Promise<number>;
+    finishFileWrite?: (token: string) => Promise<number>;
+    abortFileWrite?: (token: string) => Promise<void>;
+    removePath?: (targetPath: string) => Promise<void>;
     writeFile?: (targetPath: string, data: string) => Promise<void>;
     listDirectory?: (directoryPath: string) => Promise<string[]>;
     getAgentExecutable?: () => Promise<string>;
@@ -172,9 +177,10 @@ type DirectoryPickerWindow = Window & {
 };
 type ElectronDirectoryHandle = FileSystemDirectoryHandle & {
   __path?: string;
+  projectPath?: string;
   createProject: (name: string, id: string) => Promise<ElectronDirectoryHandle>;
 };
-type ElectronFileHandle = FileSystemFileHandle & { __path?: string };
+type ElectronFileHandle = FileSystemFileHandle & { __path?: string; projectPath?: string };
 type WritableDirectoryHandle = FileSystemDirectoryHandle & {
   queryPermission?: (descriptor?: {
     mode?: "read" | "readwrite";
@@ -190,7 +196,7 @@ type WritableDirectoryHandle = FileSystemDirectoryHandle & {
 
 async function saveProjectDirectoryHandle(handle: FileSystemDirectoryHandle) {
   const api = (window as DirectoryPickerWindow).electronDirector;
-  const projectPath = (handle as ElectronDirectoryHandle).__path;
+  const projectPath = getElectronPath(handle as ElectronDirectoryHandle);
   if (api?.setActiveProjectDirectory && projectPath)
     await api.setActiveProjectDirectory(projectPath);
 }
@@ -201,13 +207,43 @@ function encodeBase64(bytes: Uint8Array) {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   return btoa(binary);
 }
+const FILE_WRITE_CHUNK_SIZE = 8 * 1024 * 1024;
+function joinElectronPath(...parts: string[]) {
+  return parts
+    .filter(Boolean)
+    .map((part, index) => index === 0 ? part.replace(/[\\/]+$/g, "") : part.replace(/^[\\/]+|[\\/]+$/g, ""))
+    .join("\\");
+}
+function getElectronPath(handle: { __path?: string; projectPath?: string } | null | undefined) {
+  const value = handle?.__path ?? handle?.projectPath;
+  return typeof value === "string" && value ? value : undefined;
+}
+async function writeBrowserFileToPath(file: Blob, targetPath: string) {
+  const api = (window as DirectoryPickerWindow).electronDirector;
+  if (!api?.beginFileWrite || !api.appendFileWrite || !api.finishFileWrite)
+    throw new Error("请完全退出并重新启动应用后再上传媒体文件");
+  const token = await api.beginFileWrite(targetPath);
+  try {
+    for (let offset = 0; offset < file.size; offset += FILE_WRITE_CHUNK_SIZE) {
+      const chunk = new Uint8Array(
+        await file.slice(offset, Math.min(offset + FILE_WRITE_CHUNK_SIZE, file.size)).arrayBuffer(),
+      );
+      await api.appendFileWrite(token, encodeBase64(chunk));
+    }
+    await api.finishFileWrite(token);
+  } catch (error) {
+    if (api.abortFileWrite) await api.abortFileWrite(token).catch(() => undefined);
+    throw error;
+  }
+}
 async function writeFileFromBrowser(file: File, target: FileSystemFileHandle) {
   const api = (window as DirectoryPickerWindow).electronDirector;
-  const targetPath = (target as ElectronFileHandle).__path;
-  if (api?.writeFile && targetPath) {
-    await api.writeFile(targetPath, encodeBase64(new Uint8Array(await file.arrayBuffer())));
+  const targetPath = getElectronPath(target as ElectronFileHandle);
+  if (targetPath) {
+    await writeBrowserFileToPath(file, targetPath);
     return;
   }
+  if (api) throw new Error("请完全退出并重新启动应用后再上传媒体文件");
   const writable = await target.createWritable();
   try {
     await writable.write(await file.arrayBuffer());
@@ -225,14 +261,14 @@ async function loadProjectDirectoryHandle() {
   const api = (window as DirectoryPickerWindow).electronDirector;
   if (!api?.getProjectDirectories) return null;
   const result = await api.getProjectDirectories();
-  return result.handles.find((handle) => handle.__path?.toLowerCase() === result.activePath?.toLowerCase()) ?? null;
+  return result.handles.find((handle) => getElectronPath(handle)?.toLowerCase() === result.activePath?.toLowerCase()) ?? null;
 }
 async function saveProjectDirectoryHandles(
   handles: FileSystemDirectoryHandle[],
 ) {
   const api = (window as DirectoryPickerWindow).electronDirector;
   const paths = handles
-    .map((handle) => (handle as ElectronDirectoryHandle).__path)
+    .map((handle) => getElectronPath(handle as ElectronDirectoryHandle))
     .filter((value): value is string => Boolean(value));
   await api?.setProjectDirectories?.(paths);
 }
@@ -607,12 +643,78 @@ function uniqueFileNameFromNames(
 async function readAssetFileThumbnail(
   entry: FileSystemFileHandle,
 ): Promise<string | undefined> {
+  if (!/\.(avif|gif|jpe?g|png|webp)$/i.test(entry.name)) return undefined;
   try {
     const file = await entry.getFile();
     return file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
   } catch {
     return undefined;
   }
+}
+async function createVideoThumbnail(file: File): Promise<string | undefined> {
+  const sourceUrl = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  video.muted = true;
+  video.playsInline = true;
+  video.src = sourceUrl;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let seeking = false;
+      const timeout = window.setTimeout(() => resolve(), 4000);
+      const finish = () => {
+        window.clearTimeout(timeout);
+        video.removeEventListener("seeked", finish);
+        video.removeEventListener("error", failed);
+        resolve();
+      };
+      const failed = () => {
+        window.clearTimeout(timeout);
+        video.removeEventListener("seeked", finish);
+        video.removeEventListener("error", failed);
+        reject(new Error("视频缩略图读取失败"));
+      };
+      const loaded = () => {
+        if (seeking) return;
+        seeking = true;
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        const targetTime = Math.min(Math.max(duration * 0.12, 0.1), Math.max(0, duration - 0.05));
+        if (targetTime > 0.05) {
+          video.addEventListener("seeked", finish, { once: true });
+          try {
+            video.currentTime = targetTime;
+            return;
+          } catch {
+            /* Use the first decoded frame when seeking is unsupported. */
+          }
+        }
+        finish();
+      };
+      video.addEventListener("loadeddata", loaded, { once: true });
+      video.addEventListener("error", failed, { once: true });
+      video.load();
+    });
+    if (!video.videoWidth || !video.videoHeight) return undefined;
+    const width = Math.min(video.videoWidth, 320);
+    const height = Math.max(1, Math.round(width * video.videoHeight / video.videoWidth));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d")?.drawImage(video, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  } catch {
+    return undefined;
+  } finally {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    URL.revokeObjectURL(sourceUrl);
+  }
+}
+async function createAssetThumbnail(file: File): Promise<string | undefined> {
+  if (file.type.startsWith("image/")) return URL.createObjectURL(file);
+  if (file.type.startsWith("video/")) return createVideoThumbnail(file);
+  return undefined;
 }
 
 async function readProjectShots(
@@ -3177,16 +3279,15 @@ export default function Home() {
                   ? "音频"
                   : "自定义";
       const api = (window as DirectoryPickerWindow).electronDirector;
-      const projectPath = (projectDirectory as ElectronDirectoryHandle).__path;
+      const projectPath = getElectronPath(projectDirectory as ElectronDirectoryHandle);
       let targetName: string;
-      if (api?.writeFile && api.listDirectory && projectPath) {
-        const folderPath = `${projectPath}/资产/${folderName}`;
-        const existingNames = await api.listDirectory(folderPath).catch(() => []);
+      if (projectPath) {
+        const folderPath = joinElectronPath(projectPath, "资产", folderName);
+        const existingNames = api?.listDirectory
+          ? await api.listDirectory(folderPath).catch(() => [])
+          : [];
         targetName = uniqueFileNameFromNames(existingNames, requestedName);
-        await api.writeFile(
-          `${folderPath}/${targetName}`,
-          encodeBase64(new Uint8Array(await file.arrayBuffer())),
-        );
+        await writeBrowserFileToPath(file, joinElectronPath(folderPath, targetName));
       } else {
         const folder = await getProjectAssetFolder(projectDirectory, folderName, {
           create: true,
@@ -3195,15 +3296,14 @@ export default function Home() {
         const target = await folder.getFileHandle(targetName, { create: true });
         await writeFileFromBrowser(file, target);
       }
+      const thumbnail = await createAssetThumbnail(file);
       setProjectAssets((current) =>
         current.some((asset) => asset.type === kind && asset.name === targetName)
           ? current.map((asset) =>
               asset.type === kind && asset.name === targetName
                 ? {
                     ...asset,
-                    thumbnail: file.type.startsWith("image/")
-                      ? URL.createObjectURL(file)
-                      : asset.thumbnail,
+                    thumbnail: thumbnail ?? asset.thumbnail,
                   }
                 : asset,
             )
@@ -3212,9 +3312,7 @@ export default function Home() {
               {
                 name: targetName,
                 type: kind,
-                thumbnail: file.type.startsWith("image/")
-                  ? URL.createObjectURL(file)
-                  : undefined,
+                ...(thumbnail ? { thumbnail } : {}),
               },
             ],
       );
@@ -3400,26 +3498,41 @@ export default function Home() {
                   <label htmlFor="new-asset-file" className="field-label mt-4 block">
                     选择文件
                   </label>
-                  <input
-                    id="new-asset-file"
-                    type="file"
-                    accept={
-                      assetType === "character"
-                        ? "image/*"
-                        : assetType === "audio"
-                        ? "audio/*"
-                        : assetType === "video"
-                          ? "video/*"
-                          : assetType === "custom"
-                            ? undefined
-                            : "image/*"
-                    }
-                    onChange={(event) => {
-                      const file = event.target.files?.[0] ?? null;
-                      setNewAssetFile(file);
-                    }}
-                    className="mt-2 block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
-                  />
+                  <div className="mt-2 flex min-w-0 items-center gap-3">
+                    <input
+                      id="new-asset-file"
+                      type="file"
+                      accept={
+                        assetType === "character"
+                          ? "image/*"
+                          : assetType === "audio"
+                          ? "audio/*"
+                          : assetType === "video"
+                            ? "video/*"
+                            : assetType === "custom"
+                              ? undefined
+                              : "image/*"
+                      }
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] ?? null;
+                        setNewAssetFile(file);
+                      }}
+                      className="peer sr-only"
+                    />
+                    <label
+                      htmlFor="new-asset-file"
+                      className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition-[transform,background-color,box-shadow] hover:bg-primary/85 hover:shadow-md active:translate-y-px active:scale-[0.98] active:bg-primary/70 peer-focus-visible:ring-3 peer-focus-visible:ring-ring/50"
+                    >
+                      <FolderOpen className="size-3.5" />
+                      选择文件
+                    </label>
+                    <span
+                      className="min-w-0 truncate text-xs text-muted-foreground"
+                      title={newAssetFile?.name}
+                    >
+                      {newAssetFile?.name ?? "未选择任何文件"}
+                    </span>
+                  </div>
                   <div className="mt-5 flex justify-end">
                     <Button variant="ghost" onClick={() => setAssetType(null)}>
                       返回
@@ -3752,6 +3865,15 @@ export default function Home() {
         .trim()
         .replace(/[. ]+$/g, "") ||
       `shot-${shot.id}-${safeFileStem(shot.title)}.mp4`;
+    const projectPath = getElectronPath(projectDirectory as ElectronDirectoryHandle);
+    const clipName = `${shot.id}-${safeFileStem(shot.title)}`;
+    if (projectPath) {
+      await writeBrowserFileToPath(
+        blob,
+        joinElectronPath(projectPath, "片段", clipName, targetName),
+      );
+      return new File([blob], targetName, { type: blob.type || "video/mp4" });
+    }
     const file = await clipDirectory.getFileHandle(targetName, {
       create: true,
     });
@@ -3954,6 +4076,12 @@ export default function Home() {
   }
   async function deleteReferenceSourceFile(sourcePath?: string) {
     if (!projectDirectory || !isClipReferenceSourcePath(sourcePath) || !sourcePath) return;
+    const api = (window as DirectoryPickerWindow).electronDirector;
+    const projectPath = getElectronPath(projectDirectory as ElectronDirectoryHandle);
+    if (api?.removePath && projectPath) {
+      await api.removePath(joinElectronPath(projectPath, sourcePath));
+      return;
+    }
     const parts = sourcePath.replaceAll("\\", "/").split("/").filter(Boolean);
     const fileName = parts.pop();
     if (!fileName) return;
@@ -3974,6 +4102,12 @@ export default function Home() {
       !/^片段\/[^/]+\/关键帧\//.test(sourcePath.replaceAll("\\", "/"))
     )
       return;
+    const api = (window as DirectoryPickerWindow).electronDirector;
+    const projectPath = getElectronPath(projectDirectory as ElectronDirectoryHandle);
+    if (api?.removePath && projectPath) {
+      await api.removePath(joinElectronPath(projectPath, sourcePath));
+      return;
+    }
     const parts = sourcePath.replaceAll("\\", "/").split("/").filter(Boolean);
     const fileName = parts.pop();
     if (!fileName) return;
@@ -3990,6 +4124,22 @@ export default function Home() {
     file: File,
   ) {
     if (!projectDirectory) return undefined;
+    const api = (window as DirectoryPickerWindow).electronDirector;
+    const projectPath = getElectronPath(projectDirectory as ElectronDirectoryHandle);
+    const clipName = `${shot.id}-${safeFileStem(shot.title)}`;
+    if (projectPath) {
+      const referencePath = joinElectronPath(projectPath, "片段", clipName, "引用");
+      const extension = file.name.match(/\.[^.]+$/)?.[0] ?? "";
+      const requestedName =
+        file.name.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").trim() ||
+        `reference${extension}`;
+      const existingNames = api?.listDirectory
+        ? await api.listDirectory(referencePath).catch(() => [])
+        : [];
+      const targetName = uniqueFileNameFromNames(existingNames, requestedName);
+      await writeBrowserFileToPath(file, joinElectronPath(referencePath, targetName));
+      return `片段/${clipName}/引用/${targetName}`;
+    }
     const clips = await projectDirectory.getDirectoryHandle("片段", {
       create: true,
     });
@@ -4020,14 +4170,23 @@ export default function Home() {
     label: "首帧" | "尾帧",
   ) {
     if (!projectDirectory) throw new Error("请先选择项目目录");
+    const projectPath = getElectronPath(projectDirectory as ElectronDirectoryHandle);
+    const clipName = `${shot.id}-${safeFileStem(shot.title)}`;
+    const extension = file.name.match(/\.[^.]+$/)?.[0] ?? ".png";
+    const targetName = `${label}-${crypto.randomUUID()}${extension}`;
+    if (projectPath) {
+      await writeBrowserFileToPath(
+        file,
+        joinElectronPath(projectPath, "片段", clipName, "关键帧", targetName),
+      );
+      return `片段/${clipName}/关键帧/${targetName}`;
+    }
     const clips = await projectDirectory.getDirectoryHandle("片段", { create: true });
     const clipDirectory = await clips.getDirectoryHandle(
       `${shot.id}-${safeFileStem(shot.title)}`,
       { create: true },
     );
     const frameDirectory = await clipDirectory.getDirectoryHandle("关键帧", { create: true });
-    const extension = file.name.match(/\.[^.]+$/)?.[0] ?? ".png";
-    const targetName = `${label}-${crypto.randomUUID()}${extension}`;
     const handle = await frameDirectory.getFileHandle(targetName, { create: true });
     try {
       await writeFileFromBrowser(file, handle);
