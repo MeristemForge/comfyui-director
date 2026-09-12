@@ -151,7 +151,6 @@ type PersistedKeyframe = {
   comfyName?: string;
 };
 type DirectoryPickerWindow = Window & {
-  showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
   electronDirector?: {
     getComfyState?: () => Promise<{ ready: boolean; url: string; error: string | null }>;
     getModelDirectory?: () => Promise<{ path: string }>;
@@ -172,11 +171,8 @@ type DirectoryPickerWindow = Window & {
 };
 type ElectronDirectoryHandle = FileSystemDirectoryHandle & {
   __path?: string;
-  createProject?: (name: string, id: string) => Promise<ElectronDirectoryHandle>;
+  createProject: (name: string, id: string) => Promise<ElectronDirectoryHandle>;
 };
-function hasElectronDirectoryPicker() {
-  return typeof window !== "undefined" && Boolean((window as DirectoryPickerWindow).electronDirector?.pickDirectory);
-}
 type WritableDirectoryHandle = FileSystemDirectoryHandle & {
   queryPermission?: (descriptor?: {
     mode?: "read" | "readwrite";
@@ -190,114 +186,32 @@ type WritableDirectoryHandle = FileSystemDirectoryHandle & {
   ) => Promise<void>;
 };
 
-function openDirectoryDatabase() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("comfyui-director", 3);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains("handles"))
-        database.createObjectStore("handles");
-      if (database.objectStoreNames.contains("state"))
-        database.deleteObjectStore("state");
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
 async function saveProjectDirectoryHandle(handle: FileSystemDirectoryHandle) {
   const api = (window as DirectoryPickerWindow).electronDirector;
   if (api?.setActiveProjectDirectory && (handle as ElectronDirectoryHandle).__path)
     await api.setActiveProjectDirectory(handle as ElectronDirectoryHandle);
-  if (hasElectronDirectoryPicker()) return;
-  const database = await openDirectoryDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const request = database
-      .transaction("handles", "readwrite")
-      .objectStore("handles")
-      .put(handle, "project-directory");
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-  database.close();
 }
 async function clearProjectDirectoryHandle() {
   const api = (window as DirectoryPickerWindow).electronDirector;
-  if (api?.clearActiveProjectDirectory) {
-    await api.clearActiveProjectDirectory();
-    return;
-  }
-  const database = await openDirectoryDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const request = database
-      .transaction("handles", "readwrite")
-      .objectStore("handles")
-      .delete("project-directory");
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-  database.close();
+  await api?.clearActiveProjectDirectory?.();
 }
 async function loadProjectDirectoryHandle() {
   const api = (window as DirectoryPickerWindow).electronDirector;
-  if (api?.getProjectDirectories) {
-    const result = await api.getProjectDirectories();
-    return result.handles.find((handle) => handle.__path?.toLowerCase() === result.activePath?.toLowerCase());
-  }
-  const database = await openDirectoryDatabase();
-  const handle = await new Promise<FileSystemDirectoryHandle | undefined>(
-    (resolve, reject) => {
-      const request = database
-        .transaction("handles", "readonly")
-        .objectStore("handles")
-        .get("project-directory");
-      request.onsuccess = () =>
-        resolve(request.result as FileSystemDirectoryHandle | undefined);
-      request.onerror = () => reject(request.error);
-    },
-  );
-  database.close();
-  return handle;
+  if (!api?.getProjectDirectories) return null;
+  const result = await api.getProjectDirectories();
+  return result.handles.find((handle) => handle.__path?.toLowerCase() === result.activePath?.toLowerCase()) ?? null;
 }
 async function saveProjectDirectoryHandles(
   handles: FileSystemDirectoryHandle[],
 ) {
   const api = (window as DirectoryPickerWindow).electronDirector;
-  if (api?.setProjectDirectories) {
-    await api.setProjectDirectories(handles as ElectronDirectoryHandle[]);
-    return;
-  }
-  const database = await openDirectoryDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const request = database
-      .transaction("handles", "readwrite")
-      .objectStore("handles")
-      .put(handles, "project-directories");
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-  database.close();
+  await api?.setProjectDirectories?.(handles as ElectronDirectoryHandle[]);
 }
 async function loadProjectDirectoryHandles() {
   const api = (window as DirectoryPickerWindow).electronDirector;
-  if (api?.getProjectDirectories) {
-    const result = await api.getProjectDirectories();
-    return result.handles;
-  }
-  const database = await openDirectoryDatabase();
-  const handles = await new Promise<FileSystemDirectoryHandle[] | undefined>(
-    (resolve, reject) => {
-      const request = database
-        .transaction("handles", "readonly")
-        .objectStore("handles")
-        .get("project-directories");
-      request.onsuccess = () =>
-        resolve(request.result as FileSystemDirectoryHandle[] | undefined);
-      request.onerror = () => reject(request.error);
-    },
-  );
-  database.close();
-  return handles ?? [];
+  if (!api?.getProjectDirectories) return [];
+  const result = await api.getProjectDirectories();
+  return result.handles;
 }
 async function isDirectoryHandleAvailable(handle: FileSystemDirectoryHandle) {
   try {
@@ -559,10 +473,6 @@ function safeFileStem(title: string) {
       .slice(0, 120) || "未命名片段"
   );
 }
-function isNotFoundError(error: unknown) {
-  return error instanceof DOMException && error.name === "NotFoundError" ||
-    typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "NotFoundError";
-}
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -611,16 +521,6 @@ function formatProjectAssetFileName(
   const extension = originalName.match(/\.[^.]+$/)?.[0] ?? "";
   return `${parts.join("_")}${extension}`;
 }
-
-const projectAssetFolders = [
-  "角色",
-  "场景",
-  "服装",
-  "道具",
-  "视频",
-  "音频",
-  "自定义",
-] as const;
 
 async function getProjectAssetFolder(
   project: FileSystemDirectoryHandle,
@@ -1227,10 +1127,8 @@ export default function Home() {
         window.localStorage.getItem("comfyui-url")?.trim() ||
         "http://127.0.0.1:8188";
       window.localStorage.removeItem("comfyui-director-state");
-      const savedProjectHandle =
-        typeof indexedDB === "undefined"
-          ? null
-          : await loadProjectDirectoryHandle().catch(() => null);
+      const savedProjectHandle: ElectronDirectoryHandle | null =
+        await loadProjectDirectoryHandle().catch(() => null);
       const projectHandle =
         savedProjectHandle &&
         (await isDirectoryHandleAvailable(savedProjectHandle))
@@ -1247,20 +1145,18 @@ export default function Home() {
         setProjectDirectoryName(metadata.name || projectHandle.name || "项目目录");
       }
       const savedProjectHandles =
-        typeof indexedDB === "undefined"
-          ? []
-          : await loadProjectDirectoryHandles().catch(() => []);
+        (await loadProjectDirectoryHandles().catch(() => [])) as ElectronDirectoryHandle[];
       let projectHandles = (
         await Promise.all(
           savedProjectHandles.map(async (handle) =>
             (await isDirectoryHandleAvailable(handle)) ? handle : null,
           ),
         )
-      ).filter((handle): handle is FileSystemDirectoryHandle =>
+      ).filter((handle): handle is ElectronDirectoryHandle =>
         Boolean(handle),
       );
       if (disposed) return;
-      const uniqueHandles: FileSystemDirectoryHandle[] = [];
+      const uniqueHandles: ElectronDirectoryHandle[] = [];
       const knownIds = new Set<string>();
       for (const handle of projectHandles) {
         const metadata = await readProjectMetadata(handle);
@@ -2230,9 +2126,8 @@ export default function Home() {
   }
   async function createProjectDirectory(projectNameOverride?: string) {
     const electronPicker = (window as DirectoryPickerWindow).electronDirector?.pickDirectory;
-    const picker = electronPicker ?? (window as DirectoryPickerWindow).showDirectoryPicker;
-    if (!picker || (!electronPicker && /Electron/i.test(navigator.userAgent))) {
-      setGenerationStatus("当前浏览器不支持本地项目目录");
+    if (!electronPicker) {
+      setGenerationStatus("当前窗口没有可用的项目目录功能");
       setProjectError("当前窗口没有可用的目录选择功能，请重新启动视频创作工作台。");
       return;
     }
@@ -2241,59 +2136,11 @@ export default function Home() {
     setProjectNameDialog(false);
     let createStage = "选择保存位置";
     try {
-      const selectedDirectory = await picker();
+      const selectedDirectory = await electronPicker();
       if (!selectedDirectory) return;
       createStage = "创建项目目录";
-      const folderName = safeFileStem(requestedName) || "未命名项目";
       const newProjectId = crypto.randomUUID();
-      if (electronPicker && "createProject" in selectedDirectory && selectedDirectory.createProject) {
-        const directory = await selectedDirectory.createProject(requestedName, newProjectId);
-        projectIdRef.current = newProjectId;
-        projectIdsRef.current.set(directory, newProjectId);
-        resetProjectEditorState();
-        setProjectDirectory(directory);
-        setProjectDirectories((current) => {
-          const next = [...current.filter((item) => item !== directory), directory];
-          void saveProjectDirectoryHandles(next);
-          return next;
-        });
-        setProjectDirectoryName(requestedName);
-        void saveProjectDirectoryHandle(directory);
-        setGenerationStatus(`项目目录已就绪：${requestedName}`);
-        return;
-      }
-      const directory = await selectedDirectory.getDirectoryHandle(folderName, { create: true });
-      const writable = directory as WritableDirectoryHandle;
-      const permission = writable.requestPermission
-        ? await writable.requestPermission({ mode: "readwrite" })
-        : "granted";
-      if (permission !== "granted") {
-        setGenerationStatus("没有项目目录写入权限");
-        return;
-      }
-      try {
-        await directory.getFileHandle("script.json");
-        setGenerationStatus("该目录已经是项目，请使用“导入项目”打开，避免覆盖现有内容");
-        return;
-      } catch (error) {
-        if (!isNotFoundError(error))
-          throw error;
-      }
-      const assets = await directory.getDirectoryHandle("资产", {
-        create: true,
-      });
-      createStage = "创建项目资源目录";
-      for (const folderName of projectAssetFolders)
-        await assets.getDirectoryHandle(folderName, { create: true });
-      await directory.getDirectoryHandle("片段", { create: true });
-      await directory.getDirectoryHandle("输出", { create: true });
-      const file = await directory.getFileHandle("script.json", { create: true });
-      const manifestWritable = await file.createWritable();
-      createStage = "写入项目配置";
-      await manifestWritable.write(JSON.stringify({
-        project: { id: newProjectId, name: requestedName, version: 2 }, nextShotNumber: 1, clips: [],
-      }, null, 2));
-      await manifestWritable.close();
+      const directory = await selectedDirectory.createProject(requestedName, newProjectId);
       projectIdRef.current = newProjectId;
       projectIdsRef.current.set(directory, newProjectId);
       resetProjectEditorState();
@@ -2317,13 +2164,12 @@ export default function Home() {
   }
   async function importProjectDirectory() {
     const electronPicker = (window as DirectoryPickerWindow).electronDirector?.pickDirectory;
-    const picker = electronPicker ?? (window as DirectoryPickerWindow).showDirectoryPicker;
-    if (!picker || (!electronPicker && /Electron/i.test(navigator.userAgent))) {
-      setGenerationStatus("当前浏览器不支持导入本地项目");
+    if (!electronPicker) {
+      setGenerationStatus("当前窗口没有可用的项目导入功能");
       return;
     }
     try {
-      const directory = await picker();
+      const directory = await electronPicker();
       if (!directory) return;
       const writable = directory as WritableDirectoryHandle;
       const permission = writable.requestPermission

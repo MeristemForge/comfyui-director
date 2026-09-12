@@ -544,10 +544,6 @@ function createWindow(url = process.env.DIRECTOR_DEV_URL || 'http://127.0.0.1:30
 }
 
 void app.whenReady().then(async () => {
-  if (process.argv.includes('--extract-runtime')) {
-    try { await ensurePackagedRuntime(); app.quit(); } catch (error) { console.error(error); app.exit(1); }
-    return;
-  }
   let webUrl = process.env.DIRECTOR_DEV_URL || 'http://127.0.0.1:3000';
   try {
     webUrl = await startProductionServer();
