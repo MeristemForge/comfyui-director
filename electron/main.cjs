@@ -5,7 +5,6 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 
-app.commandLine.appendSwitch('enable-features', 'FileSystemAccessAPI');
 app.setName('MeristemForge');
 Menu.setApplicationMenu(null);
 let server;
@@ -169,11 +168,7 @@ async function getConfiguredModelDirectory() {
 
 function runtimeCandidates() {
   if (app.isPackaged) return [path.join(app.getPath('userData'), 'runtime')];
-  return [
-    process.env.COMFYUI_RUNTIME_DIR,
-    path.resolve(__dirname, '..', 'runtime'),
-    path.resolve(__dirname, '..', 'build-assets', 'runtime'),
-  ].filter(Boolean);
+  return [path.resolve(__dirname, '..', 'build-assets', 'runtime')];
 }
 
 function resolveRuntime() {
@@ -305,12 +300,9 @@ async function waitForComfyReady(timeout = 90000) {
 
 function getComfyState() {
   return {
-    state: comfyState,
     ready: comfyState === 'ready',
     url: comfyUrl(),
-    port: comfyPort,
     error: comfyError,
-    runtimePath: resolveRuntime(),
   };
 }
 
@@ -324,13 +316,13 @@ async function stopComfyUI() {
 }
 
 async function startComfyUI() {
-  if (comfyProcess) return getComfyState();
+  if (comfyProcess) return;
   const runtime = await ensurePackagedRuntime();
   if (!runtime) {
     comfyState = 'unavailable';
-    comfyError = '没有找到内置 ComfyUI 运行时，请设置 COMFYUI_RUNTIME_DIR 或重新安装完整版本。';
+    comfyError = '没有找到开发模式 runtime，请确认 build-assets\runtime.7z 存在且可解压。';
     broadcastComfyState();
-    return getComfyState();
+    return;
   }
   const python = path.join(runtime, 'python_embeded', 'python.exe');
   const main = path.join(runtime, 'ComfyUI', 'main.py');
@@ -389,7 +381,6 @@ async function startComfyUI() {
     comfyError = error instanceof Error ? error.message : String(error);
     broadcastComfyState();
   });
-  return getComfyState();
 }
 function broadcastWindowState() {
   if (mainWindow && !mainWindow.isDestroyed())
@@ -490,7 +481,7 @@ ipcMain.handle('director:run-agent', async (_event, input) => runConfiguredAgent
 ipcMain.handle('director:get-comfy-state', () => getComfyState());
 ipcMain.handle('director:get-model-directory', async () => {
   const configured = await getConfiguredModelDirectory();
-  return { path: configured, isDefault: path.normalize(configured) === path.normalize(defaultModelDirectory()) };
+  return { path: configured };
 });
 ipcMain.handle('director:pick-model-directory', async () => {
   const current = await getConfiguredModelDirectory();
@@ -504,7 +495,7 @@ ipcMain.handle('director:pick-model-directory', async () => {
   await writeAppConfig({ modelDirectory: selected });
   await stopComfyUI();
   await startComfyUI();
-  return { path: selected, isDefault: path.normalize(selected) === path.normalize(defaultModelDirectory()) };
+  return { path: selected };
 });
 ipcMain.handle('director:create-project', async (_event, operation) => {
   const folderName = String(operation.projectName || '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || '未命名项目';
@@ -518,7 +509,6 @@ ipcMain.handle('director:create-project', async (_event, operation) => {
   await fs.mkdir(path.join(projectPath, '片段'), { recursive: true });
   await fs.mkdir(path.join(projectPath, '输出'), { recursive: true });
   await fs.writeFile(scriptPath, JSON.stringify({ project: { id: String(operation.projectId), name: String(operation.projectName), version: 2 }, nextShotNumber: 1, clips: [] }, null, 2));
-  await registerProjectPath(projectPath);
   const config = await readAppConfig();
   const existing = Array.isArray(config.projectPaths) ? config.projectPaths : [];
   await saveProjectPaths([...existing, projectPath], projectPath);

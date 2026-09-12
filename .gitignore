@@ -36,7 +36,6 @@ next-env.d.ts
 /release/
 /build-assets/
 /.wrangler/
-/runtime/
 /.runtime-cache/
 /.runtime-build-path
 /.runtime-extractor/

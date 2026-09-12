@@ -9,6 +9,7 @@
   "scripts": {
     "electron:dev": "node electron/dev.mjs",
     "electron:dist": "npm run build && node scripts/prepare-runtime.mjs && electron-builder --config electron-builder.cjs --dir && node scripts/build-inno-installer.mjs",
+    "prepare-runtime": "node scripts/prepare-runtime.mjs",
     "directorctl": "node scripts/directorctl.mjs",
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",

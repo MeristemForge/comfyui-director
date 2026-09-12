@@ -153,10 +153,10 @@ type PersistedKeyframe = {
 type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
   electronDirector?: {
-    getComfyState?: () => Promise<{ state: "stopped" | "extracting" | "starting" | "ready" | "unavailable" | "error"; ready: boolean; url: string; port: number; error: string | null; runtimePath: string | null }>;
-    getModelDirectory?: () => Promise<{ path: string; isDefault: boolean }>;
-    pickModelDirectory?: () => Promise<{ path: string; isDefault: boolean } | null>;
-    onComfyStateChange?: (callback: (state: { state: "stopped" | "extracting" | "starting" | "ready" | "unavailable" | "error"; ready: boolean; url: string; port: number; error: string | null; runtimePath: string | null }) => void) => () => void;
+    getComfyState?: () => Promise<{ ready: boolean; url: string; error: string | null }>;
+    getModelDirectory?: () => Promise<{ path: string }>;
+    pickModelDirectory?: () => Promise<{ path: string } | null>;
+    onComfyStateChange?: (callback: (state: { ready: boolean; url: string; error: string | null }) => void) => () => void;
     pickDirectory: () => Promise<ElectronDirectoryHandle | null>;
     getProjectDirectories?: () => Promise<{ paths: string[]; activePath: string | null; handles: ElectronDirectoryHandle[] }>;
     setProjectDirectories?: (handles: ElectronDirectoryHandle[]) => Promise<unknown>;
@@ -950,11 +950,7 @@ export default function Home() {
   const [shotVisualStyles, setShotVisualStyles] = useState<Record<string, VisualStyleKey>>({});
   const [railWidth, setRailWidth] = useState(220);
   const [panelWidth, setPanelWidth] = useState(420);
-  const [, setGenerationStatusState] = useState("等待生成");
-  const [generationNotice, setGenerationNotice] = useState<{
-    type: "error" | "warning" | "info";
-    text: string;
-  } | null>(null);
+  const [generationNotice, setGenerationNotice] = useState<string | null>(null);
   const [shotTasks, setShotTasks] = useState<Record<string, ShotTask>>({});
   const [generationDurations, setGenerationDurations] = useState<
     Record<string, number>
@@ -1112,9 +1108,8 @@ export default function Home() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeTask = taskShot ? shotTasks[taskShot.id] : undefined;
   function setGenerationStatus(text: string) {
-    setGenerationStatusState(text);
     if (/(失败|请先|未上传|无法|权限|错误|不存在|缺失|未返回)/.test(text))
-      setGenerationNotice({ type: "error", text });
+      setGenerationNotice(text);
   }
   const activeSubmitting = taskShot
     ? Boolean(submittingShots[taskShot.id])
@@ -6579,7 +6574,7 @@ export default function Home() {
           <div className="sticky bottom-0 z-20 border-t border-border bg-card/95 p-4 backdrop-blur">
             {generationNotice && (
               <output aria-live="assertive" className="mb-2 block text-center text-[10px] text-red-300">
-                {generationNotice.text}
+                {generationNotice}
               </output>
             )}
             <Button
