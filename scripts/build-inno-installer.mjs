@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 
 const root = process.cwd();
+const certificatePath = process.env.CSC_LINK || path.join(root, "build-assets", "certs", "MeristemForge-Local.pfx");
 const candidates = [
   process.env.INNO_SETUP_COMPILER,
   path.join(process.env.LOCALAPPDATA || "", "Programs", "Inno Setup 6", "ISCC.exe"),
@@ -11,8 +12,8 @@ const candidates = [
 ].filter(Boolean);
 const compiler = candidates.find((candidate) => existsSync(candidate));
 if (!compiler) throw new Error("找不到 Inno Setup 编译器 ISCC.exe。");
-if (!process.env.CSC_LINK || !process.env.CSC_KEY_PASSWORD)
-  throw new Error("制作签名安装包需要设置 CSC_LINK 和 CSC_KEY_PASSWORD。");
+if (!existsSync(certificatePath) || !process.env.CSC_KEY_PASSWORD)
+  throw new Error(`制作签名安装包需要证书和密码。证书路径：${certificatePath}`);
 
 const signTool = process.env.MERISTEMFORGE_SIGNTOOL ||
   path.join(process.env.LOCALAPPDATA || "", "electron-builder", "Cache", "winCodeSign", "winCodeSign-2.6.0", "windows-10", "x64", "signtool.exe");
@@ -31,7 +32,7 @@ const outputPath = path.join(root, "release", "MeristemForge-Inno-Setup-0.1.0-fi
 const signResult = spawnSync(signTool, [
   "sign",
   "/fd", "SHA256",
-  "/f", process.env.CSC_LINK,
+  "/f", certificatePath,
   "/p", process.env.CSC_KEY_PASSWORD,
   outputPath,
 ], {

@@ -172,7 +172,7 @@ function runtimeCandidates() {
   return [
     process.env.COMFYUI_RUNTIME_DIR,
     path.resolve(__dirname, '..', 'runtime'),
-    path.resolve(__dirname, '..', 'MeristemForge', 'runtime'),
+    path.resolve(__dirname, '..', 'build-assets', 'runtime'),
   ].filter(Boolean);
 }
 

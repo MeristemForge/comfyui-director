@@ -49,7 +49,7 @@ Page custom meristemforgeModelPageCreate meristemforgeModelPageLeave
 
 !macro customInstall
   ; Extract the bundled runtime while the assisted installer is still running.
-  ExecWait '"$INSTDIR\resources\runtime-extractor\7z.exe" x -y "$INSTDIR\resources\runtime-archive\runtime.7z" "-o$INSTDIR"' $0
+  ExecWait '"$INSTDIR\resources\runtime-extractor\7z.exe" x -y "$INSTDIR\resources\runtime-archive\runtime.7z" "-o$APPDATA\MeristemForge"' $0
   ${If} $0 != 0
     MessageBox MB_ICONSTOP "ComfyUI 运行时解压失败，请检查磁盘空间后重试。"
     Abort

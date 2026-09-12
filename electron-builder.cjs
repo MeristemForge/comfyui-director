@@ -1,6 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const localCertificate = path.join(__dirname, 'build-assets', 'certs', 'MeristemForge-Local.pfx');
+if (!process.env.CSC_LINK && fs.existsSync(localCertificate)) process.env.CSC_LINK = localCertificate;
 const markerPath = path.join(__dirname, '.runtime-build-path');
 const marker = fs.existsSync(markerPath) ? JSON.parse(fs.readFileSync(markerPath, 'utf8')) : null;
 const markedRuntime = marker?.type === 'directory' ? marker.path : null;
@@ -8,8 +10,7 @@ const markedArchive = marker?.type === 'archive' ? marker.path : null;
 const candidates = [
   markedRuntime,
   process.env.COMFYUI_RUNTIME_DIR,
-  path.resolve(__dirname, '..', 'MeristemForge', 'runtime'),
-  path.resolve(__dirname, 'runtime'),
+  path.resolve(__dirname, 'build-assets', 'runtime'),
 ].filter(Boolean);
 const runtime = markedArchive ? null : candidates.find((candidate) =>
   fs.existsSync(path.join(candidate, 'python_embeded', 'python.exe')) &&
@@ -17,7 +18,7 @@ const runtime = markedArchive ? null : candidates.find((candidate) =>
 );
 
 if (!runtime && !markedArchive) {
-  throw new Error('找不到 runtime.7z。请设置 COMFYUI_RUNTIME_ARCHIVE，或将 runtime.7z 放到 ../MeristemForge 后再执行 npm run electron:dist。');
+  throw new Error('找不到 runtime.7z。请设置 COMFYUI_RUNTIME_ARCHIVE，或将 runtime.7z 放到仓库根目录的 build-assets 文件夹后再执行 npm run electron:dist。');
 }
 
 const archiveDirectory = markedArchive ? path.dirname(markedArchive) : null;

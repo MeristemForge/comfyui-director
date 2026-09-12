@@ -9,7 +9,7 @@ const extractorDirectory = path.join(root, ".runtime-extractor");
 const archiveName = "runtime.7z";
 
 const archive = process.env.COMFYUI_RUNTIME_ARCHIVE ||
-  path.resolve(root, "..", "MeristemForge", archiveName);
+  path.resolve(root, "build-assets", archiveName);
 if (existsSync(archive)) {
   if (statSync(archive).size === 0) {
     throw new Error(`${archive} 当前是空文件，请等待 7-Zip 压缩完成后再执行 npm run electron:dist。`);
@@ -29,4 +29,4 @@ if (existsSync(archive)) {
   process.exit(0);
 }
 
-throw new Error(`找不到 ${archiveName}。请将完整的 runtime.7z 放在 ${path.resolve(root, "..", "MeristemForge")}，或设置 COMFYUI_RUNTIME_ARCHIVE。`);
+throw new Error(`找不到 ${archiveName}。请将完整的 runtime.7z 放在 ${path.resolve(root, "build-assets")}，或设置 COMFYUI_RUNTIME_ARCHIVE。`);

@@ -35,6 +35,7 @@ yarn-error.log*
 next-env.d.ts
 /dist/
 /release/
+/build-assets/
 /.wrangler/
 /runtime/
 /.runtime-cache/
