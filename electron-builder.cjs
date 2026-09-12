@@ -44,14 +44,8 @@ module.exports = {
     ...(markedArchive ? [{ from: extractorDirectory, to: 'runtime-extractor' }] : []),
   ],
   win: {
-    target: ['nsis', 'portable'],
     icon: 'public/meristemforge-icon.png',
     // Set CSC_LINK/CSC_KEY_PASSWORD for a certificate-backed release build.
     forceCodeSigning: Boolean(process.env.CSC_LINK),
-  },
-  nsis: {
-    include: 'electron/installer.nsh',
-    oneClick: false,
-    allowToChangeInstallationDirectory: true,
   },
 };
