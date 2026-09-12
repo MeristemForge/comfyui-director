@@ -46,9 +46,15 @@ export default defineConfig(async () => {
 
   return {
     css: { postcss: { plugins: [tailwindcss()] } },
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    // The local ComfyUI runtime is extracted below the repository root during
+    // Electron development. It is not application source and must not trigger
+    // a Vite rescan for every file created by 7-Zip.
+    server: {
+      watch: {
+        ...(isCodexSeatbeltSandbox ? { useFsEvents: false, usePolling: true } : {}),
+        ignored: ['**/build-assets/**', '**/.runtime-extractor/**'],
+      },
+    },
     plugins: [
       vinext(),
       sites(),

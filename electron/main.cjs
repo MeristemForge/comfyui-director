@@ -183,9 +183,10 @@ function resolveRuntime() {
   ) ?? null;
 }
 
-function packagedArchive() {
-  if (!app.isPackaged) return null;
-  const directory = path.join(process.resourcesPath, 'runtime-archive');
+function runtimeArchive() {
+  const directory = app.isPackaged
+    ? path.join(process.resourcesPath, 'runtime-archive')
+    : path.resolve(__dirname, '..', 'build-assets');
   const archive = path.join(directory, 'runtime.7z');
   return fsSync.existsSync(archive) ? archive : null;
 }
@@ -193,15 +194,19 @@ function packagedArchive() {
 async function ensurePackagedRuntime() {
   const existing = resolveRuntime();
   if (existing) return existing;
-  const archive = packagedArchive();
+  const archive = runtimeArchive();
   if (!archive) return null;
-  const extractor = path.join(process.resourcesPath, 'runtime-extractor', '7z.exe');
-  const extractorDll = path.join(process.resourcesPath, 'runtime-extractor', '7z.dll');
+  const extractorDirectory = app.isPackaged
+    ? path.join(process.resourcesPath, 'runtime-extractor')
+    : path.resolve(__dirname, '..', '.runtime-extractor');
+  const extractor = path.join(extractorDirectory, '7z.exe');
+  const extractorDll = path.join(extractorDirectory, '7z.dll');
   if (!fsSync.existsSync(extractor) || !fsSync.existsSync(extractorDll))
-    throw new Error('安装包缺少 runtime 解压组件。');
+    throw new Error(app.isPackaged ? '安装包缺少 runtime 解压组件。' : '开发环境缺少 7-Zip 解压组件，请先运行 npm run prepare-runtime。');
   // runtime.7z contains the top-level `runtime` directory. Extract into the
-  // writable per-user data directory so ComfyUI can maintain its runtime data.
-  const target = app.getPath('userData');
+  // build-assets in development and the writable per-user data directory in
+  // the packaged app so ComfyUI can maintain its runtime data.
+  const target = app.isPackaged ? app.getPath('userData') : path.resolve(__dirname, '..', 'build-assets');
   await fs.mkdir(target, { recursive: true });
   comfyState = 'extracting';
   comfyError = null;
