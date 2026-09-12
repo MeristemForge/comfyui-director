@@ -462,8 +462,7 @@ ipcMain.handle('director:pick-directory', async () => {
 ipcMain.handle('director:get-project-directories', async () => getSavedProjectPaths());
 ipcMain.handle('director:set-project-directories', async (_event, operation = {}) => {
   const paths = Array.isArray(operation.paths) ? operation.paths : [];
-  const activePath = Object.prototype.hasOwnProperty.call(operation, 'activePath') ? operation.activePath : undefined;
-  const saved = await saveProjectPaths(paths, activePath);
+  const saved = await saveProjectPaths(paths);
   const nextConfig = await readAppConfig();
   return { paths: saved, activePath: typeof nextConfig.activeProjectPath === 'string' ? nextConfig.activeProjectPath : null };
 });

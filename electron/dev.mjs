@@ -6,6 +6,7 @@ import net from 'node:net';
 
 const root = process.cwd();
 const vinext = spawn(process.execPath, ['node_modules/vinext/dist/cli.js', 'dev', '--hostname', '127.0.0.1', '--port', '3000'], { cwd: root, stdio: 'inherit' });
+let electron = null;
 function waitForServer() {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + 30000;
@@ -21,9 +22,9 @@ function waitForServer() {
     check();
   });
 }
-function shutdown() { if (!vinext.killed) vinext.kill(); if (!electron.killed) electron.kill(); }
+function shutdown() { if (!vinext.killed) vinext.kill(); if (electron && !electron.killed) electron.kill(); }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
 await waitForServer();
-const electron = spawn(path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron'), ['electron/main.cjs'], { cwd: root, stdio: 'inherit', env: { ...process.env, DIRECTOR_DEV_URL: 'http://127.0.0.1:3000' }, shell: process.platform === 'win32' });
+electron = spawn(path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron'), ['electron/main.cjs'], { cwd: root, stdio: 'inherit', env: { ...process.env, DIRECTOR_DEV_URL: 'http://127.0.0.1:3000' }, shell: process.platform === 'win32' });
 electron.on('exit', (code) => { shutdown(); process.exit(code ?? 0); });
 await once(electron, 'spawn');
