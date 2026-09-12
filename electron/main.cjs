@@ -394,8 +394,6 @@ ipcMain.handle('director:window-control', (_event, action) => {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   if (action === 'is-maximized') return mainWindow.isMaximized();
   if (action === 'minimize') mainWindow.minimize();
-  else if (action === 'maximize') mainWindow.maximize();
-  else if (action === 'unmaximize') mainWindow.unmaximize();
   else if (action === 'toggle-maximize') {
     if (mainWindow.isMaximized()) mainWindow.unmaximize();
     else mainWindow.maximize();
@@ -403,12 +401,6 @@ ipcMain.handle('director:window-control', (_event, action) => {
   else if (action === 'close') mainWindow.close();
   return mainWindow.isMaximized();
 });
-ipcMain.handle('director:prompt-project-name', () => new Promise((resolve) => {
-  const promptWindow = new BrowserWindow({ parent: mainWindow, modal: true, width: 440, height: 260, resizable: false, autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false } });
-  const html = `<!doctype html><meta charset="utf-8"><style>body{font:14px sans-serif;background:#18181b;color:#fafafa;padding:24px}h2{font-size:16px}input{box-sizing:border-box;width:100%;padding:10px;margin:12px 0;background:#27272a;color:white;border:1px solid #52525b;border-radius:8px}button{padding:9px 16px;border:0;border-radius:8px;background:#f4bd50;color:#17120a;font-weight:600;float:right}</style><h2>新建项目</h2><div>请输入项目名称</div><input id="name" value="未命名项目" autofocus><button id="ok">选择保存位置</button><script>const send=()=>window.electronDirectorSubmit(document.getElementById('name').value);document.getElementById('ok').onclick=send;document.getElementById('name').onkeydown=e=>{if(e.key==='Enter')send()};</script>`;
-  ipcMain.once('director:prompt-project-name-result', (_event, name) => { if (!promptWindow.isDestroyed()) promptWindow.close(); resolve(typeof name === 'string' ? name.trim() : null); });
-  promptWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-}));
 function waitForTcp(port, timeout = 30000) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeout;
@@ -452,10 +444,6 @@ async function startProductionServer() {
     stdio: ['ignore', logFd, logFd],
   });
   fsSync.closeSync(logFd);
-  server.once('exit', (code) => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.getURL())
-      mainWindow.webContents.send('director:server-exit', code ?? -1);
-  });
   await waitForTcp(serverPort);
   return `http://127.0.0.1:${serverPort}`;
 }
@@ -485,7 +473,6 @@ ipcMain.handle('director:clear-active-project-directory', async () => {
   await writeAppConfig({ activeProjectPath: null });
   return true;
 });
-ipcMain.handle('director:register-project-directory', async (_event, value) => registerProjectPath(value));
 ipcMain.handle('director:get-agent-executable', async () => {
   const config = await readAppConfig();
   return typeof config.agentExecutablePath === 'string' ? config.agentExecutablePath : '';
@@ -510,15 +497,6 @@ ipcMain.handle('director:pick-model-directory', async () => {
   });
   if (result.canceled || !result.filePaths[0]) return null;
   const selected = path.resolve(result.filePaths[0]);
-  await writeAppConfig({ modelDirectory: selected });
-  await stopComfyUI();
-  await startComfyUI();
-  return { path: selected, isDefault: path.normalize(selected) === path.normalize(defaultModelDirectory()) };
-});
-ipcMain.handle('director:set-model-directory', async (_event, value) => {
-  const raw = String(value || '').trim();
-  if (!raw) throw new Error('模型目录不能为空');
-  const selected = path.resolve(raw);
   await writeAppConfig({ modelDirectory: selected });
   await stopComfyUI();
   await startComfyUI();
@@ -568,10 +546,10 @@ function createWindow(url = process.env.DIRECTOR_DEV_URL || 'http://127.0.0.1:30
   mainWindow = window;
   window.on('maximize', broadcastWindowState);
   window.on('unmaximize', broadcastWindowState);
-  window.loadURL(url);
+  void window.loadURL(url);
 }
 
-app.whenReady().then(async () => {
+void app.whenReady().then(async () => {
   if (process.argv.includes('--extract-runtime')) {
     try { await ensurePackagedRuntime(); app.quit(); } catch (error) { console.error(error); app.exit(1); }
     return;

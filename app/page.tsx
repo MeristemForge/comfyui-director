@@ -156,19 +156,16 @@ type DirectoryPickerWindow = Window & {
     getComfyState?: () => Promise<{ state: "stopped" | "extracting" | "starting" | "ready" | "unavailable" | "error"; ready: boolean; url: string; port: number; error: string | null; runtimePath: string | null }>;
     getModelDirectory?: () => Promise<{ path: string; isDefault: boolean }>;
     pickModelDirectory?: () => Promise<{ path: string; isDefault: boolean } | null>;
-    setModelDirectory?: (value: string) => Promise<{ path: string; isDefault: boolean }>;
     onComfyStateChange?: (callback: (state: { state: "stopped" | "extracting" | "starting" | "ready" | "unavailable" | "error"; ready: boolean; url: string; port: number; error: string | null; runtimePath: string | null }) => void) => () => void;
     pickDirectory: () => Promise<ElectronDirectoryHandle | null>;
     getProjectDirectories?: () => Promise<{ paths: string[]; activePath: string | null; handles: ElectronDirectoryHandle[] }>;
     setProjectDirectories?: (handles: ElectronDirectoryHandle[]) => Promise<unknown>;
     setActiveProjectDirectory?: (handle: ElectronDirectoryHandle) => Promise<unknown>;
     clearActiveProjectDirectory?: () => Promise<unknown>;
-    registerProjectDirectory?: (handle: ElectronDirectoryHandle) => Promise<unknown>;
     getAgentExecutable?: () => Promise<string>;
     setAgentExecutable?: (value: string) => Promise<string>;
     runAgent?: (input: { prompt: string; mode: string; duration: number; visualStyle?: string; referenceMapping: H3ReferenceMapping[] }) => Promise<string>;
-    promptProjectName?: () => Promise<string | null>;
-    windowControl?: (action: "minimize" | "maximize" | "unmaximize" | "toggle-maximize" | "close" | "is-maximized") => Promise<boolean>;
+    windowControl?: (action: "minimize" | "toggle-maximize" | "close" | "is-maximized") => Promise<boolean>;
     isMaximized?: () => Promise<boolean>;
     onWindowStateChange?: (callback: (maximized: boolean) => void) => () => void;
   };
@@ -568,9 +565,13 @@ function isNotFoundError(error: unknown) {
 }
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
-  if (typeof error === "object" && error !== null && "message" in error)
-    return String((error as { message?: unknown }).message);
-  return String(error ?? "未知错误");
+  if (typeof error === "string") return error;
+  if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") return String(error);
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return "未知错误";
 }
 
 function assetNamePart(value: string) {
@@ -949,7 +950,7 @@ export default function Home() {
   const [shotVisualStyles, setShotVisualStyles] = useState<Record<string, VisualStyleKey>>({});
   const [railWidth, setRailWidth] = useState(220);
   const [panelWidth, setPanelWidth] = useState(420);
-  const [generationStatus, setGenerationStatusState] = useState("等待生成");
+  const [, setGenerationStatusState] = useState("等待生成");
   const [generationNotice, setGenerationNotice] = useState<{
     type: "error" | "warning" | "info";
     text: string;
@@ -2008,7 +2009,7 @@ export default function Home() {
     if (!shotId) return;
     setShotSettings((current) => ({
       ...current,
-      [shotId]: { ...shotSettingDefaults, ...(current[shotId] ?? {}), [key]: value },
+      [shotId]: { ...shotSettingDefaults, ...current[shotId], [key]: value },
     }));
   }
   function ensureReferenceMode(shotId: string) {
@@ -2019,7 +2020,7 @@ export default function Home() {
     if (taskShot?.id === shotId) setMode("R2VA");
   }
   function getShotSettings(shot: Shot) {
-    return { ...shotSettingDefaults, ...(shotSettings[shot.id] ?? {}) };
+    return { ...shotSettingDefaults, ...shotSettings[shot.id] };
   }
   function shotDetail(shot: Shot) {
     const settings = getShotSettings(shot);
@@ -2149,7 +2150,7 @@ export default function Home() {
     if (shot) {
       const settings = {
         ...shotSettingDefaults,
-        ...(shotSettings[shot.id] ?? {}),
+        ...shotSettings[shot.id],
         mode: nextMode,
       };
       void writeClipManifest(shot, {
@@ -2310,7 +2311,6 @@ export default function Home() {
         void saveProjectDirectoryHandles(next);
         return next;
       });
-      setProjectDirectoryName(directory.name || "项目目录");
       void saveProjectDirectoryHandle(directory);
       setProjectDirectoryName(requestedName);
       setGenerationStatus(`项目目录已就绪：${requestedName}`);
@@ -2557,9 +2557,6 @@ export default function Home() {
     let restoredCount = 0;
     let missingCount = 0;
     for (const [assetKey, asset] of Object.entries(assets)) {
-      const isCurrent = () =>
-        projectEpochRef.current === epoch &&
-        referenceAssetsRef.current[assetKey]?.sourcePath === asset.sourcePath;
       if (projectEpochRef.current !== epoch) return;
       if (referenceAssetsRef.current[assetKey]?.sourcePath !== asset.sourcePath) continue;
       if (!asset.sourcePath) continue;
@@ -2861,7 +2858,7 @@ export default function Home() {
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
-                saveEngineSettings();
+                void saveEngineSettings();
               }
               if (event.key === "Escape") setEngineSettingsOpen(false);
             }}
@@ -3672,7 +3669,7 @@ export default function Home() {
       });
     const savedSettings = {
       ...shotSettingDefaults,
-      ...(shotSettings[shot.id] ?? {}),
+      ...shotSettings[shot.id],
     };
     const generationOverride = overrides.generation ?? {};
     const manifestMode = generationOverride.mode ?? savedSettings.mode;
@@ -4179,7 +4176,8 @@ export default function Home() {
         if (sourcePath) void deleteReferenceSourceFile(sourcePath);
         return;
       }
-      url = URL.createObjectURL(file);
+      const objectUrl = URL.createObjectURL(file);
+      url = objectUrl;
       if (
         sourcePath &&
         previousAsset?.sourcePath &&
@@ -4194,7 +4192,7 @@ export default function Home() {
         ...current,
         [key]: {
           name: file.name,
-          url,
+          url: objectUrl,
           ...uploaded,
           ...(sourcePath ? { sourcePath } : {}),
         },
@@ -5065,7 +5063,7 @@ export default function Home() {
       ...current,
       [shotId]: {
         ...shotSettingDefaults,
-        ...(current[shotId] ?? {}),
+        ...current[shotId],
         seed: submittedSeed,
         seedMode,
         keyframeMode,
@@ -6741,7 +6739,7 @@ export default function Home() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  confirmRenameShot();
+                  void confirmRenameShot();
                 }
                 if (event.key === "Escape") setRenameIndex(null);
               }}

@@ -21,7 +21,7 @@ if (!existsSync(signTool)) throw new Error(`找不到 signtool.exe：${signTool}
 
 const result = spawnSync(compiler, [path.join(root, "installer", "MeristemForge.iss")], {
   cwd: root,
-  env: { ...process.env, MERISTEMFORGE_SIGNTOOL: signTool },
+  env: process.env,
   stdio: "inherit",
   windowsHide: true,
 });

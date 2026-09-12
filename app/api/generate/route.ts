@@ -3,13 +3,40 @@ import i2vTemplate from '../../../comfyui-workflows/minimax-h3/api/video_minimax
 import r2vTemplate from '../../../comfyui-workflows/minimax-h3/api/video_minimax_h3_r2v-api.json';
 import { normalizeComfyUrl } from '../comfy-url';
 
+type GenerateBody = {
+  mode?: unknown;
+  duration?: unknown;
+  fps?: unknown;
+  prompt?: unknown;
+  turbo?: unknown;
+  seed?: unknown;
+  comfy_url?: unknown;
+  resolution?: unknown;
+  aspect?: unknown;
+  keyframe_mode?: unknown;
+  image?: unknown;
+  last_image?: unknown;
+  images?: unknown;
+  videos?: unknown;
+  audios?: unknown;
+  shot_id?: unknown;
+  shot_title?: unknown;
+  client_id?: unknown;
+};
+type WorkflowNode = { inputs?: Record<string, unknown>; class_type?: string; [key: string]: unknown };
+
+function textValue(value: unknown, fallback = '') {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : fallback;
+}
+
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    if (!body || typeof body !== 'object')
+    const rawBody: unknown = await request.json();
+    if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody))
       return Response.json({ error: '请求参数无效' }, { status: 400 });
+    const body = rawBody as GenerateBody;
     const mode = body.mode;
-    if (!['T2VA', 'I2VA', 'R2VA'].includes(mode))
+    if (typeof mode !== 'string' || !['T2VA', 'I2VA', 'R2VA'].includes(mode))
       return Response.json({ error: '无效生成模式' }, { status: 400 });
     const duration = Number(body.duration);
     const fps = Number(body.fps);
@@ -17,32 +44,34 @@ export async function POST(request: Request) {
       return Response.json({ error: '无效的时长' }, { status: 400 });
     if (!Number.isFinite(fps) || fps <= 0 || fps > 120)
       return Response.json({ error: '无效的 FPS' }, { status: 400 });
-    if (typeof body.prompt !== 'string' || !body.prompt.trim())
+    const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+    if (!prompt.trim())
       return Response.json({ error: '提示词不能为空' }, { status: 400 });
     if (body.turbo !== undefined && typeof body.turbo !== 'boolean')
       return Response.json({ error: 'turbo 必须是布尔值' }, { status: 400 });
+    const seedText = textValue(body.seed);
     if (body.seed !== undefined &&
-      (!/^[0-9]+$/.test(String(body.seed)) ||
+      (!/^[0-9]+$/.test(seedText) ||
         !Number.isSafeInteger(Number(body.seed))))
       return Response.json({ error: 'seed 必须是安全整数' }, { status: 400 });
     const comfyUrl = normalizeComfyUrl(body.comfy_url);
     const template = mode === 'I2VA' ? i2vTemplate : mode === 'R2VA' ? r2vTemplate : t2vTemplate;
-    const workflow = structuredClone(template) as Record<string, { inputs?: Record<string, unknown>; class_type?: string }>;
+    const workflow = structuredClone(template) as Record<string, WorkflowNode>;
     // API exports from subgraphs may prefix node IDs; flatten them for ComfyUI's prompt endpoint.
-    const normalized: Record<string, { inputs?: Record<string, unknown> }> = {};
+    const normalized: Record<string, WorkflowNode> = {};
     for (const [id, node] of Object.entries(workflow)) normalized[id.includes(':') ? id.split(':').pop()! : id] = node;
     for (const node of Object.values(normalized)) {
       if (!node.inputs) continue;
-      for (const [key, value] of Object.entries(node.inputs)) {
+      for (const value of Object.values(node.inputs)) {
         if (Array.isArray(value) && typeof value[0] === 'string' && value[0].includes(':')) value[0] = value[0].split(':').pop()!;
       }
     }
-    let [width, height] = String(body.resolution ?? '1344 × 768').split('×').map((value) => Number(value.trim()));
+    let [width, height] = textValue(body.resolution, '1344 × 768').split('×').map((value) => Number(value.trim()));
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0)
       return Response.json({ error: '无效的分辨率' }, { status: 400 });
     // Keep the selected pixel budget while honoring portrait/square/wide aspect
     // choices. H3 requires dimensions aligned to a 32-pixel grid.
-    const aspect = String(body.aspect ?? '16:9').trim();
+    const aspect = textValue(body.aspect, '16:9').trim();
     const aspectMatch = aspect.match(/^(\d+(?:\.\d+)?):([\d.]+)$/);
     if (aspectMatch) {
       const ratio = Number(aspectMatch[1]) / Number(aspectMatch[2]);
@@ -66,7 +95,7 @@ export async function POST(request: Request) {
     const videoNode = Object.values(normalized).find((item) => item.class_type?.startsWith('MiniMaxH3'))!;
     const imageNode = node('LoadImage');
     if (mode === 'I2VA') {
-      const keyframeMode = body.keyframe_mode ?? 'first';
+      const keyframeMode = typeof body.keyframe_mode === 'string' ? body.keyframe_mode : 'first';
       if (!['first', 'last', 'first_last'].includes(keyframeMode))
         return Response.json({ error: '无效的关键帧模式' }, { status: 400 });
       const useFirst = keyframeMode === 'first' || keyframeMode === 'first_last';
@@ -104,9 +133,9 @@ export async function POST(request: Request) {
       for (const key of Object.keys(videoNode.inputs ?? {})) {
         if (/^(ref_images\.ref_image_|ref_videos\.ref_video_|ref_audios\.ref_audio_)/.test(key)) delete videoNode.inputs![key];
       }
-      const images = Array.isArray(body.images) ? body.images.filter((value: unknown): value is string => typeof value === 'string' && value.trim()) : [];
-      const videos = Array.isArray(body.videos) ? body.videos.filter((value: unknown): value is string => typeof value === 'string' && value.trim()) : [];
-      const audios = Array.isArray(body.audios) ? body.audios.filter((value: unknown): value is string => typeof value === 'string' && value.trim()) : [];
+      const images = Array.isArray(body.images) ? body.images.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0) : [];
+      const videos = Array.isArray(body.videos) ? body.videos.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0) : [];
+      const audios = Array.isArray(body.audios) ? body.audios.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0) : [];
       if (images.length > 9 || videos.length > 3 || audios.length > 3) return Response.json({ error: 'R2VA 参考素材数量超过 H3 限制' }, { status: 400 });
       images.forEach((filename, index) => {
         const loaderId = addNode('LoadImage', { image: filename });
@@ -122,12 +151,12 @@ export async function POST(request: Request) {
         videoNode.inputs![`ref_audios.ref_audio_${index}`] = [loaderId, 0];
       });
     }
-    videoNode.inputs!.prompt = String(body.prompt ?? '');
+    videoNode.inputs!.prompt = prompt;
     videoNode.inputs!.width = width; videoNode.inputs!.height = height;
     const durationNode = node('PrimitiveFloat'); if (durationNode) durationNode.inputs!.value = duration;
     node('CreateVideo')!.inputs!.fps = fps;
-    const shotId = String(body.shot_id ?? 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const shotTitle = String(body.shot_title ?? '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || `shot-${shotId}`;
+    const shotId = textValue(body.shot_id, 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const shotTitle = textValue(body.shot_title).replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || `shot-${shotId}`;
     const saveVideoNode = node('SaveVideo');
     if (saveVideoNode) saveVideoNode.inputs!.filename_prefix = `director/shot-${shotId}-${shotTitle}-${Date.now().toString(36)}`;
     const clientId = typeof body.client_id === 'string' && body.client_id ? body.client_id : 'comfyui-director';

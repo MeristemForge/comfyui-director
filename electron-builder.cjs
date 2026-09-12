@@ -5,19 +5,8 @@ const localCertificate = path.join(__dirname, 'build-assets', 'certs', 'Meristem
 if (!process.env.CSC_LINK && fs.existsSync(localCertificate)) process.env.CSC_LINK = localCertificate;
 const markerPath = path.join(__dirname, '.runtime-build-path');
 const marker = fs.existsSync(markerPath) ? JSON.parse(fs.readFileSync(markerPath, 'utf8')) : null;
-const markedRuntime = marker?.type === 'directory' ? marker.path : null;
 const markedArchive = marker?.type === 'archive' ? marker.path : null;
-const candidates = [
-  markedRuntime,
-  process.env.COMFYUI_RUNTIME_DIR,
-  path.resolve(__dirname, 'build-assets', 'runtime'),
-].filter(Boolean);
-const runtime = markedArchive ? null : candidates.find((candidate) =>
-  fs.existsSync(path.join(candidate, 'python_embeded', 'python.exe')) &&
-  fs.existsSync(path.join(candidate, 'ComfyUI', 'main.py')),
-);
-
-if (!runtime && !markedArchive) {
+if (!markedArchive) {
   throw new Error('找不到 runtime.7z。请设置 COMFYUI_RUNTIME_ARCHIVE，或将 runtime.7z 放到仓库根目录的 build-assets 文件夹后再执行 npm run electron:dist。');
 }
 
@@ -36,12 +25,11 @@ module.exports = {
   // without relying on Electron's virtual app.asar path.
   asar: false,
   directories: { output: 'release' },
-  files: ['electron/**/*', 'dist/**/*', 'node_modules/**/*', 'package.json'],
+  files: ['electron/**/*', '!electron/server/**', 'dist/**/*', 'node_modules/**/*', 'package.json'],
   extraResources: [
     { from: 'electron/server', to: 'server' },
-    ...(runtime ? [{ from: runtime, to: 'runtime' }] : []),
-    ...(markedArchive ? [{ from: archiveDirectory, to: 'runtime-archive', filter: [archiveBaseName] }] : []),
-    ...(markedArchive ? [{ from: extractorDirectory, to: 'runtime-extractor' }] : []),
+    { from: archiveDirectory, to: 'runtime-archive', filter: [archiveBaseName] },
+    { from: extractorDirectory, to: 'runtime-extractor' },
   ],
   win: {
     icon: 'public/meristemforge-icon.png',

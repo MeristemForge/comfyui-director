@@ -76,18 +76,14 @@ contextBridge.exposeInMainWorld('electronDirector', {
   async setProjectDirectories(handles) { const paths = handles.map((handle) => handle.__path).filter(Boolean); return ipcRenderer.invoke('director:set-project-directories', { paths }); },
   async setActiveProjectDirectory(handle) { return ipcRenderer.invoke('director:set-active-project-directory', handle.__path); },
   async clearActiveProjectDirectory() { return ipcRenderer.invoke('director:clear-active-project-directory'); },
-  async registerProjectDirectory(handle) { return ipcRenderer.invoke('director:register-project-directory', handle.__path); },
   async getAgentExecutable() { return ipcRenderer.invoke('director:get-agent-executable'); },
   async setAgentExecutable(value) { return ipcRenderer.invoke('director:set-agent-executable', value); },
   async runAgent(prompt) { return ipcRenderer.invoke('director:run-agent', prompt); },
-  async promptProjectName() { return ipcRenderer.invoke('director:prompt-project-name'); },
   async windowControl(action) { return ipcRenderer.invoke('director:window-control', action); },
   async isMaximized() { return ipcRenderer.invoke('director:window-control', 'is-maximized'); },
   async getComfyState() { return ipcRenderer.invoke('director:get-comfy-state'); },
   async getModelDirectory() { return ipcRenderer.invoke('director:get-model-directory'); },
   async pickModelDirectory() { return ipcRenderer.invoke('director:pick-model-directory'); },
-  async setModelDirectory(value) { return ipcRenderer.invoke('director:set-model-directory', value); },
   onComfyStateChange(callback) { const listener = (_event, state) => callback(state); ipcRenderer.on('director:comfy-state', listener); return () => ipcRenderer.removeListener('director:comfy-state', listener); },
   onWindowStateChange(callback) { const listener = (_event, maximized) => callback(Boolean(maximized)); ipcRenderer.on('director:window-state', listener); return () => ipcRenderer.removeListener('director:window-state', listener); },
 });
-contextBridge.exposeInMainWorld('electronDirectorSubmit', (name) => ipcRenderer.send('director:prompt-project-name-result', name));

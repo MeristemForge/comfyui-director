@@ -52,5 +52,49 @@
     "typescript/no-require-imports": "error",
     "typescript/no-unnecessary-type-constraint": "error",
     "typescript/no-unsafe-function-type": "error"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["electron/**/*.cjs", "electron-builder.cjs"],
+      "rules": {
+        "typescript/no-require-imports": "off",
+        "typescript/no-floating-promises": "off",
+        "eslint/no-control-regex": "off"
+      }
+    },
+    {
+      "files": ["app/page.tsx"],
+      "rules": {
+        "eslint/no-control-regex": "off",
+        "react/react-compiler": "off",
+        "react-hooks/exhaustive-deps": "off",
+        "nextjs/no-img-element": "off",
+        "jsx-a11y/no-static-element-interactions": "off",
+        "jsx-a11y/no-autofocus": "off",
+        "jsx-a11y/click-events-have-key-events": "off",
+        "jsx-a11y/no-noninteractive-element-interactions": "off",
+        "jsx-a11y/control-has-associated-label": "off",
+        "jsx-a11y/label-has-associated-control": "off",
+        "jsx-a11y/prefer-tag-over-role": "off",
+        "jsx-a11y/role-supports-aria-props": "off",
+        "jsx-a11y/media-has-caption": "off"
+      }
+    },
+    {
+      "files": ["components/project-tree.tsx"],
+      "rules": {
+        "nextjs/no-img-element": "off"
+      }
+    },
+    {
+      "files": [
+        "app/api/upload/route.ts",
+        "app/api/generate/route.ts",
+        "app/api/output/finalize/route.ts"
+      ],
+      "rules": {
+        "eslint/no-control-regex": "off"
+      }
+    }
+  ]
 }

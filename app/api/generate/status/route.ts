@@ -1,6 +1,11 @@
 export const runtime = 'nodejs';
 import { normalizeComfyUrl } from '../../comfy-url';
 
+type HistoryItem = {
+  status?: { status_str?: string; messages?: unknown[] };
+  outputs?: Record<string, unknown>;
+};
+
 function findVideoOutput(item: { outputs?: Record<string, unknown> }) {
   const outputEntries = Object.values(item.outputs ?? {}) as Array<Record<string, unknown>>;
   // SaveVideo commonly reports `videos` or `gifs`; scan every node before
@@ -35,7 +40,7 @@ export async function GET(request: Request) {
     if (!response.ok) {
       return Response.json({ status: 'error', error: `ComfyUI history HTTP ${response.status}` }, { status: 502 });
     }
-    const data = await response.json();
+    const data = await response.json() as Record<string, HistoryItem>;
     const item = data[id];
     if (!item) {
       try {
@@ -54,8 +59,11 @@ export async function GET(request: Request) {
     }
     if (item.status?.status_str === 'error') {
       const messages = Array.isArray(item.status.messages) ? item.status.messages : [];
-      const detail = messages.find((entry: unknown) => Array.isArray(entry) && entry[0] === 'execution_error')?.[1];
-      return Response.json({ status: 'error', error: detail?.exception_message ?? 'ComfyUI 执行失败' });
+      const detail = messages.find((entry: unknown) => Array.isArray(entry) && entry[0] === 'execution_error');
+      const detailMessage = Array.isArray(detail) && detail[1] && typeof detail[1] === 'object' && 'exception_message' in detail[1]
+        ? detail[1].exception_message
+        : null;
+      return Response.json({ status: 'error', error: typeof detailMessage === 'string' ? detailMessage : 'ComfyUI 执行失败' });
     }
     const output = findVideoOutput(item);
     if (!output) return Response.json({ status: 'running' });

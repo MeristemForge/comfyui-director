@@ -25,13 +25,21 @@ function runAgent(executablePath: string, prompt: string) {
     const isCodex = /codex/i.test(path.basename(executable));
     const args = isCodex ? ["--ask-for-approval", "never", "exec", "-", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--color", "never"] : ["-p", prompt, "--output-format", "text"];
     const child = spawn(executable, args, { cwd: process.cwd(), windowsHide: true, shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(executable), stdio: isCodex ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"] });
+    const stdoutStream = child.stdout;
+    const stderrStream = child.stderr;
+    const stdinStream = child.stdin;
+    if (!stdoutStream || !stderrStream) {
+      child.kill();
+      reject(new Error("本地 Agent 输出流不可用"));
+      return;
+    }
     let stdout = ""; let stderr = "";
     const timer = setTimeout(() => { child.kill(); reject(new Error("本地 Agent 优化超时")); }, 120000);
-    child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; }); child.stderr.on("data", (chunk) => { stderr += chunk; });
+    stdoutStream.setEncoding("utf8"); stderrStream.setEncoding("utf8");
+    stdoutStream.on("data", (chunk) => { stdout += chunk; }); stderrStream.on("data", (chunk) => { stderr += chunk; });
     child.on("error", (error) => { clearTimeout(timer); reject(new Error(`无法启动本地 Agent：${error.message}`)); });
     child.on("close", (code) => { clearTimeout(timer); if (code !== 0) return reject(new Error(stderr.trim() || `Agent 退出码 ${code}`)); const result = stdout.trim().replace(/^```(?:text)?\s*/i, "").replace(/\s*```$/, "").trim(); if (!result) return reject(new Error("本地 Agent 未返回优化结果")); resolve(result); });
-    if (isCodex) child.stdin.end(prompt);
+    if (isCodex) stdinStream?.end(prompt);
   });
 }
 

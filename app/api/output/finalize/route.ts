@@ -16,7 +16,7 @@ async function resolveOutputRoot(comfyUrl?: string) {
   if (configuredRoot) return configuredRoot;
   const response = await fetch(`${normalizeComfyUrl(comfyUrl)}/system_stats`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
   if (!response.ok) return null;
-  const payload = await response.json();
+  const payload = await response.json() as { system?: { argv?: unknown } };
   const argv = Array.isArray(payload?.system?.argv) ? payload.system.argv : [];
   const flagIndex = argv.findIndex((value: unknown) => value === '--output-directory');
   return flagIndex >= 0 && typeof argv[flagIndex + 1] === 'string' ? argv[flagIndex + 1] as string : null;
@@ -24,6 +24,10 @@ async function resolveOutputRoot(comfyUrl?: string) {
 
 function safeName(value: string, fallback: string) {
   return (value.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim().replace(/[. ]+$/g, '').slice(0, 120) || fallback);
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' ? value : '';
 }
 
 function safeChildPath(root: string, child: string) {
@@ -58,11 +62,11 @@ export async function POST(request: Request) {
       source_subfolder?: unknown;
       comfy_url?: unknown;
     };
-    const shotId = safeName(String(body.shot_id ?? 'unknown'), 'unknown');
-    const title = safeName(String(body.shot_title ?? ''), `未命名镜头 ${shotId}`);
-    const source = String(body.source ?? '').trim();
+    const shotId = safeName(stringValue(body.shot_id) || 'unknown', 'unknown');
+    const title = safeName(stringValue(body.shot_title), `未命名镜头 ${shotId}`);
+    const source = stringValue(body.source).trim();
     if (!source) return Response.json({ error: '缺少 ComfyUI 输出文件' }, { status: 400 });
-    const sourceSubfolder = String(body.source_subfolder ?? '').trim();
+    const sourceSubfolder = stringValue(body.source_subfolder).trim();
     const outputRoot = await resolveOutputRoot(typeof body.comfy_url === 'string' ? body.comfy_url : undefined);
     if (!outputRoot) return Response.json({ error: '无法从 ComfyUI 获取输出目录，请先启动 ComfyUI' }, { status: 503 });
     const directorDirectory = resolveDirectorDirectory(outputRoot);
