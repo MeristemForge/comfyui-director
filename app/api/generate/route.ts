@@ -2,13 +2,27 @@ import t2vTemplate from '../../../comfyui-workflows/minimax-h3/api/video_minimax
 import i2vTemplate from '../../../comfyui-workflows/minimax-h3/api/video_minimax_h3_i2v-api.json';
 import r2vTemplate from '../../../comfyui-workflows/minimax-h3/api/video_minimax_h3_r2v-api.json';
 import { normalizeComfyUrl } from '../comfy-url';
+import {
+  defaultVideoModel,
+  isVideoModelId,
+  stepsForModelFile,
+  videoModelProfiles,
+  type VideoModelId,
+} from '../../../lib/video-models';
+
+const workflowTemplates = {
+  H3: {
+    T2VA: t2vTemplate,
+    I2VA: i2vTemplate,
+    R2VA: r2vTemplate,
+  },
+} satisfies Record<VideoModelId, Record<string, unknown>>;
 
 type GenerateBody = {
   mode?: unknown;
   duration?: unknown;
   fps?: unknown;
   prompt?: unknown;
-  turbo?: unknown;
   seed?: unknown;
   comfy_url?: unknown;
   resolution?: unknown;
@@ -22,6 +36,17 @@ type GenerateBody = {
   shot_id?: unknown;
   shot_title?: unknown;
   client_id?: unknown;
+  model?: unknown;
+  model_files?: unknown;
+};
+type ModelFileSelection = {
+  fl2vaDiffusionModel?: string;
+  ref2vaDiffusionModel?: string;
+  textEncoder?: string;
+  videoVae?: string;
+  audioVae?: string;
+  fl2vaLora?: string;
+  ref2vaLora?: string;
 };
 type WorkflowNode = { inputs?: Record<string, unknown>; class_type?: string; [key: string]: unknown };
 
@@ -38,6 +63,13 @@ export async function POST(request: Request) {
     const mode = body.mode;
     if (typeof mode !== 'string' || !['T2VA', 'I2VA', 'R2VA'].includes(mode))
       return Response.json({ error: '无效生成模式' }, { status: 400 });
+    const model = typeof body.model === 'string' ? body.model : defaultVideoModel;
+    if (!isVideoModelId(model))
+      return Response.json({ error: '不支持的视频模型' }, { status: 400 });
+    const modelCapabilities = videoModelProfiles[model];
+    const workflowProfile = workflowTemplates[model];
+    if (!Object.prototype.hasOwnProperty.call(workflowProfile, mode))
+      return Response.json({ error: '当前视频模型不支持此生成模式' }, { status: 400 });
     const duration = Number(body.duration);
     const fps = Number(body.fps);
     if (!Number.isFinite(duration) || duration <= 0 || duration > 30)
@@ -47,15 +79,13 @@ export async function POST(request: Request) {
     const prompt = typeof body.prompt === 'string' ? body.prompt : '';
     if (!prompt.trim())
       return Response.json({ error: '提示词不能为空' }, { status: 400 });
-    if (body.turbo !== undefined && typeof body.turbo !== 'boolean')
-      return Response.json({ error: 'turbo 必须是布尔值' }, { status: 400 });
     const seedText = textValue(body.seed);
     if (body.seed !== undefined &&
       (!/^[0-9]+$/.test(seedText) ||
         !Number.isSafeInteger(Number(body.seed))))
       return Response.json({ error: 'seed 必须是安全整数' }, { status: 400 });
     const comfyUrl = normalizeComfyUrl(body.comfy_url);
-    const template = mode === 'I2VA' ? i2vTemplate : mode === 'R2VA' ? r2vTemplate : t2vTemplate;
+    const template = workflowProfile[mode as keyof typeof workflowProfile];
     const workflow = structuredClone(template) as Record<string, WorkflowNode>;
     // API exports from subgraphs may prefix node IDs; flatten them for ComfyUI's prompt endpoint.
     const normalized: Record<string, WorkflowNode> = {};
@@ -89,16 +119,46 @@ export async function POST(request: Request) {
       return Response.json({ error: '分辨率不能超过 4096 × 4096' }, { status: 400 });
 
     const node = (type: string) => Object.values(normalized).find((item) => item.class_type === type);
-    const turbo = body.turbo === true;
-    const turboSwitch = node('PrimitiveBoolean');
-    if (turboSwitch) turboSwitch.inputs!.value = turbo;
-    const stepNodes = Object.values(normalized).filter((item) => item.class_type === 'PrimitiveInt');
-    const stepNode = stepNodes.find((item) => Number(item.inputs?.value) === 20 || Number(item.inputs?.value) === 4);
-    if (stepNode) stepNode.inputs!.value = turbo ? 4 : 20;
+    const referenceNodeId = (value: unknown) =>
+      Array.isArray(value) && typeof value[0] === 'string' ? value[0] : undefined;
+    const modelFiles = body.model_files && typeof body.model_files === 'object' && !Array.isArray(body.model_files)
+      ? body.model_files as ModelFileSelection
+      : {};
+    const modelFile = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    const diffusionModel = modelFile(mode === 'R2VA' ? modelFiles.ref2vaDiffusionModel : modelFiles.fl2vaDiffusionModel);
+    const textEncoder = modelFile(modelFiles.textEncoder);
+    const videoVae = modelFile(modelFiles.videoVae);
+    const audioVae = modelFile(modelFiles.audioVae);
+    const lora = modelFile(mode === 'R2VA' ? modelFiles.ref2vaLora : modelFiles.fl2vaLora);
+    const loraSwitch = node('PrimitiveBoolean');
+    if (loraSwitch) loraSwitch.inputs!.value = Boolean(lora);
+    const samplingSwitch = Object.values(normalized).find((item) => {
+      if (item.class_type !== 'ComfySwitchNode') return false;
+      const onTrue = referenceNodeId(item.inputs?.on_true);
+      const onFalse = referenceNodeId(item.inputs?.on_false);
+      return normalized[onTrue ?? '']?.class_type === 'PrimitiveInt' &&
+        normalized[onFalse ?? '']?.class_type === 'PrimitiveInt';
+    });
+    if (samplingSwitch) {
+      const onTrue = referenceNodeId(samplingSwitch.inputs?.on_true);
+      const onFalse = referenceNodeId(samplingSwitch.inputs?.on_false);
+      const steps = stepsForModelFile(model, lora ?? '');
+      if (onTrue && normalized[onTrue]?.inputs) normalized[onTrue].inputs!.value = steps;
+      if (onFalse && normalized[onFalse]?.inputs) normalized[onFalse].inputs!.value = steps;
+    }
     node('RandomNoise')!.inputs!.noise_seed = body.seed === undefined
       ? Math.floor(Math.random() * (Number.MAX_SAFE_INTEGER - 1)) + 1
       : Number(body.seed);
-    const videoNode = Object.values(normalized).find((item) => item.class_type?.startsWith('MiniMaxH3'))!;
+    const videoNode = Object.values(normalized).find((item) => item.class_type?.startsWith(modelCapabilities.videoNodePrefix))!;
+    const unetNode = node('UNETLoader');
+    if (diffusionModel && unetNode) unetNode.inputs!.unet_name = diffusionModel;
+    const clipNode = node('CLIPLoader');
+    if (textEncoder && clipNode) clipNode.inputs!.clip_name = textEncoder;
+    const vaeNodes = Object.values(normalized).filter((item) => item.class_type === 'VAELoader');
+    if (videoVae && vaeNodes[0]) vaeNodes[0].inputs!.vae_name = videoVae;
+    if (audioVae && vaeNodes[1]) vaeNodes[1].inputs!.vae_name = audioVae;
+    const loraNode = node('LoraLoaderModelOnly');
+    if (lora && loraNode) loraNode.inputs!.lora_name = lora;
     const imageNode = node('LoadImage');
     if (mode === 'I2VA') {
       const keyframeMode = typeof body.keyframe_mode === 'string' ? body.keyframe_mode : 'first';
@@ -141,7 +201,7 @@ export async function POST(request: Request) {
       const images = Array.isArray(body.images) ? body.images.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0) : [];
       const videos = Array.isArray(body.videos) ? body.videos.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0) : [];
       const audios = Array.isArray(body.audios) ? body.audios.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0) : [];
-      if (images.length > 9 || videos.length > 3 || audios.length > 3) return Response.json({ error: 'R2VA 参考素材数量超过 H3 限制' }, { status: 400 });
+      if (images.length > modelCapabilities.images || videos.length > modelCapabilities.videos || audios.length > modelCapabilities.audios) return Response.json({ error: 'R2VA 参考素材数量超过当前模型限制' }, { status: 400 });
       images.forEach((filename, index) => {
         const loaderId = addNode('LoadImage', { image: filename });
         videoNode.inputs![`ref_images.ref_image_${index}`] = [loaderId, 0];

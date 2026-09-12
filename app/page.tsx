@@ -9,7 +9,6 @@ import {
   CircleStop,
   Clapperboard,
   Clipboard,
-  Dice5,
   Eye,
   Film,
   FolderInput,
@@ -30,6 +29,12 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  isVideoModelId,
+  defaultVideoModel,
+  videoModelProfiles,
+  type VideoModelId,
+} from "@/lib/video-models";
 import {
   ProjectTree,
   type ProjectTreeAsset,
@@ -52,7 +57,13 @@ const visualStylePresets = {
 } as const;
 type GenerationMode = "T2VA" | "I2VA" | "R2VA";
 type KeyframeMode = "first" | "last" | "first_last";
+type GenerationPreference = "quality" | "speed";
 const generationModes = ["T2VA", "I2VA", "R2VA"] as const;
+const generationModeLabels: Record<GenerationMode, string> = {
+  T2VA: "文生视频",
+  I2VA: "图生视频",
+  R2VA: "全能参考",
+};
 type ReferenceRole =
   | "character"
   | "wardrobe"
@@ -81,36 +92,68 @@ const assetUsageOptions: Record<ProjectAssetType, readonly string[]> = {
   audio: ["声音参考", "环境音", "音乐参考"],
   custom: [],
 };
-const modelProfiles = {
-  H3: {
-    modes: ["T2VA", "I2VA", "R2VA"],
-    images: 9,
-    videos: 3,
-    audios: 3,
-    resolutions: [
-      "608 × 352",
-      "736 × 416",
-      "864 × 480",
-      "960 × 544",
-      "1056 × 608",
-      "1152 × 640",
-      "1216 × 672",
-      "1280 × 736",
-      "1344 × 768",
-    ],
-  },
-} as const;
+type ModelFileSelection = {
+  fl2vaDiffusionModel: string;
+  ref2vaDiffusionModel: string;
+  textEncoder: string;
+  videoVae: string;
+  audioVae: string;
+  fl2vaLora: string;
+  ref2vaLora: string;
+};
+type AvailableModelFiles = {
+  directory: string;
+  diffusionModels: string[];
+  textEncoders: string[];
+  videoVaes: string[];
+  audioVaes: string[];
+  loras: string[];
+};
+const emptyModelFileSelection: ModelFileSelection = {
+  fl2vaDiffusionModel: "",
+  ref2vaDiffusionModel: "",
+  textEncoder: "",
+  videoVae: "",
+  audioVae: "",
+  fl2vaLora: "",
+  ref2vaLora: "",
+};
+const emptyAvailableModelFiles: AvailableModelFiles = {
+  directory: "",
+  diffusionModels: [],
+  textEncoders: [],
+  videoVaes: [],
+  audioVaes: [],
+  loras: [],
+};
+function modelFileOptionsForKey(
+  files: AvailableModelFiles,
+  key: keyof ModelFileSelection,
+): string[] {
+  if (key === "videoVae") return files.videoVaes;
+  if (key === "audioVae") return files.audioVaes;
+  if (key === "textEncoder") return files.textEncoders;
+  if (key === "fl2vaDiffusionModel" || key === "ref2vaDiffusionModel")
+    return files.diffusionModels;
+  if (key === "fl2vaLora" || key === "ref2vaLora") {
+    const pattern = key === "fl2vaLora" ? /fl2v|fl2va/i : /ref2v|ref2va/i;
+    const matches = files.loras.filter((file) => pattern.test(file));
+    return matches.length ? matches : files.loras;
+  }
+  return [];
+}
 type ShotSettings = {
   duration: string;
   resolution: string;
   aspect: string;
   fps: string;
   mode: GenerationMode;
-  model: keyof typeof modelProfiles;
-  turbo: boolean;
+  model: VideoModelId;
+  generationPreference: GenerationPreference;
   seed: string;
   seedMode: "fixed" | "random";
   keyframeMode: KeyframeMode;
+  modelFiles: ModelFileSelection;
 };
 const shotSettingDefaults: ShotSettings = {
   duration: "6 秒",
@@ -118,11 +161,12 @@ const shotSettingDefaults: ShotSettings = {
   aspect: "16:9",
   fps: "24 fps",
   mode: "T2VA",
-  model: "H3",
-  turbo: true,
+  model: defaultVideoModel,
+  generationPreference: "quality",
   seed: "7483926150842719",
   seedMode: "fixed",
   keyframeMode: "first",
+  modelFiles: emptyModelFileSelection,
 };
 type PromptSubject = {
   name: string;
@@ -154,6 +198,7 @@ type DirectoryPickerWindow = Window & {
   electronDirector?: {
     getComfyState?: () => Promise<{ ready: boolean; url: string; error: string | null }>;
     getModelDirectory?: () => Promise<{ path: string }>;
+    listAvailableModels?: () => Promise<AvailableModelFiles>;
     pickModelDirectory?: () => Promise<{ path: string } | null>;
     onComfyStateChange?: (callback: (state: { ready: boolean; url: string; error: string | null }) => void) => () => void;
     pickDirectory: (createProject?: boolean) => Promise<ElectronDirectoryHandle | null>;
@@ -298,7 +343,6 @@ type ShotTask = {
   seedMode: "fixed" | "random";
   title: string;
   fileName: string;
-  steps: number;
   startedAt: number;
 };
 type ReferenceKind = "image" | "video" | "audio";
@@ -326,11 +370,11 @@ type ClipGenerationBase = {
   resolution: string;
   aspect: string;
   fps: number;
-  model: "H3";
-  turbo: boolean;
+  model: VideoModelId;
+  generationPreference?: GenerationPreference;
   seed: string;
   seedMode: "fixed" | "random";
-  steps?: number;
+  modelFiles?: ModelFileSelection;
 };
 type ClipGeneration = ClipGenerationBase &
   (
@@ -764,17 +808,14 @@ async function readProjectShots(
         !generation.aspect.trim() ||
         !Number.isFinite(generation.fps) ||
         generation.fps <= 0 ||
-        generation.model !== "H3" ||
-        typeof generation.turbo !== "boolean" ||
+        !isVideoModelId(generation.model) ||
         typeof generation.seed !== "string" ||
         !generation.seed.trim() ||
         (generation.seedMode !== "fixed" && generation.seedMode !== "random") ||
         (generation.mode === "I2VA" &&
           !["first", "last", "first_last"].includes(
             generation.keyframeMode,
-          )) ||
-        (generation.steps !== undefined &&
-          (!Number.isInteger(generation.steps) || generation.steps <= 0))
+          ))
       )
         throw new Error(`片段 ${clipId} 的 generation 不完整`);
       if (
@@ -1023,8 +1064,8 @@ export default function Home() {
   const [activeShot, setActiveShot] = useState(0);
   const [shots, setShots] = useState<Shot[]>([]);
   const [mode, setMode] = useState<GenerationMode>("T2VA");
-  const [model, setModel] = useState<keyof typeof modelProfiles>("H3");
-  const [turboMode, setTurboMode] = useState(true);
+  const [model, setModel] = useState<VideoModelId>(defaultVideoModel);
+  const [generationPreference, setGenerationPreference] = useState<GenerationPreference>("quality");
   const [keyframeMode, setKeyframeMode] = useState<KeyframeMode>("first");
   const [shotStages, setShotStages] = useState<Record<string, string>>({});
   const [shotVisualStyles, setShotVisualStyles] = useState<Record<string, VisualStyleKey>>({});
@@ -1133,14 +1174,21 @@ export default function Home() {
   const [comfyError, setComfyError] = useState<string | null>(null);
   const [engineBooting, setEngineBooting] = useState(true);
   const [comfyUrl, setComfyUrl] = useState("http://127.0.0.1:8188");
-  const [comfyUrlDraft, setComfyUrlDraft] = useState("http://127.0.0.1:8188");
   const [modelDirectory, setModelDirectory] = useState("");
+  const [availableModelFiles, setAvailableModelFiles] = useState<AvailableModelFiles>(emptyAvailableModelFiles);
+  const [selectedModelFiles, setSelectedModelFiles] = useState<ModelFileSelection>(emptyModelFileSelection);
+  const [modelsLoading, setModelsLoading] = useState(false);
   const [engineSettingsOpen, setEngineSettingsOpen] = useState(false);
-  const profile = modelProfiles[model] ?? modelProfiles.H3;
+  const [modelFileDialogOpen, setModelFileDialogOpen] = useState(false);
+  const profile = videoModelProfiles[model] ?? videoModelProfiles[defaultVideoModel];
   const modes = profile.modes;
   const activeMode = (modes as readonly string[]).includes(mode)
     ? mode
     : modes[0];
+  const activeLoraKey: "fl2vaLora" | "ref2vaLora" =
+    activeMode === "R2VA" ? "ref2vaLora" : "fl2vaLora";
+  const activeLoraFile = selectedModelFiles[activeLoraKey];
+  const speedPriorityAvailable = Boolean(activeLoraFile);
   const availableResolution = (
     profile.resolutions as readonly string[]
   ).includes(resolution)
@@ -1192,6 +1240,7 @@ export default function Home() {
   function setGenerationStatus(text: string) {
     if (/(失败|请先|未上传|无法|权限|错误|不存在|缺失|未返回)/.test(text))
       setGenerationNotice(text);
+    else setGenerationNotice(null);
   }
   const activeSubmitting = taskShot
     ? Boolean(submittingShots[taskShot.id])
@@ -1201,10 +1250,157 @@ export default function Home() {
     ["已完成", "失败", "文件缺失", "已停止"].includes(taskShot.state),
   );
   const activeStage = taskShot ? shotStages[taskShot.id] : undefined;
+  function modelSelectionPatchFromValue(value: unknown): Partial<ModelFileSelection> {
+    if (!value || typeof value !== "object") return {};
+    const source = value as Record<string, unknown>;
+    const patch: Partial<ModelFileSelection> = {};
+    (Object.keys(emptyModelFileSelection) as Array<keyof ModelFileSelection>).forEach((key) => {
+      if (typeof source[key] === "string") patch[key] = source[key] as string;
+    });
+    return patch;
+  }
+  function modelSelectionFromValue(value: unknown): ModelFileSelection {
+    return { ...emptyModelFileSelection, ...modelSelectionPatchFromValue(value) };
+  }
+  function mergeModelFileSelections(...values: unknown[]): ModelFileSelection {
+    const merged = { ...emptyModelFileSelection };
+    values.forEach((value) => {
+      const selection = modelSelectionFromValue(value);
+      (Object.keys(merged) as Array<keyof ModelFileSelection>).forEach((key) => {
+        if (selection[key].trim()) merged[key] = selection[key].trim();
+      });
+    });
+    return merged;
+  }
+  function applyExplicitModelFileSelection(
+    base: ModelFileSelection,
+    value: unknown,
+  ): ModelFileSelection {
+    return { ...base, ...modelSelectionPatchFromValue(value) };
+  }
+  function modelSelectionFromAvailableFiles(files: AvailableModelFiles): ModelFileSelection {
+    const choose = (options: string[], preferred = /./) =>
+      options.find((option) => preferred.test(option)) ?? options[0] ?? "";
+    return {
+      fl2vaDiffusionModel: choose(files.diffusionModels, /fl2v|fl2va/i),
+      ref2vaDiffusionModel: choose(files.diffusionModels, /ref2v|ref2va/i),
+      textEncoder: choose(files.textEncoders),
+      videoVae: choose(files.videoVaes),
+      audioVae: choose(files.audioVaes),
+      fl2vaLora: choose(files.loras, /fl2v|fl2va/i),
+      ref2vaLora: choose(files.loras, /ref2v|ref2va/i),
+    };
+  }
+  function setModelFileSelectionValue(key: keyof ModelFileSelection, value: string) {
+    const nextSelection = { ...selectedModelFiles, [key]: value };
+    setSelectedModelFiles(nextSelection);
+    window.localStorage.setItem("director-model-files", JSON.stringify(nextSelection));
+    const shotId = shots[activeShot]?.id;
+    if (shotId) {
+      setShotSettings((current) => ({
+        ...current,
+        [shotId]: {
+          ...shotSettingDefaults,
+          ...current[shotId],
+          modelFiles: applyExplicitModelFileSelection(
+            mergeModelFileSelections(current[shotId]?.modelFiles, nextSelection),
+            { [key]: value },
+          ),
+        },
+      }));
+    }
+  }
+  async function refreshAvailableModels() {
+    const api = (window as DirectoryPickerWindow).electronDirector;
+    if (!api?.listAvailableModels) return;
+    setModelsLoading(true);
+    try {
+      const result = await api.listAvailableModels();
+      const next: AvailableModelFiles = {
+        directory: typeof result.directory === "string" ? result.directory : modelDirectory,
+        diffusionModels: Array.isArray(result.diffusionModels) ? result.diffusionModels.filter((item): item is string => typeof item === "string") : [],
+        textEncoders: Array.isArray(result.textEncoders) ? result.textEncoders.filter((item): item is string => typeof item === "string") : [],
+        videoVaes: Array.isArray(result.videoVaes) ? result.videoVaes.filter((item): item is string => typeof item === "string") : [],
+        audioVaes: Array.isArray(result.audioVaes) ? result.audioVaes.filter((item): item is string => typeof item === "string") : [],
+        loras: Array.isArray(result.loras) ? result.loras.filter((item): item is string => typeof item === "string") : [],
+      };
+      setAvailableModelFiles(next);
+      const discovered = modelSelectionFromAvailableFiles(next);
+      let remembered = selectedModelFiles;
+      const explicitlyDisabledLoras = new Set<keyof ModelFileSelection>();
+      try {
+        const saved = window.localStorage.getItem("director-model-files");
+        if (saved) {
+          const savedValue = JSON.parse(saved);
+          remembered = mergeModelFileSelections(savedValue, remembered);
+          (Object.keys(emptyModelFileSelection) as Array<keyof ModelFileSelection>).forEach((key) => {
+            if ((key === "fl2vaLora" || key === "ref2vaLora") && modelSelectionPatchFromValue(savedValue)[key] === "")
+              explicitlyDisabledLoras.add(key);
+          });
+        }
+      } catch {
+        /* Ignore malformed local settings and use the discovered files. */
+      }
+      const selected = { ...discovered };
+      (Object.keys(selected) as Array<keyof ModelFileSelection>).forEach((key) => {
+        const options = modelFileOptionsForKey(next, key);
+        if (remembered[key] && options.includes(remembered[key])) selected[key] = remembered[key];
+        if (explicitlyDisabledLoras.has(key)) selected[key] = "";
+      });
+      window.localStorage.setItem("director-model-files", JSON.stringify(selected));
+      setSelectedModelFiles(selected);
+      setShotSettings((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([shotId, settings]) => [
+            shotId,
+            {
+              ...shotSettingDefaults,
+              ...settings,
+              modelFiles: mergeModelFileSelections(discovered, selected, settings.modelFiles),
+            },
+          ]),
+        ),
+      );
+    } catch (error) {
+      setGenerationStatus(`模型列表读取失败：${errorMessage(error)}`);
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+  const modelSelectionComplete = Boolean(
+    selectedModelFiles.fl2vaDiffusionModel &&
+    selectedModelFiles.ref2vaDiffusionModel &&
+    selectedModelFiles.textEncoder &&
+    selectedModelFiles.videoVae &&
+    selectedModelFiles.audioVae,
+  );
+  const modelFileFields: Array<{
+    key: keyof ModelFileSelection;
+    label: string;
+    options: string[];
+    allowNone?: boolean;
+  }> = [
+    { key: "fl2vaDiffusionModel", label: "FL2VA 视频扩散模型", options: availableModelFiles.diffusionModels },
+    { key: "ref2vaDiffusionModel", label: "Ref2VA 视频扩散模型", options: availableModelFiles.diffusionModels },
+    { key: "textEncoder", label: "文本编码器", options: availableModelFiles.textEncoders },
+    { key: "videoVae", label: "视频 VAE", options: availableModelFiles.videoVaes },
+    { key: "audioVae", label: "音频 VAE", options: availableModelFiles.audioVaes },
+    { key: "fl2vaLora", label: "FL2VA 加速 LoRA", options: modelFileOptionsForKey(availableModelFiles, "fl2vaLora"), allowNone: true },
+    { key: "ref2vaLora", label: "Ref2VA 加速 LoRA", options: modelFileOptionsForKey(availableModelFiles, "ref2vaLora"), allowNone: true },
+  ];
+  const missingModelFileLabels = modelFileFields
+    .filter(({ key, allowNone }) => !allowNone && !selectedModelFiles[key])
+    .map(({ label }) => label);
   useEffect(() => {
     let disposed = false;
     const api = (window as DirectoryPickerWindow).electronDirector;
     const load = async () => {
+      try {
+        const saved = window.localStorage.getItem("director-model-files");
+        if (saved) setSelectedModelFiles(modelSelectionFromValue(JSON.parse(saved)));
+      } catch {
+        /* Ignore malformed local settings and use the first available files. */
+      }
       if (api?.getComfyState) {
         const state = await api.getComfyState().catch(() => null);
         if (!disposed && state) {
@@ -1212,19 +1408,18 @@ export default function Home() {
           setComfyError(state.error);
           if (state.url) {
             setComfyUrl(state.url);
-            setComfyUrlDraft(state.url);
           }
         }
         if (api.getModelDirectory) {
           const directory = await api.getModelDirectory().catch(() => null);
           if (!disposed && directory) setModelDirectory(directory.path);
         }
+        await refreshAvailableModels();
         return;
       }
       const savedComfyUrl = window.localStorage.getItem("comfyui-url");
       if (!disposed && savedComfyUrl) {
         setComfyUrl(savedComfyUrl);
-        setComfyUrlDraft(savedComfyUrl);
       }
     };
     void load();
@@ -1246,7 +1441,6 @@ export default function Home() {
       setComfyError(state.error);
       if (state.url) {
         setComfyUrl(state.url);
-        setComfyUrlDraft(state.url);
       }
       if (state.error) setGenerationStatus(`引擎：${sanitizeEngineMessage(state.error)}`);
     });
@@ -1259,6 +1453,22 @@ export default function Home() {
     }, 650);
     return () => window.clearTimeout(timer);
   }, [comfyConnected, engineBooting]);
+
+  useEffect(() => {
+    if (speedPriorityAvailable || generationPreference !== "speed") return;
+    setGenerationPreference("quality");
+    const shotId = taskShot?.id;
+    if (shotId) {
+      setShotSettings((current) => ({
+        ...current,
+        [shotId]: {
+          ...shotSettingDefaults,
+          ...current[shotId],
+          generationPreference: "quality",
+        },
+      }));
+    }
+  }, [generationPreference, speedPriorityAvailable, taskShot?.id]);
 
   useEffect(() => {
     if (!taskShot) return;
@@ -1430,11 +1640,12 @@ export default function Home() {
                 aspect: settings.aspect,
                 fps: Number.parseInt(settings.fps, 10) || 24,
                 model: settings.model,
-                turbo: settings.turbo,
+                generationPreference: settings.generationPreference,
+                modelFiles: settings.modelFiles,
                 seed: settings.seed,
                 seedMode: settings.seedMode,
                 ...(snapshot.shotTasks[shot.id]
-                  ? { seed: snapshot.shotTasks[shot.id].seed, seedMode: snapshot.shotTasks[shot.id].seedMode, steps: snapshot.shotTasks[shot.id].steps }
+                  ? { seed: snapshot.shotTasks[shot.id].seed, seedMode: snapshot.shotTasks[shot.id].seedMode }
                   : {}),
                 ...(settings.mode === "I2VA"
                   ? { keyframeMode: shot.id === snapshot.shot?.id ? snapshot.keyframeMode : settings.keyframeMode }
@@ -1531,7 +1742,7 @@ export default function Home() {
     setFps(settings.fps);
     setMode(settings.mode);
     setModel(settings.model);
-    setTurboMode(settings.turbo);
+    setGenerationPreference(settings.generationPreference);
     setSeed(settings.seed);
     setSeedMode(settings.seedMode);
     setKeyframeMode(settings.keyframeMode);
@@ -1721,8 +1932,15 @@ export default function Home() {
     setAspect(settings?.aspect ?? "16:9");
     setFps(settings?.fps ?? "24 fps");
     setMode(settings?.mode ?? "T2VA");
-    setModel(settings?.model ?? "H3");
-    setTurboMode(settings?.turbo ?? shotSettingDefaults.turbo);
+    setModel(settings?.model ?? defaultVideoModel);
+    setGenerationPreference(settings?.generationPreference ?? "quality");
+    const nextModelFiles = mergeModelFileSelections(
+      modelSelectionFromAvailableFiles(availableModelFiles),
+      selectedModelFiles,
+      settings?.modelFiles,
+    );
+    setSelectedModelFiles(nextModelFiles);
+    window.localStorage.setItem("director-model-files", JSON.stringify(nextModelFiles));
   }
   function addShot() {
     setNewTitle(`未命名片段 ${String(shots.length + 1).padStart(2, "0")}`);
@@ -1745,7 +1963,7 @@ export default function Home() {
         const shot = { id: String(nextShotNumber).padStart(2, "0"), title: title.trim(), state: "草稿" };
         createdShot = shot;
         await writeClipManifest(shot, {
-          generation: { mode: "T2VA", model: "H3", duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, turbo: true, seed: "7483926150842719", seedMode: "fixed" },
+          generation: { mode: "T2VA", model: defaultVideoModel, duration: 6, resolution: "864 × 480", aspect: "16:9", fps: 24, seed: "7483926150842719", seedMode: "fixed" },
           promptOriginal: "",
         });
         await writeProjectManifest([...currentShots, shot], nextShotNumber + 1);
@@ -1776,7 +1994,7 @@ export default function Home() {
     setPromptSubjects((current) => ({ ...current, [shot.id]: [] }));
     setShotSettings((current) => ({
       ...current,
-      [shot.id]: { ...shotSettingDefaults },
+      [shot.id]: { ...shotSettingDefaults, modelFiles: selectedModelFiles },
     }));
     setShotVisualStyles((current) => ({ ...current, [shot.id]: "natural_cinematic" }));
     // A deleted shot may have reused this id. Never inherit its old keyframes.
@@ -1809,8 +2027,8 @@ export default function Home() {
     setAspect("16:9");
     setFps("24 fps");
     setMode("T2VA");
-    setModel("H3");
-    setTurboMode(true);
+    setModel(defaultVideoModel);
+    setGenerationPreference("quality");
     setKeyframeMode("first");
     setVideoUrl(null);
     setGenerationStatus("等待生成");
@@ -2066,7 +2284,14 @@ export default function Home() {
       setFps(settings.fps);
       setMode(settings.mode);
       setModel(settings.model);
-      setTurboMode(settings.turbo);
+      setGenerationPreference(settings.generationPreference);
+      const nextModelFiles = mergeModelFileSelections(
+        modelSelectionFromAvailableFiles(availableModelFiles),
+        selectedModelFiles,
+        settings.modelFiles,
+      );
+      setSelectedModelFiles(nextModelFiles);
+      window.localStorage.setItem("director-model-files", JSON.stringify(nextModelFiles));
       setGenerationStatus(
         nextShot.state === "已完成"
           ? "已完成"
@@ -2110,7 +2335,8 @@ export default function Home() {
   }
   function shotDetail(shot: Shot) {
     const settings = getShotSettings(shot);
-    return `${settings.duration.replace(/\s*秒$/, "s")} · ${settings.mode} · ${settings.turbo ? "加速" : "标准"} · ${settings.resolution.replace(/\s*×\s*/, "×")} · ${settings.fps.replace(/\s+/g, "")}`;
+    const preference = settings.generationPreference === "speed" ? "速度优先" : "质量优先";
+    return `${settings.duration.replace(/\s*秒$/, "s")} · ${settings.mode} · ${preference} · ${settings.resolution.replace(/\s*×\s*/, "×")} · ${settings.fps.replace(/\s+/g, "")}`;
   }
   async function bindProjectAsset(
     asset: ProjectTreeAsset,
@@ -2247,7 +2473,7 @@ export default function Home() {
           aspect: settings.aspect,
           fps: Number.parseInt(settings.fps, 10) || 24,
           model: settings.model,
-          turbo: settings.turbo,
+          modelFiles: settings.modelFiles,
         },
         promptOriginal:
           shotPrompts[promptStoreKey(shot.id, nextMode)] ??
@@ -2500,6 +2726,14 @@ export default function Home() {
     setProjectOutputFiles(outputFiles);
   }
   function applyProjectShotRecords(records: ProjectShotRecord[]) {
+    const discoveredModelFiles = modelSelectionFromAvailableFiles(availableModelFiles);
+    const restoredModelFileValue = records
+      .map((record) => record.generation.modelFiles)
+      .find((value) => Object.keys(modelSelectionPatchFromValue(value)).length > 0);
+    const projectModelFiles = applyExplicitModelFileSelection(mergeModelFileSelections(
+      discoveredModelFiles,
+      selectedModelFiles,
+    ), restoredModelFileValue);
     setShots(
       records.map((record) => ({
         id: record.id,
@@ -2518,17 +2752,29 @@ export default function Home() {
           fps: `${record.generation.fps} fps`,
           mode: record.generation.mode,
           model: record.generation.model,
-          turbo: record.generation.turbo,
+          generationPreference:
+            record.generation.generationPreference ??
+            (record.generation.modelFiles?.[
+              record.generation.mode === "R2VA" ? "ref2vaLora" : "fl2vaLora"
+            ]
+              ? "speed"
+              : "quality"),
           seed: record.generation.seed,
           seedMode: record.generation.seedMode,
           keyframeMode:
             record.generation.mode === "I2VA"
               ? record.generation.keyframeMode
               : "first",
+          modelFiles: applyExplicitModelFileSelection(
+            projectModelFiles,
+            record.generation.modelFiles,
+          ),
         },
       ]),
     );
     setShotSettings(settings);
+    setSelectedModelFiles(projectModelFiles);
+    window.localStorage.setItem("director-model-files", JSON.stringify(projectModelFiles));
     setShotVisualStyles(
       Object.fromEntries(
         records.map((record) => [record.id, record.visualStyle]),
@@ -2818,7 +3064,6 @@ export default function Home() {
     setAssetDeleteCandidate(asset);
   }
   function openEngineSettings() {
-    setComfyUrlDraft(comfyUrl);
     setEngineSettingsOpen(true);
   }
   async function chooseModelDirectory() {
@@ -2831,34 +3076,187 @@ export default function Home() {
       const result = await picker();
       if (!result) return;
       setModelDirectory(result.path);
-      const state = await (window as DirectoryPickerWindow).electronDirector?.getComfyState?.();
-      if (state?.url) {
-        setComfyUrl(state.url);
-        setComfyUrlDraft(state.url);
-      }
+      await refreshAvailableModels();
       setGenerationStatus(`模型目录已更新：${result.path}`);
     } catch (error) {
       setGenerationStatus(`模型目录更新失败：${errorMessage(error)}`);
     }
   }
   async function saveEngineSettings() {
-    const draft = comfyUrlDraft.trim();
     try {
-      const parsed = new URL(draft);
-      if (!["http:", "https:"].includes(parsed.protocol))
-        throw new Error("protocol");
-      const normalized = parsed.toString().replace(/\/+$/, "");
-      setComfyUrl(normalized);
-      window.localStorage.setItem("comfyui-url", normalized);
       const agentPath = llmExecutablePath.trim();
       const api = (window as DirectoryPickerWindow).electronDirector;
       if (api?.setAgentExecutable) await api.setAgentExecutable(agentPath);
       else window.localStorage.setItem("llm-executable-path", agentPath);
       setEngineSettingsOpen(false);
-      setGenerationStatus("引擎连接设置已更新");
+      setGenerationStatus("设置已更新");
     } catch {
-      setGenerationStatus("请输入有效的引擎连接地址");
+      setGenerationStatus("设置保存失败，请稍后重试");
     }
+  }
+  function renderVideoGenerationSettings() {
+    return (
+      <div className="mt-5 space-y-5 border-t border-border pt-4">
+        <div>
+          <label htmlFor="video-model" className="field-label">视频模型</label>
+          <select
+            id="video-model"
+            value={model}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (!isVideoModelId(value)) return;
+              setModel(value);
+              updateSetting("model", value);
+              const nextModes = videoModelProfiles[value].modes;
+              if (!nextModes.includes(mode)) {
+                const nextMode = nextModes[0];
+                setMode(nextMode);
+                updateSetting("mode", nextMode);
+              }
+            }}
+            className="select-like mt-2 appearance-none"
+          >
+            {Object.entries(videoModelProfiles).map(([value, item]) => (
+              <option key={value} value={value}>{item.label}</option>
+            ))}
+          </select>
+          <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+            当前可用模型：{videoModelProfiles[model].label}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <span className="field-label">具体模型文件</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setModelFileDialogOpen(true);
+                void refreshAvailableModels();
+              }}
+              className="h-8 text-[10px]"
+            >
+              配置模型
+            </Button>
+          </div>
+          <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+            {modelSelectionComplete
+              ? "已完成模型文件配置，生成时将使用当前选择。"
+              : `尚未完成模型文件配置：${missingModelFileLabels.join("、") || "正在读取模型目录"}`}
+          </p>
+        </div>
+        <div className="hidden">
+          <div className="flex items-center justify-between gap-3">
+            <span className="field-label">视频模型文件</span>
+            <button
+              type="button"
+              onClick={() => void refreshAvailableModels()}
+              className="text-[10px] text-primary transition hover:text-primary/80"
+            >
+              {modelsLoading ? "读取中..." : "刷新列表"}
+            </button>
+          </div>
+          {!modelsLoading && !Object.values(availableModelFiles).some((value) => Array.isArray(value) && value.length) ? (
+            <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/8 px-3 py-3 text-[11px] leading-5 text-amber-200">
+              未安装相关模型文件。请先下载模型，并放入当前模型目录对应的子文件夹。
+            </div>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {modelFileFields.map(({ key, label, options, allowNone }) => (
+                <label key={key} className="block">
+                  <span className="field-label">{label}</span>
+                  <select
+                    value={selectedModelFiles[key]}
+                    onChange={(event) => setModelFileSelectionValue(key, event.target.value)}
+                    disabled={!options.length && !allowNone}
+                    className="select-like mt-2 appearance-none disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {allowNone && <option value="">不使用</option>}
+                    {!options.length && !allowNone && <option value="">未找到相关文件</option>}
+                    {options.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+              ))}
+            </div>
+          )}
+          <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+            模型目录中的文件会自动识别，生成时使用这里选中的文件。
+          </p>
+        </div>
+      </div>
+    );
+  }
+  function renderModelFileDialog() {
+    if (!modelFileDialogOpen) return null;
+    const hasAnyModel = Object.values(availableModelFiles).some(
+      (value) => Array.isArray(value) && value.length > 0,
+    );
+    return (
+      <div
+        className="fixed inset-0 z-[90] grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
+        onMouseDown={() => setModelFileDialogOpen(false)}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="model-file-dialog-title"
+          className="max-h-[86vh] w-full max-w-lg overflow-y-auto rounded-xl border border-border bg-card p-5 shadow-2xl"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 id="model-file-dialog-title" className="text-sm font-semibold">配置 {videoModelProfiles[model].label} 模型文件</h2>
+              <p className="mt-1 text-[10px] leading-4 text-muted-foreground">为当前视频模型指定实际使用的模型文件。</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setModelFileDialogOpen(false)}
+              className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              aria-label="关闭模型文件配置"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+          <div className="mt-5 flex items-center justify-between border-b border-border pb-3">
+            <span className="field-label">可用模型文件</span>
+            <button
+              type="button"
+              onClick={() => void refreshAvailableModels()}
+              className="text-[10px] text-primary transition hover:text-primary/80"
+            >
+              {modelsLoading ? "读取中..." : "刷新列表"}
+            </button>
+          </div>
+          {!modelsLoading && !hasAnyModel && (
+            <div className="mt-4 rounded-lg border border-amber-400/30 bg-amber-400/8 px-3 py-3 text-[11px] leading-5 text-amber-200">
+              未安装相关模型文件。请先下载模型，并放入当前模型目录对应的子文件夹。
+            </div>
+          )}
+          <div className="mt-4 space-y-4">
+            {modelFileFields.map(({ key, label, options, allowNone }) => (
+              <label key={key} className="block">
+                <span className="field-label">{label}</span>
+                <select
+                  value={selectedModelFiles[key]}
+                  onChange={(event) => setModelFileSelectionValue(key, event.target.value)}
+                  disabled={!options.length && !allowNone}
+                  className="select-like mt-2 appearance-none disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {allowNone && <option value="">不使用</option>}
+                  {!options.length && !allowNone && <option value="">未找到相关文件</option>}
+                  {options.map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+                {!options.length && <span className="mt-1 block text-[10px] text-amber-300/80">当前目录没有此类型文件</span>}
+              </label>
+            ))}
+          </div>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button type="button" onClick={() => setModelFileDialogOpen(false)}>完成</Button>
+          </div>
+        </div>
+      </div>
+    );
   }
   function renderEngineSettingsDialog() {
     if (!engineSettingsOpen) return null;
@@ -2884,26 +3282,6 @@ export default function Home() {
               <X className="size-4" />
             </button>
           </div>
-          <label htmlFor="comfyui-url" className="field-label mt-5">
-            引擎连接地址
-          </label>
-          <input
-            id="comfyui-url"
-            type="password"
-            value={comfyUrlDraft}
-            onChange={(event) => setComfyUrlDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void saveEngineSettings();
-              }
-              if (event.key === "Escape") setEngineSettingsOpen(false);
-            }}
-            placeholder="输入引擎连接地址"
-            autoComplete="off"
-            className="mt-2 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60"
-            autoFocus
-          />
           <div className="mt-5 border-t border-border pt-4">
             <span className="field-label">模型目录</span>
             <div className="mt-2 flex items-center gap-2">
@@ -2920,10 +3298,10 @@ export default function Home() {
               默认位置：用户 AppData/MeristemForge/models。切换后会重启内置引擎。
             </p>
           </div>
+          {renderVideoGenerationSettings()}
           <div className="mt-5 border-t border-border pt-4">
-            <span className="field-label">本地 Agent CLI</span>
             <div className="mt-3 space-y-3">
-              <label className="block"><span className="field-label">Agent 路径</span><input value={llmExecutablePath} onChange={(event) => setLlmExecutablePath(event.target.value)} placeholder="codex 或可执行文件路径" className="mt-1 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60" /></label>
+              <label className="block"><span className="field-label">智能体路径</span><input value={llmExecutablePath} onChange={(event) => setLlmExecutablePath(event.target.value)} placeholder="智能体或可执行文件路径" className="mt-1 h-9 w-full rounded-lg border border-border bg-muted/30 px-3 font-mono text-xs outline-none focus:border-primary/60" /></label>
             </div>
           </div>
           <div className="mt-5 flex justify-end gap-2">
@@ -2943,6 +3321,7 @@ export default function Home() {
             </Button>
           </div>
         </div>
+        {renderModelFileDialog()}
       </div>
     );
   }
@@ -3784,15 +4163,12 @@ export default function Home() {
       aspect: generationOverride.aspect ?? savedSettings.aspect,
       fps:
         generationOverride.fps ?? (Number.parseInt(savedSettings.fps, 10) || 24),
-      model: "H3",
-      turbo: generationOverride.turbo ?? savedSettings.turbo,
+      model: generationOverride.model ?? savedSettings.model,
+      generationPreference:
+        generationOverride.generationPreference ?? savedSettings.generationPreference,
+      modelFiles: modelSelectionFromValue(generationOverride.modelFiles ?? savedSettings.modelFiles),
       seed: generationOverride.seed ?? savedSettings.seed,
       seedMode: generationOverride.seedMode ?? savedSettings.seedMode,
-      ...(generationOverride.steps !== undefined
-        ? { steps: generationOverride.steps }
-        : shotTasks[shot.id]?.steps !== undefined
-          ? { steps: shotTasks[shot.id].steps }
-          : {}),
     };
     const generation: ClipGeneration =
       manifestMode === "I2VA"
@@ -3909,42 +4285,16 @@ export default function Home() {
       return;
     }
     try {
-      const payload = JSON.stringify({
-        shot_id: shotId,
-        shot_title: task.title,
-        source,
-        source_subfolder: sourceSubfolder ?? "",
-        comfy_url: comfyUrl,
-      });
+      // Copy the engine result straight into the project clip. ComfyUI still
+      // needs its output file as the source, but no intermediate director/
+      // folder is created on the engine side.
       let finalUrl = url;
       const sourceName = source.split(/[\\/]/).pop() ?? "";
       const sourceFileName = sourceName
         .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
         .trim()
         .replace(/[. ]+$/g, "");
-      let finalName = sourceFileName || task.fileName;
-      try {
-        const response = await fetch("/api/output/finalize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: payload,
-        });
-        const result = (await response.json().catch(() => ({}))) as {
-          ok?: boolean;
-          filename?: string;
-          url?: string;
-          error?: string;
-        };
-        if (!response.ok || !result.ok || !result.url)
-          throw new Error(
-            result.error ?? `整理输出文件失败（HTTP ${response.status}）`,
-          );
-        finalUrl = result.url;
-        finalName = result.filename ?? task.fileName;
-      } catch {
-        // A remote engine output may not be available on the local filesystem.
-        // The proxy URL can still be fetched and copied into the project clip.
-      }
+      const finalName = sourceFileName || task.fileName;
       if (epoch !== projectEpochRef.current) return;
       setShotFileNames((current) => ({ ...current, [shotId]: finalName }));
       setShotVideos((current) => ({ ...current, [shotId]: finalUrl }));
@@ -3971,8 +4321,8 @@ export default function Home() {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                filename: finalName,
-                subfolder: "director",
+                filename: source,
+                subfolder: sourceSubfolder ?? "",
                 comfy_url: comfyUrl,
               }),
             });
@@ -4845,7 +5195,6 @@ export default function Home() {
           aspect,
           fps: Number.parseInt(fps, 10) || 24,
           model,
-          turbo: turboMode,
         },
         promptOriginal: shotPrompts[promptStoreKey(taskShot.id, activeMode)] ?? prompt,
         promptOptimized: optimizedPrompt,
@@ -5133,6 +5482,16 @@ export default function Home() {
       return;
     }
     if (activeSubmitting) return;
+    if (modelsLoading) {
+      setGenerationStatus("模型列表仍在读取，请稍候");
+      setEngineSettingsOpen(true);
+      return;
+    }
+    if (!modelSelectionComplete) {
+      setGenerationStatus("未安装或未选择完整模型文件，请先打开视频设置");
+      setEngineSettingsOpen(true);
+      return;
+    }
     const firstFrame = keyframes[`${shotId}-首帧`];
     const firstFrameName = firstFrame?.comfyName;
     const submittedSeed =
@@ -5149,6 +5508,8 @@ export default function Home() {
       [shotId]: {
         ...shotSettingDefaults,
         ...current[shotId],
+        generationPreference,
+        modelFiles: selectedModelFiles,
         seed: submittedSeed,
         seedMode,
         keyframeMode,
@@ -5215,6 +5576,9 @@ export default function Home() {
       (shotId === taskShot?.id && prompt.trim()
         ? prompt.trim()
         : (shotPrompts[promptStoreKey(shotId, activeMode)] ?? prompt));
+    const modelFilesForGeneration = generationPreference === "speed"
+      ? selectedModelFiles
+      : { ...selectedModelFiles, [activeLoraKey]: "" };
     setVideoUrl(null);
     setSubmittingShots((current) => ({ ...current, [shotId]: true }));
     void fetch("/api/generate", {
@@ -5225,12 +5589,13 @@ export default function Home() {
         shot_title: taskShot.title,
         prompt: generationPrompt,
         seed: submittedSeed,
-        duration,
+        duration: Number.parseFloat(duration) || 6,
         resolution: availableResolution,
         aspect,
-        fps,
-        turbo: turboMode,
+        fps: Number.parseInt(fps, 10) || 24,
+        model,
         mode: activeMode,
+        model_files: modelFilesForGeneration,
         keyframe_mode: activeMode === "I2VA" ? keyframeMode : undefined,
         image: firstFrameName,
         last_image:
@@ -5279,7 +5644,6 @@ export default function Home() {
             seedMode,
             title: taskShot.title,
             fileName,
-            steps: turboMode ? 4 : 20,
             startedAt,
           },
         }));
@@ -6006,7 +6370,7 @@ export default function Home() {
                 片段 {shots[activeShot].id} · {shots[activeShot].title}
               </p>
               <p className="mt-0.5 text-[10px] text-zinc-500">
-                {model} · {turboMode ? "加速" : "标准"} · {activeMode} ·{" "}
+                {model} · {generationModeLabels[activeMode as GenerationMode]} ·{" "}
                 {resolution} · {duration} · {fps}
                 {activeStage ? ` · ${activeStage}` : ""}
                 {videoUrl
@@ -6109,7 +6473,7 @@ export default function Home() {
                 >
                   {taskShot && promptOptimizing[taskShot.id] ? "优化中…" : "优化提示词"}
                 </Button>
-                <span className="text-[10px] text-zinc-500">{activeMode}</span>
+                <span className="text-[10px] text-zinc-500">{generationModeLabels[activeMode as GenerationMode]}</span>
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-hidden px-4 pt-2">
@@ -6261,127 +6625,95 @@ export default function Home() {
         />
 
         <aside className="control-panel border-l border-border bg-card">
-          <div className="border-b border-border px-4 py-3">
-            <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1">
-              <p className="text-sm font-semibold">视频模型</p>
-              <select
-                value={model}
-                onChange={(event) => {
-                  const value = event.target
-                    .value as keyof typeof modelProfiles;
-                  setModel(value);
-                  updateSetting("model", value);
-                }}
-                aria-label="选择视频模型"
-                className="select-like w-full appearance-none"
-              >
-                <option>H3</option>
-              </select>
-              <p className="col-start-2 text-[10px] leading-4 text-muted-foreground">
-                当前仅支持 H3
-              </p>
-            </div>
-          </div>
           <div className="control-scroll space-y-5 overflow-y-auto p-4">
             <div className="grid grid-cols-2 gap-2">
               <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5">
-                <p className="text-xs font-medium">采样模式</p>
+                <p className="text-xs font-medium">生成偏好</p>
                 <div
                   role="radiogroup"
-                  aria-label="采样模式"
-                  className="mt-2 grid grid-cols-2 gap-1 rounded-lg bg-muted/50 p-1"
+                  aria-label="生成偏好"
+                  className="mt-2 grid h-[34px] grid-cols-2 gap-1 rounded-lg bg-muted/50 p-1"
                 >
-                  <label
-                    className={`cursor-pointer rounded-md px-1.5 py-1.5 text-center text-[10px] font-medium transition ${turboMode ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                  >
+                  <label className={`cursor-pointer rounded-md px-1 py-1.5 text-center text-[10px] font-medium transition ${generationPreference === "quality" || !speedPriorityAvailable ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
                     <input
                       type="radio"
-                      name="sampling-mode"
-                      checked={turboMode}
+                      name="generation-preference"
+                      checked={generationPreference === "quality" || !speedPriorityAvailable}
                       onChange={() => {
-                        setTurboMode(true);
-                        updateSetting("turbo", true);
+                        setGenerationPreference("quality");
+                        updateSetting("generationPreference", "quality");
                       }}
                       className="sr-only"
                     />
-                    加速
-                    <br />
-                    <span className="text-[9px] font-normal text-muted-foreground">
-                      4 步
-                    </span>
+                    质量优先
                   </label>
                   <label
-                    className={`cursor-pointer rounded-md px-1.5 py-1.5 text-center text-[10px] font-medium transition ${!turboMode ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                    title={speedPriorityAvailable ? "使用当前模式配置的加速 LoRA" : "请先在视频设置中选择加速 LoRA"}
+                    className={`rounded-md px-1 py-1.5 text-center text-[10px] font-medium transition ${generationPreference === "speed" && speedPriorityAvailable ? "bg-card text-foreground shadow-sm" : speedPriorityAvailable ? "cursor-pointer text-muted-foreground hover:text-foreground" : "cursor-not-allowed text-muted-foreground/45"}`}
                   >
                     <input
                       type="radio"
-                      name="sampling-mode"
-                      checked={!turboMode}
+                      name="generation-preference"
+                      checked={generationPreference === "speed" && speedPriorityAvailable}
+                      disabled={!speedPriorityAvailable}
                       onChange={() => {
-                        setTurboMode(false);
-                        updateSetting("turbo", false);
+                        if (!speedPriorityAvailable) return;
+                        setGenerationPreference("speed");
+                        updateSetting("generationPreference", "speed");
                       }}
                       className="sr-only"
                     />
-                    标准
-                    <br />
-                    <span className="text-[9px] font-normal text-muted-foreground">
-                      20 步
-                    </span>
+                    速度优先
                   </label>
                 </div>
+                <p className={`mt-1.5 text-[9px] leading-4 ${speedPriorityAvailable ? "text-muted-foreground" : "text-amber-300/85"}`}>
+                  {speedPriorityAvailable ? "速度优先会使用当前模式的加速模型。" : "请先在视频设置中选择加速 LoRA。"}
+                </p>
               </div>
               <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5">
-                <label htmlFor="seed" className="field-label">
-                  随机种子
-                </label>
-                <div className="mt-2 flex h-[34px] items-center rounded-lg border border-border bg-muted/30 pl-2">
-                  <input
-                    id="seed"
-                    value={seed}
-                    disabled={seedMode === "random"}
-                    onChange={(event) =>
-                      (() => {
-                        const value = event.target.value.replace(/\D/g, "");
+                <p className="text-xs font-medium">结果方式</p>
+                <div
+                  role="radiogroup"
+                  aria-label="结果方式"
+                  className="mt-2 grid h-[34px] grid-cols-2 gap-1 rounded-lg bg-muted/50 p-1"
+                >
+                  <label className={`cursor-pointer rounded-md px-1 py-1.5 text-center text-[10px] font-medium transition ${seedMode === "random" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                    <input
+                      type="radio"
+                      name="seed-mode"
+                      checked={seedMode === "random"}
+                      onChange={() => {
+                        setSeedMode("random");
+                        updateSetting("seedMode", "random");
+                        const value = String(
+                          Math.floor(
+                            Math.random() *
+                              (Number.MAX_SAFE_INTEGER - 1000000000000000),
+                          ) + 1000000000000000,
+                        );
                         setSeed(value);
                         updateSetting("seed", value);
-                      })()
-                    }
-                    className="min-w-0 flex-1 bg-transparent font-mono text-[11px] outline-none disabled:cursor-not-allowed disabled:opacity-55"
-                    inputMode="numeric"
-                  />
-                  <button
-                    onClick={() => {
-                      const nextMode =
-                        seedMode === "fixed" ? "random" : "fixed";
-                      setSeedMode(nextMode);
-                      updateSetting("seedMode", nextMode);
-                      if (nextMode === "random")
-                        (() => {
-                          const value = String(
-                            Math.floor(
-                              Math.random() *
-                                (Number.MAX_SAFE_INTEGER - 1000000000000000),
-                            ) + 1000000000000000,
-                          );
-                          setSeed(value);
-                          updateSetting("seed", value);
-                        })();
-                    }}
-                    className={`grid h-full w-8 place-items-center transition hover:text-primary ${seedMode === "random" ? "text-primary" : "text-muted-foreground"}`}
-                    aria-label={
-                      seedMode === "random"
-                        ? "切换为固定种子"
-                        : "切换为随机种子"
-                    }
-                    aria-pressed={seedMode === "random"}
-                    title={seedMode === "random" ? "随机种子" : "固定种子"}
-                  >
-                    <Dice5 className="size-3.5" />
-                  </button>
+                      }}
+                      className="sr-only"
+                    />
+                    自由变化
+                  </label>
+                  <label className={`cursor-pointer rounded-md px-1 py-1.5 text-center text-[10px] font-medium transition ${seedMode === "fixed" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                    <input
+                      type="radio"
+                      name="seed-mode"
+                      checked={seedMode === "fixed"}
+                      onChange={() => {
+                        setSeedMode("fixed");
+                        updateSetting("seedMode", "fixed");
+                      }}
+                      className="sr-only"
+                    />
+                    保持稳定
+                  </label>
                 </div>
                 <p className="mt-1.5 text-[9px] leading-4 text-muted-foreground">
-                  固定种子便于复现，随机种子用于探索不同结果。
+                  {seedMode === "random" ? "每次生成都会尝试不同效果。" : "保持稳定可重复得到相近效果。"}
                 </p>
               </div>
             </div>
@@ -6472,7 +6804,7 @@ export default function Home() {
                     onClick={() => changeGenerationMode(item)}
                     className={`rounded-md px-1 py-1.5 text-[10px] font-medium transition ${activeMode === item ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                   >
-                    {item}
+                    {generationModeLabels[item as GenerationMode]}
                   </button>
                 ))}
               </div>
@@ -6583,10 +6915,10 @@ export default function Home() {
                 <p className="text-[9px] leading-4 text-muted-foreground">
                   底层模式：
                   {keyframeMode === "first"
-                    ? "I2VA · 从首帧向后发展"
+                    ? "图生视频 · 从首帧向后发展"
                     : keyframeMode === "last"
-                      ? "L2VA · 最终落到尾帧"
-                      : "FL2VA · 生成首尾帧之间的连续路径"}
+                      ? "图生视频 · 最终落到尾帧"
+                      : "图生视频 · 生成首尾帧之间的连续路径"}
                 </p>
               </div>
             )}
@@ -6866,7 +7198,7 @@ export default function Home() {
               <div>
                 <h2 className="text-sm font-semibold">优化后的提示词</h2>
                 <p className="mt-1 text-[10px] text-muted-foreground">
-                当前镜头的 H3 提示词 · {activeMode}
+                当前镜头的 H3 提示词 · {generationModeLabels[activeMode as GenerationMode]}
                 </p>
               </div>
               <button

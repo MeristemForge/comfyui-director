@@ -303,6 +303,61 @@ async function writeComfyModelPaths(modelDirectory) {
   return target;
 }
 
+const modelScanFolders = {
+  diffusionModels: 'diffusion_models',
+  textEncoders: 'text_encoders',
+  videoVaes: 'vae',
+  audioVaes: 'vae',
+  loras: 'loras',
+};
+const modelFileExtensions = new Set([
+  '.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.sft',
+]);
+
+async function scanModelFiles(directory, relativeDirectory = '') {
+  const target = path.join(directory, relativeDirectory);
+  let entries;
+  try {
+    entries = await fs.readdir(target, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  const files = [];
+  for (const entry of entries) {
+    const relativePath = path.join(relativeDirectory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await scanModelFiles(directory, relativePath));
+    } else if (entry.isFile() && modelFileExtensions.has(path.extname(entry.name).toLowerCase())) {
+      files.push(relativePath.replaceAll(path.sep, '/'));
+    }
+  }
+  return files.sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
+}
+
+async function listAvailableModels() {
+  const directory = await getConfiguredModelDirectory();
+  const entries = await Promise.all(
+    Object.entries(modelScanFolders).map(async ([key, folder]) => {
+      const prefix = `${folder}/`;
+      const files = await scanModelFiles(directory, folder);
+      return [key, files.map((value) => value.startsWith(prefix) ? value.slice(prefix.length) : value)];
+    }),
+  );
+  const get = (key) => entries.find(([entryKey]) => entryKey === key)?.[1] ?? [];
+  const vaes = get('videoVaes');
+  const namedVideoVaes = vaes.filter((value) => /video/i.test(value));
+  const namedAudioVaes = vaes.filter((value) => /audio/i.test(value));
+  return {
+    directory,
+    diffusionModels: get('diffusionModels'),
+    textEncoders: get('textEncoders'),
+    videoVaes: namedVideoVaes.length ? namedVideoVaes : vaes,
+    audioVaes: namedAudioVaes.length ? namedAudioVaes : vaes,
+    loras: get('loras'),
+  };
+}
+
 function findFreePort(start = 8188) {
   return new Promise((resolve) => {
     const probe = (port) => {
@@ -550,6 +605,7 @@ ipcMain.handle('director:get-model-directory', async () => {
   const configured = await getConfiguredModelDirectory();
   return { path: configured };
 });
+ipcMain.handle('director:list-available-models', () => listAvailableModels());
 ipcMain.handle('director:pick-model-directory', async () => {
   const current = await getConfiguredModelDirectory();
   const result = await dialog.showOpenDialog(mainWindow, {

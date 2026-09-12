@@ -66,7 +66,7 @@ button { cursor: pointer; }
 
 .workspace-grid { display: grid; grid-template-columns: 188px minmax(420px, 1fr) 380px; grid-template-rows: calc(100vh - 100px); }
 .shot-rail, .preview-stage, .control-panel { min-height: 0; }
-.control-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.control-panel { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .field-label { display: block; font-size: 10px; font-weight: 600; letter-spacing: .08em; color: var(--muted-foreground); }
 .select-like { display: flex; width: 100%; height: 34px; align-items: center; justify-content: space-between; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in oklch, var(--muted), transparent 35%); padding: 0 9px; font-size: 11px; }
 .select-like option { background: var(--card); color: var(--foreground); }
