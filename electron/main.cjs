@@ -8,7 +8,6 @@ const net = require('node:net');
 app.setName('MeristemForge');
 Menu.setApplicationMenu(null);
 let server;
-const serverPort = 3000;
 let mainWindow;
 let comfyProcess;
 let comfyPort = 8188;
@@ -179,9 +178,7 @@ function resolveRuntime() {
 }
 
 function runtimeArchive() {
-  const directory = app.isPackaged
-    ? path.join(process.resourcesPath, 'runtime-archive')
-    : path.resolve(__dirname, '..', 'build-assets');
+  const directory = path.resolve(__dirname, '..', 'build-assets');
   const archive = path.join(directory, 'runtime.7z');
   return fsSync.existsSync(archive) ? archive : null;
 }
@@ -189,6 +186,7 @@ function runtimeArchive() {
 async function ensurePackagedRuntime() {
   const existing = resolveRuntime();
   if (existing) return existing;
+  if (app.isPackaged) return null;
   const archive = runtimeArchive();
   if (!archive) return null;
   const extractorDirectory = app.isPackaged
@@ -320,7 +318,9 @@ async function startComfyUI() {
   const runtime = await ensurePackagedRuntime();
   if (!runtime) {
     comfyState = 'unavailable';
-    comfyError = '没有找到开发模式 runtime，请确认 build-assets\runtime.7z 存在且可解压。';
+    comfyError = app.isPackaged
+      ? 'MeristemForge runtime 缺失或损坏，请重新安装或修复程序。'
+      : '没有找到开发模式 runtime，请确认 build-assets\runtime.7z 存在且可解压。';
     broadcastComfyState();
     return;
   }
@@ -397,15 +397,29 @@ ipcMain.handle('director:window-control', (_event, action) => {
   else if (action === 'close') mainWindow.close();
   return mainWindow.isMaximized();
 });
-function waitForTcp(port, timeout = 30000) {
+function waitForTcp(port, child, timeout = 30000) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeout;
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      child?.off('error', onError);
+      child?.off('exit', onExit);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onError = (error) => finish(new Error(`本地 Web 服务启动失败：${error.message}`));
+    const onExit = (code, signal) => finish(new Error(`本地 Web 服务提前退出（${signal || `退出码 ${code ?? 'unknown'}`}）`));
+    child?.once('error', onError);
+    child?.once('exit', onExit);
     const check = () => {
+      if (settled) return;
       const socket = net.createConnection({ host: '127.0.0.1', port });
-      socket.once('connect', () => { socket.destroy(); resolve(); });
+      socket.once('connect', () => { socket.destroy(); finish(); });
       socket.once('error', () => {
         socket.destroy();
-        if (Date.now() >= deadline) reject(new Error(`本地 Web 服务在 ${port} 端口启动超时`));
+        if (Date.now() >= deadline) finish(new Error(`本地 Web 服务在 ${port} 端口启动超时`));
         else setTimeout(check, 250);
       });
     };
@@ -425,6 +439,7 @@ async function startProductionServer() {
   const logDirectory = path.join(app.getPath('userData'), 'logs');
   await fs.mkdir(logDirectory, { recursive: true });
   const logFd = fsSync.openSync(path.join(logDirectory, 'server.log'), 'a');
+  const port = await findFreePort(3000);
   server = spawn(process.execPath, [entry], {
     cwd: serverRuntimeRoot,
     env: {
@@ -434,14 +449,14 @@ async function startProductionServer() {
       DIRECTOR_WORKING_DIRECTORY: serverRuntimeRoot,
       WRANGLER_CACHE_DIR: path.join(serverRuntimeRoot, '.wrangler', 'cache'),
       ELECTRON_RUN_AS_NODE: '1',
-      DIRECTOR_SERVER_PORT: String(serverPort),
+      DIRECTOR_SERVER_PORT: String(port),
     },
     windowsHide: true,
     stdio: ['ignore', logFd, logFd],
   });
   fsSync.closeSync(logFd);
-  await waitForTcp(serverPort);
-  return `http://127.0.0.1:${serverPort}`;
+  await waitForTcp(port, server);
+  return `http://127.0.0.1:${port}`;
 }
 
 ipcMain.handle('director:pick-directory', async () => {

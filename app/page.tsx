@@ -4571,20 +4571,8 @@ export default function Home() {
           : undefined,
       };
       const api = (window as DirectoryPickerWindow).electronDirector;
-      let optimizedPrompt: string;
-      if (api?.runAgent) {
-        optimizedPrompt = await api.runAgent(optimizationInput);
-      } else {
-        const response = await fetch("/api/optimize-prompt", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...optimizationInput, executablePath: llmExecutablePath.trim() }),
-        });
-        const result = (await response.json().catch(() => ({}))) as { prompt?: string; error?: string };
-        if (!response.ok || typeof result.prompt !== "string" || !result.prompt.trim())
-          throw new Error(result.error || "提示词优化失败");
-        optimizedPrompt = result.prompt;
-      }
+      if (!api?.runAgent) throw new Error("当前窗口没有可用的本地 Agent");
+      const optimizedPrompt = await api.runAgent(optimizationInput);
       const fingerprint = JSON.stringify(optimizationInput);
       if (projectEpochRef.current !== epoch || taskShot?.id !== shotId || activeMode !== modeAtStart || optimizedPromptRequestRef.current[promptKey] !== requestToken)
         return;

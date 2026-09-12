@@ -1,4 +1,5 @@
 #define AppVersion "0.1.0"
+#define RuntimeVersion "0.1.0"
 #define SourceDir "..\release\win-unpacked"
 
 [Setup]
@@ -68,46 +69,83 @@ begin
   end;
 end;
 
+function RuntimeRoot: string;
+begin
+  Result := ExpandConstant('{userappdata}\MeristemForge\runtime');
+end;
+
+function RuntimeManifestPath: string;
+begin
+  Result := ExpandConstant('{userappdata}\MeristemForge\runtime-version.json');
+end;
+
+function RuntimeFilesExist: Boolean;
+begin
+  Result := FileExists(RuntimeRoot + '\python_embeded\python.exe') and
+    FileExists(RuntimeRoot + '\ComfyUI\main.py');
+end;
+
+function RuntimeIsCurrent: Boolean;
+var
+  Manifest: string;
+begin
+  Result := RuntimeFilesExist and FileExists(RuntimeManifestPath);
+  if Result then begin
+    if not LoadStringFromFile(RuntimeManifestPath, Manifest) then
+      Result := False
+    else
+      Result := Pos('"version":"' + RuntimeVersion + '"', Manifest) > 0;
+  end;
+end;
+
+procedure CleanupRuntimePayload(const InstallRoot: string);
+begin
+  DeleteFile(InstallRoot + '\resources\runtime-archive\runtime.7z');
+  DelTree(InstallRoot + '\resources\runtime-extractor', True, True, True);
+  DelTree(InstallRoot + '\resources\runtime-archive', True, True, True);
+end;
+
 procedure ExtractRuntime;
 var
-  ExtractorPath, ArchivePath, InstallRoot, RuntimeRoot: string;
+  ExtractorPath, ArchivePath, InstallRoot, TargetRoot: string;
   ResultCode: Integer;
+  NeedsExtract: Boolean;
 begin
   InstallRoot := ExpandConstant('{app}');
-  RuntimeRoot := ExpandConstant('{userappdata}\MeristemForge');
-  ForceDirectories(RuntimeRoot);
-  if FileExists(RuntimeRoot + '\runtime\ComfyUI\main.py') then
-    exit;
+  TargetRoot := ExpandConstant('{userappdata}\MeristemForge');
+  NeedsExtract := not RuntimeIsCurrent;
+  try
+    if NeedsExtract then begin
+      ExtractorPath := InstallRoot + '\resources\runtime-extractor\7z.exe';
+      ArchivePath := InstallRoot + '\resources\runtime-archive\runtime.7z';
+      if (not FileExists(ExtractorPath)) or (not FileExists(ArchivePath)) then begin
+        MsgBox('安装包缺少 ComfyUI runtime 文件。', mbError, MB_OK);
+        Abort;
+      end;
 
-  ExtractorPath := InstallRoot + '\resources\runtime-extractor\7z.exe';
-  ArchivePath := InstallRoot + '\resources\runtime-archive\runtime.7z';
-  if (not FileExists(ExtractorPath)) or (not FileExists(ArchivePath)) then begin
-    MsgBox('安装包缺少 ComfyUI runtime 文件。', mbError, MB_OK);
-    Abort;
+      ForceDirectories(TargetRoot);
+      DelTree(RuntimeRoot, True, True, True);
+      if (not Exec(
+        ExtractorPath,
+        'x -y "' + ArchivePath + '" "-o' + TargetRoot + '"',
+        InstallRoot + '\resources\runtime-extractor',
+        SW_HIDE,
+        ewWaitUntilTerminated,
+        ResultCode
+      )) or (ResultCode <> 0) then begin
+        MsgBox('ComfyUI runtime 解压失败，请检查磁盘空间后重试。', mbError, MB_OK);
+        Abort;
+      end;
+
+      if not RuntimeFilesExist then begin
+        MsgBox('runtime 解压完成，但没有找到完整的 ComfyUI 运行时。', mbError, MB_OK);
+        Abort;
+      end;
+      SaveStringToFile(RuntimeManifestPath, '{"version":"' + RuntimeVersion + '"}' + #13#10, False);
+    end;
+  finally
+    CleanupRuntimePayload(InstallRoot);
   end;
-
-  if (not Exec(
-    ExtractorPath,
-    'x -y "' + ArchivePath + '" "-o' + RuntimeRoot + '"',
-    InstallRoot + '\resources\runtime-extractor',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  )) or (ResultCode <> 0) then begin
-    MsgBox('ComfyUI runtime 解压失败，请检查磁盘空间后重试。', mbError, MB_OK);
-    Abort;
-  end;
-
-  if not FileExists(RuntimeRoot + '\runtime\ComfyUI\main.py') then begin
-    MsgBox('runtime 解压完成，但没有找到 ComfyUI 主程序。', mbError, MB_OK);
-    Abort;
-  end;
-
-  DeleteFile(ArchivePath);
-  DeleteFile(InstallRoot + '\resources\runtime-extractor\7z.exe');
-  DeleteFile(InstallRoot + '\resources\runtime-extractor\7z.dll');
-  RemoveDir(InstallRoot + '\resources\runtime-archive');
-  RemoveDir(InstallRoot + '\resources\runtime-extractor');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
